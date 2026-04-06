@@ -10,6 +10,7 @@
   ],
   "exclude": [
     "./.local-dev/**/*",
-    "./backend/codex.ts"
+    "./backend/codex.ts",
+    "./backend/extensions/**/*"
   ]
 }

@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('desktopShell', {
     node: process.versions.node,
   },
   getSnapshot: () => ipcRenderer.invoke('desktop:get-snapshot'),
+  resolveWebviewSrc: (entrypoint) =>
+    ipcRenderer.invoke('desktop:resolve-webview-src', entrypoint),
   sendEvent: (event) => ipcRenderer.send('desktop:send', event),
   reportReady: (payload) => ipcRenderer.send('desktop:ready', payload),
   onEvent: (listener) => {

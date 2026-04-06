@@ -12,6 +12,7 @@ import type {
   DesktopRuntimeStatus,
   DesktopSnapshot,
   DesktopThread,
+  DesktopThreadPreviewPaneState,
 } from '../shared/protocol';
 import type { ContentBlock } from '../../src/types';
 import { extractTextContent } from '../shared/message-state';
@@ -22,8 +23,11 @@ import {
 
 interface PersistedState {
   activeThreadId: string | null;
+  activePluginPageId?: string | null;
+  activeViewId?: string;
   provider: DesktopProvider;
   modelsByProvider: Partial<Record<DesktopProvider, DesktopModel>>;
+  threadPreviewStateById?: Record<string, DesktopThreadPreviewPaneState>;
   providerStateByThread?: Partial<
     Record<
       string,
@@ -56,6 +60,20 @@ function ensureDir(path: string): void {
 
 function now(): number {
   return Date.now();
+}
+
+function normalizePersistedViewId(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizePersistedPluginPageId(value: unknown): string | null {
+  const normalized = normalizePersistedViewId(value);
+  return normalized === 'chat' ? null : normalized;
 }
 
 function deriveThreadTitle(content: string): string {
@@ -135,6 +153,9 @@ export class DesktopStore {
           : null) ?? fallbackProvider;
       return {
         activeThreadId,
+        activePluginPageId:
+          normalizePersistedPluginPageId(parsed.activePluginPageId) ??
+          normalizePersistedPluginPageId(parsed.activeViewId),
         provider: activeThreadProvider,
         modelsByProvider: {
           ...modelsByProvider,
@@ -145,6 +166,7 @@ export class DesktopStore {
               requireDesktopProvider(activeThreadProvider).getDefaultModel(),
           ),
         },
+        threadPreviewStateById: parsed.threadPreviewStateById ?? {},
         providerStateByThread,
         threads,
         messagesByThread: parsed.messagesByThread ?? {},
@@ -153,10 +175,12 @@ export class DesktopStore {
       const provider = getDefaultProvider();
       return {
         activeThreadId: null,
+        activePluginPageId: null,
         provider,
         modelsByProvider: {
           [provider]: requireDesktopProvider(provider).getDefaultModel(),
         },
+        threadPreviewStateById: {},
         providerStateByThread: {},
         threads: [],
         messagesByThread: {},
@@ -182,6 +206,10 @@ export class DesktopStore {
     return this.state.activeThreadId;
   }
 
+  getActivePluginPageId(): string | null {
+    return normalizePersistedPluginPageId(this.state.activePluginPageId);
+  }
+
   getProvider(): DesktopProvider {
     return this.state.provider;
   }
@@ -190,6 +218,11 @@ export class DesktopStore {
     const normalizedProvider = requireDesktopProvider(provider).id;
     this.state.provider = normalizedProvider;
     this.ensureProviderModel(normalizedProvider);
+    this.persist();
+  }
+
+  setActivePluginPage(pageId: string | null): void {
+    this.state.activePluginPageId = normalizePersistedPluginPageId(pageId);
     this.persist();
   }
 
@@ -263,6 +296,7 @@ export class DesktopStore {
     }
 
     this.state.activeThreadId = threadId;
+    this.state.activePluginPageId = null;
     this.state.provider = thread.provider;
     this.ensureProviderModel(thread.provider);
     this.persist();
@@ -312,11 +346,19 @@ export class DesktopStore {
     };
     this.state.threads.unshift(thread);
     this.state.messagesByThread[thread.id] = [];
+    this.state.threadPreviewStateById = {
+      ...(this.state.threadPreviewStateById ?? {}),
+      [thread.id]: {
+        pageId: null,
+        visible: false,
+      },
+    };
     this.state.providerStateByThread = {
       ...(this.state.providerStateByThread ?? {}),
       [thread.id]: {},
     };
     this.state.activeThreadId = thread.id;
+    this.state.activePluginPageId = null;
     this.state.provider = normalizedProvider;
     this.ensureProviderModel(normalizedProvider);
     this.persist();
@@ -430,6 +472,37 @@ export class DesktopStore {
     this.persist();
   }
 
+  openThreadPreview(threadId: string, pageId: string): void {
+    if (!this.getThread(threadId)) {
+      throw new Error(`Thread ${threadId} does not exist`);
+    }
+
+    this.state.threadPreviewStateById = {
+      ...(this.state.threadPreviewStateById ?? {}),
+      [threadId]: {
+        pageId: normalizePersistedPluginPageId(pageId),
+        visible: true,
+      },
+    };
+    this.persist();
+  }
+
+  closeThreadPreview(threadId: string): void {
+    if (!this.getThread(threadId)) {
+      throw new Error(`Thread ${threadId} does not exist`);
+    }
+
+    const current = this.state.threadPreviewStateById ?? {};
+    this.state.threadPreviewStateById = {
+      ...current,
+      [threadId]: {
+        pageId: normalizePersistedPluginPageId(current[threadId]?.pageId),
+        visible: false,
+      },
+    };
+    this.persist();
+  }
+
   buildSnapshot(
     runtimeStatus: DesktopRuntimeStatus,
     provider: DesktopProvider,
@@ -437,9 +510,13 @@ export class DesktopStore {
     model: DesktopModel,
     availableModels: DesktopModelOption[],
     auth: DesktopAuthState,
+    pages: DesktopSnapshot['pages'],
+    plugins: DesktopSnapshot['plugins'],
   ): DesktopSnapshot {
     return {
       activeThreadId: this.state.activeThreadId,
+      activePluginPageId: this.getActivePluginPageId(),
+      threadPreviewStateById: this.state.threadPreviewStateById ?? {},
       threads: this.listThreads(),
       messagesByThread: this.getMessagesByThread(),
       provider,
@@ -448,6 +525,8 @@ export class DesktopStore {
       availableModels,
       auth,
       runtimeStatus,
+      pages,
+      plugins,
     };
   }
 }

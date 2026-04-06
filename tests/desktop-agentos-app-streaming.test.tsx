@@ -130,6 +130,14 @@ vi.mock("@/components/ui/button", () => ({
   ),
 }));
 
+vi.mock("@/components/ui/card", () => ({
+  Card: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  CardHeader: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  CardTitle: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  CardDescription: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  CardContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+}));
+
 vi.mock("@/components/ui/progress", () => ({
   Progress: ({ value }: { value: number }) => <div data-testid="progress">{value}</div>,
 }));
@@ -206,6 +214,7 @@ type MockDesktopShell = {
     node: string;
   };
   getSnapshot: ReturnType<typeof vi.fn>;
+  resolveWebviewSrc: ReturnType<typeof vi.fn>;
   sendEvent: ReturnType<typeof vi.fn>;
   reportReady: ReturnType<typeof vi.fn>;
   onEvent: ReturnType<typeof vi.fn>;
@@ -228,6 +237,13 @@ function createSnapshot(): DesktopSnapshot {
       "thread-1": [],
     },
     activeThreadId: "thread-1",
+    activePluginPageId: null,
+    threadPreviewStateById: {
+      "thread-1": {
+        pageId: null,
+        visible: false,
+      },
+    },
     provider: "agentos",
     availableProviders: [{ id: "agentos", label: "AgentOS" }],
     model: "claude-sonnet-4-20250514",
@@ -249,6 +265,148 @@ function createSnapshot(): DesktopSnapshot {
       detail: "Runtime ready",
       helperPath: null,
     },
+    pages: [
+      {
+        id: "plugin:extension-lab:extension-lab.home",
+        title: "Extension Lab",
+        description: "Inspect the new V2 extension runtime and installed plugins.",
+        icon: "Blocks",
+        pluginId: "extension-lab",
+        surface: "page",
+        render: {
+          kind: "host",
+          component: "extension-catalog",
+        },
+        hostData: null,
+      },
+      {
+        id: "plugin:random-site-preview:random-site-preview.frame",
+        title: "Random Site Preview",
+        description: "Shows a thread-specific random website.",
+        icon: "Globe",
+        pluginId: "random-site-preview",
+        surface: "preview",
+        render: {
+          kind: "webview",
+          entrypoint: "/tmp/random-site-preview/site/index.html",
+        },
+        hostData: null,
+      },
+    ],
+    plugins: [
+      {
+        id: "extension-lab",
+        name: "Extension Lab",
+        version: "0.1.0",
+        description: "Inspect the live extension runtime and installed extensions.",
+        source: "builtin",
+        enabled: true,
+        path: "/tmp/extension-lab",
+        main: "/tmp/extension-lab/index.ts",
+        webviews: [],
+        capabilities: {
+          pages: [
+            {
+              id: "extension-lab.home",
+              title: "Extension Lab",
+              description: "Inspect the new V2 extension runtime and installed plugins.",
+              icon: "Blocks",
+            },
+          ],
+          previewPanes: [],
+          commands: [],
+          tools: [],
+        },
+        runtime: {
+          activated: true,
+          activationError: null,
+          subscribedEvents: [],
+          registeredPageIds: ["extension-lab.home"],
+          registeredPreviewPaneIds: [],
+          registeredCommandIds: [],
+          registeredToolIds: [],
+        },
+      },
+      {
+        id: "random-site-preview",
+        name: "Random Site Preview",
+        version: "0.1.0",
+        description: "Pins a stable random site to each chat thread's right preview pane.",
+        source: "builtin",
+        enabled: true,
+        path: "/tmp/random-site-preview",
+        main: "/tmp/random-site-preview/index.ts",
+        webviews: [
+          {
+            id: "random-site-frame",
+            entrypoint: "/tmp/random-site-preview/site/index.html",
+          },
+        ],
+        capabilities: {
+          pages: [],
+          previewPanes: [
+            {
+              id: "random-site-preview.frame",
+              title: "Random Site Preview",
+              description: "Shows a thread-specific random website.",
+              icon: "Globe",
+              autoOpen: "all-threads",
+            },
+          ],
+          commands: [],
+          tools: [],
+        },
+        runtime: {
+          activated: true,
+          activationError: null,
+          subscribedEvents: [],
+          registeredPageIds: [],
+          registeredPreviewPaneIds: ["random-site-preview.frame"],
+          registeredCommandIds: [],
+          registeredToolIds: [],
+        },
+      },
+      {
+        id: "thread-journal",
+        name: "Thread Journal",
+        version: "0.1.0",
+        description: "Tracks thread-level extension state through runtime hooks.",
+        source: "builtin",
+        enabled: true,
+        path: "/tmp/thread-journal",
+        main: "/tmp/thread-journal/index.ts",
+        webviews: [],
+        capabilities: {
+          pages: [],
+          previewPanes: [],
+          commands: [
+            {
+              id: "thread-journal.reset",
+              title: "Reset Thread Journal",
+              description: "Clear stored prompt history for the active thread.",
+            },
+          ],
+          tools: [
+            {
+              id: "thread-journal.snapshot",
+              title: "Thread Journal Snapshot",
+              description: "Return the current thread journal snapshot.",
+              schema: null,
+              availableTo: ["*"],
+            },
+          ],
+        },
+        runtime: {
+          activated: true,
+          activationError: null,
+          subscribedEvents: ["before_prompt"],
+          registeredPageIds: [],
+          registeredPreviewPaneIds: [],
+          registeredCommandIds: ["thread-journal.reset"],
+          registeredToolIds: ["thread-journal.snapshot"],
+        },
+      },
+    ],
   };
 }
 
@@ -277,6 +435,9 @@ function installDesktopShell(snapshot: DesktopSnapshot) {
       node: "1",
     },
     getSnapshot: vi.fn(async () => snapshot),
+    resolveWebviewSrc: vi.fn(async (entrypoint: string) =>
+      entrypoint.startsWith("/") ? `desktop-plugin://local${entrypoint}` : entrypoint,
+    ),
     sendEvent: vi.fn(),
     reportReady: vi.fn(),
     onEvent: vi.fn((nextListener: DesktopShellListener) => {
@@ -328,9 +489,6 @@ async function renderAppWithShell(snapshot: DesktopSnapshot) {
 
   await waitFor(() => {
     expect(shell.reportReady).toHaveBeenCalled();
-    expect(
-      screen.getByRole("region", { name: "Chat messages" }),
-    ).toBeInTheDocument();
   });
 
   return { shell, emit };
@@ -355,6 +513,123 @@ afterEach(() => {
 });
 
 describe("desktop AgentOS renderer streaming", () => {
+  it("opens plugin clicks as a full-page plugin surface with chat hidden", async () => {
+    const snapshot = createSnapshot();
+    snapshot.activePluginPageId = "plugin:extension-lab:extension-lab.home";
+    snapshot.messagesByThread["thread-1"] = [
+      {
+        id: "message-1",
+        threadId: "thread-1",
+        role: "assistant",
+        content: "Chat stays visible while the plugin pane is open.",
+        createdAt: Date.now(),
+        status: "done",
+      },
+    ];
+
+    await renderAppWithShell(snapshot);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Inspect the live extension runtime and installed extensions."),
+      ).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText("Chat stays visible while the plugin pane is open.")).toBeNull();
+    expect(screen.queryByLabelText("Prompt input")).toBeNull();
+  });
+
+  it("renders the right preview pane from thread-owned state while chat stays visible", async () => {
+    const snapshot = createSnapshot();
+    snapshot.threadPreviewStateById["thread-1"] = {
+      pageId: "plugin:random-site-preview:random-site-preview.frame",
+      visible: true,
+    };
+    snapshot.messagesByThread["thread-1"] = [
+      {
+        id: "message-1",
+        threadId: "thread-1",
+        role: "assistant",
+        content: "Chat stays visible while the plugin pane is open.",
+        createdAt: Date.now(),
+        status: "done",
+      },
+    ];
+
+    await renderAppWithShell(snapshot);
+
+    await waitFor(() => {
+      expect(screen.getByTitle("Random Site Preview plugin webview")).toBeInTheDocument();
+    });
+
+    expect(
+      screen.getByText("Chat stays visible while the plugin pane is open."),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Prompt input")).toBeInTheDocument();
+    expect(screen.getByTitle("Random Site Preview plugin webview")).toHaveAttribute(
+      "src",
+      "desktop-plugin://local/tmp/random-site-preview/site/index.html?threadId=thread-1&pluginId=random-site-preview&pageId=plugin%3Arandom-site-preview%3Arandom-site-preview.frame&surface=companion",
+    );
+  });
+
+  it("can render a thread-specific random-site companion in the right pane", async () => {
+    const snapshot = createSnapshot();
+    snapshot.threadPreviewStateById["thread-1"] = {
+      pageId: "plugin:random-site-preview:random-site-preview.frame",
+      visible: true,
+    };
+
+    await renderAppWithShell(snapshot);
+
+    await waitFor(() => {
+      expect(
+        screen.getByTitle("Random Site Preview plugin webview"),
+      ).toBeInTheDocument();
+    });
+
+    expect(
+      screen.getByTitle("Random Site Preview plugin webview"),
+    ).toHaveAttribute(
+      "src",
+      "desktop-plugin://local/tmp/random-site-preview/site/index.html?threadId=thread-1&pluginId=random-site-preview&pageId=plugin%3Arandom-site-preview%3Arandom-site-preview.frame&surface=companion",
+    );
+  });
+
+  it("keeps the companion webview mounted while chat messages stream", async () => {
+    const snapshot = createSnapshot();
+    snapshot.threadPreviewStateById["thread-1"] = {
+      pageId: "plugin:random-site-preview:random-site-preview.frame",
+      visible: true,
+    };
+
+    const { emit } = await renderAppWithShell(snapshot);
+
+    await waitFor(() => {
+      expect(
+        screen.getByTitle("Random Site Preview plugin webview"),
+      ).toBeInTheDocument();
+    });
+
+    const iframeBefore = screen.getByTitle("Random Site Preview plugin webview");
+
+    await emit(
+      createAgentOsRuntimeEvent({
+        sessionUpdate: "agent_message_chunk",
+        content: "Streaming without replacing the preview.",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Streaming without replacing the preview."),
+      ).toBeInTheDocument();
+    });
+
+    expect(screen.getByTitle("Random Site Preview plugin webview")).toBe(
+      iframeBefore,
+    );
+  });
+
   it("renders streamed ACP text chunks before the turn finishes", async () => {
     const { emit } = await renderAppWithShell(createSnapshot());
 

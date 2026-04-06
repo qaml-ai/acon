@@ -8,6 +8,7 @@ interface DesktopShellApi {
     node: string;
   };
   getSnapshot: () => Promise<DesktopSnapshot | null>;
+  resolveWebviewSrc?: (entrypoint: string) => Promise<string>;
   sendEvent: (event: DesktopClientEvent) => void;
   reportReady: (payload: {
     activeThreadId: string | null;

@@ -11,6 +11,13 @@ import { ContentBlockRenderer } from "@/components/message-bubble";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { PageHeader } from "@/components/page-header";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -34,6 +41,7 @@ import type { ContentBlock, Message } from "@/types";
 import type {
   DesktopClientEvent,
   DesktopModel,
+  DesktopPage,
   DesktopProvider,
   DesktopServerEvent,
   DesktopSnapshot,
@@ -44,18 +52,81 @@ import {
   mergeSnapshotMessages,
 } from "../../shared/message-state";
 import { DesktopSidebar } from "./desktop-sidebar";
+import { getDesktopIcon } from "./desktop-icons";
 
 const desktopShell = window.desktopShell;
 const fallbackBackendUrl = "http://127.0.0.1:4315";
 const RUNTIME_BOOT_SCREEN_DELAY_MS = 450;
 const EMPTY_THREAD_DRAFT_KEY = "__no_thread__";
-
 function getActiveThread(
   snapshot: DesktopSnapshot | null,
   threadId: string | null,
 ): DesktopThread | null {
   if (!snapshot || !threadId) return null;
   return snapshot.threads.find((thread) => thread.id === threadId) ?? null;
+}
+
+function getPluginPage(
+  snapshot: DesktopSnapshot | null,
+  pageId: string | null,
+): DesktopPage | null {
+  if (!snapshot || !pageId) {
+    return null;
+  }
+
+  return snapshot.pages.find((page) => page.id === pageId) ?? null;
+}
+
+function isSupportedPluginWebviewEntrypoint(
+  entrypoint: string | null | undefined,
+): entrypoint is string {
+  if (!entrypoint) {
+    return false;
+  }
+
+  return (
+    /^(https?:|data:|file:)/.test(entrypoint) ||
+    entrypoint.startsWith("/") ||
+    /^[A-Za-z]:[\\/]/.test(entrypoint) ||
+    entrypoint.startsWith("\\\\")
+  );
+}
+
+function withPluginWebviewContext(
+  source: string,
+  context: {
+    threadId?: string | null;
+    pluginId?: string | null;
+    pageId?: string | null;
+    mode: "full" | "companion";
+  },
+): string {
+  try {
+    const url = new URL(source);
+    const params = new URLSearchParams();
+    if (context.threadId) {
+      params.set("threadId", context.threadId);
+    }
+    if (context.pluginId) {
+      params.set("pluginId", context.pluginId);
+    }
+    if (context.pageId) {
+      params.set("pageId", context.pageId);
+    }
+    params.set("surface", context.mode);
+
+    if (url.protocol === "file:") {
+      url.hash = params.toString();
+      return url.toString();
+    }
+
+    for (const [key, value] of params.entries()) {
+      url.searchParams.set(key, value);
+    }
+    return url.toString();
+  } catch {
+    return source;
+  }
 }
 
 function formatTime(timestamp: number): string {
@@ -382,6 +453,48 @@ const MemoizedTranscriptPane = memo(
   (prev, next) => prev.rawMessages === next.rawMessages,
 );
 
+function ChatPane({
+  rawMessages,
+  activeThreadId,
+  initialDraft,
+  isStreaming,
+  onDraftChange,
+  onSubmitMessage,
+}: {
+  rawMessages: Message[];
+  activeThreadId: string | null;
+  initialDraft: string;
+  isStreaming: boolean;
+  onDraftChange: (threadId: string | null, draft: string) => void;
+  onSubmitMessage: (threadId: string, content: string) => void;
+}) {
+  return (
+    <>
+      <MemoizedTranscriptPane rawMessages={rawMessages} />
+
+      <div className="sticky bottom-0 z-20 shrink-0">
+        <div
+          className="pointer-events-none absolute inset-x-0 bottom-full h-8 bg-gradient-to-t from-background to-transparent"
+          aria-hidden="true"
+        />
+        <div className="bg-background">
+          <div className="px-4 pb-4 pt-2">
+            <div className="mx-auto flex w-full max-w-3xl flex-col max-h-[calc(100dvh-2rem)]">
+              <MemoizedComposer
+                activeThreadId={activeThreadId}
+                initialDraft={initialDraft}
+                isStreaming={isStreaming}
+                onDraftChange={onDraftChange}
+                onSubmitMessage={onSubmitMessage}
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function Composer({
   activeThreadId,
   initialDraft,
@@ -437,12 +550,560 @@ const MemoizedComposer = memo(
     prev.onSubmitMessage === next.onSubmitMessage,
 );
 
+function capabilityLabel(
+  label: string,
+  count: number,
+): string {
+  if (count === 1) {
+    return `1 ${label}`;
+  }
+
+  return `${count} ${label}s`;
+}
+
+function PluginCatalogPane({
+  snapshot,
+  mode = "full",
+}: {
+  snapshot: DesktopSnapshot;
+  mode?: "full" | "companion";
+}) {
+  return (
+    <div className="flex flex-1 overflow-y-auto">
+      <div
+        className={`flex w-full flex-col gap-4 px-4 pb-8 pt-5 md:px-6 ${
+          mode === "companion" ? "" : "mx-auto max-w-5xl"
+        }`}
+      >
+        <Card className="border-dashed">
+          <CardHeader>
+            <CardTitle>Extension Lab</CardTitle>
+            <CardDescription>
+              The desktop host now discovers lightweight `camelai` manifests and
+              lets plugins imperatively register pages, preview panes, commands,
+              tools, and runtime hooks.
+            </CardDescription>
+          </CardHeader>
+        </Card>
+
+        {snapshot.plugins.length === 0 ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>No plugins installed</CardTitle>
+              <CardDescription>
+                Builtin plugins will appear here, and user-installed plugins
+                will be read from the desktop data directory.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        ) : (
+          <div
+            className={`grid gap-4 ${
+              mode === "companion" ? "grid-cols-1" : "md:grid-cols-2 xl:grid-cols-3"
+            }`}
+          >
+            {snapshot.plugins.map((plugin) => (
+              <Card key={plugin.id} className="h-full">
+                <CardHeader className="gap-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="secondary">{plugin.source}</Badge>
+                    <Badge variant={plugin.runtime.activated ? "secondary" : "outline"}>
+                      {plugin.runtime.activated ? "activated" : "discovered"}
+                    </Badge>
+                    {plugin.runtime.activationError ? (
+                      <Badge variant="destructive">activation error</Badge>
+                    ) : null}
+                  </div>
+                  <div>
+                    <CardTitle className="text-base">{plugin.name}</CardTitle>
+                    <CardDescription>
+                      {plugin.description ?? "No plugin description yet."}
+                    </CardDescription>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex flex-wrap gap-2 text-xs">
+                    <Badge variant="outline">
+                      {capabilityLabel("page", plugin.capabilities.pages.length)}
+                    </Badge>
+                    <Badge variant="outline">
+                      {capabilityLabel(
+                        "preview",
+                        plugin.capabilities.previewPanes.length,
+                      )}
+                    </Badge>
+                    <Badge variant="outline">
+                      {capabilityLabel(
+                        "command",
+                        plugin.capabilities.commands.length,
+                      )}
+                    </Badge>
+                    <Badge variant="outline">
+                      {capabilityLabel("tool", plugin.capabilities.tools.length)}
+                    </Badge>
+                  </div>
+
+                  <div className="space-y-2 text-sm text-muted-foreground">
+                    <p className="font-medium text-foreground">
+                      {plugin.id}
+                    </p>
+                    <p>{plugin.path}</p>
+                  </div>
+
+                  {plugin.capabilities.tools.length > 0 ? (
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                        Tools
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {plugin.capabilities.tools.map((tool) => (
+                          <Badge key={tool.id} variant="secondary">
+                            {tool.id}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {plugin.runtime.subscribedEvents.length > 0 ? (
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                        Hooks
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {plugin.runtime.subscribedEvents.map((eventName) => (
+                          <Badge key={eventName} variant="outline">
+                            {eventName}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {plugin.runtime.activationError ? (
+                    <Alert variant="destructive">
+                      <AlertTitle>Activation failed</AlertTitle>
+                      <AlertDescription>
+                        {plugin.runtime.activationError}
+                      </AlertDescription>
+                    </Alert>
+                  ) : null}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PluginDetailPane({
+  snapshot,
+  page,
+  activeThreadId = null,
+  mode = "full",
+}: {
+  snapshot: DesktopSnapshot;
+  page: DesktopPage;
+  activeThreadId?: string | null;
+  mode?: "full" | "companion";
+}) {
+  const [resolvedWebviewSrc, setResolvedWebviewSrc] = useState<string | null>(null);
+  const [webviewError, setWebviewError] = useState<string | null>(null);
+  const plugin = snapshot.plugins.find((item) => item.id === page.pluginId);
+  const ViewIcon = getDesktopIcon(page.icon);
+  const webviewEntrypoint =
+    page.render.kind === "webview" ? page.render.entrypoint : null;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function resolveWebviewSource() {
+      if (!webviewEntrypoint || !isSupportedPluginWebviewEntrypoint(webviewEntrypoint)) {
+        setResolvedWebviewSrc(null);
+        setWebviewError(null);
+        return;
+      }
+
+      if (desktopShell?.resolveWebviewSrc) {
+        try {
+          const nextSrc = await desktopShell.resolveWebviewSrc(webviewEntrypoint);
+          if (!cancelled) {
+            setResolvedWebviewSrc(nextSrc);
+            setWebviewError(null);
+          }
+          return;
+        } catch (error) {
+          if (!cancelled) {
+            setResolvedWebviewSrc(null);
+            setWebviewError(error instanceof Error ? error.message : String(error));
+          }
+          return;
+        }
+      }
+
+      if (!cancelled) {
+        setResolvedWebviewSrc(webviewEntrypoint);
+        setWebviewError(null);
+      }
+    }
+
+    void resolveWebviewSource();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [webviewEntrypoint]);
+
+  const contextualWebviewSrc = resolvedWebviewSrc
+    ? withPluginWebviewContext(resolvedWebviewSrc, {
+        threadId: mode === "companion" ? activeThreadId : null,
+        pluginId: page.pluginId,
+        pageId: page.id,
+        mode,
+      })
+    : null;
+
+  if (page.hostData) {
+    return (
+      <div className="flex flex-1 overflow-y-auto">
+        <div
+          className={`flex w-full flex-col gap-4 px-4 pb-8 pt-5 md:px-6 ${
+            mode === "companion" ? "" : "mx-auto max-w-4xl"
+          }`}
+        >
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-3">
+                <div className="flex size-10 items-center justify-center rounded-2xl border border-border bg-muted/40">
+                  <ViewIcon className="size-5" />
+                </div>
+                <div>
+                  <CardTitle>{page.title}</CardTitle>
+                  <CardDescription>
+                    {page.description ??
+                      "Plugin-provided data for the current AgentOS context."}
+                  </CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+          </Card>
+
+          {page.hostData.sections.map((section) => (
+            <Card key={section.id}>
+              <CardHeader>
+                <CardTitle className="text-base">{section.title}</CardTitle>
+                <CardDescription>
+                  {section.description ?? "Plugin-provided section"}
+                </CardDescription>
+              </CardHeader>
+              <CardContent
+                className={`grid gap-3 ${
+                  mode === "companion" ? "grid-cols-1" : "md:grid-cols-2"
+                }`}
+              >
+                {section.items.map((item) => (
+                  <div
+                    key={`${section.id}:${item.label}`}
+                    className="rounded-lg border border-border/60 bg-background/70 px-3 py-3"
+                  >
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                      {item.label}
+                    </p>
+                    <p className="mt-2 break-all text-sm text-foreground">
+                      {item.value}
+                    </p>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (
+    mode === "companion" &&
+    page.render.kind === "webview" &&
+    isSupportedPluginWebviewEntrypoint(webviewEntrypoint)
+  ) {
+    return (
+      <div className="flex min-h-0 flex-1 bg-background">
+        {webviewError ? (
+          <Alert className="m-4 self-start">
+            <AlertTitle>Webview failed to load</AlertTitle>
+            <AlertDescription>{webviewError}</AlertDescription>
+          </Alert>
+        ) : contextualWebviewSrc ? (
+          <iframe
+            title={`${page.title} plugin webview`}
+            src={contextualWebviewSrc}
+            className="min-h-0 w-full flex-1 bg-white"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+            referrerPolicy="no-referrer"
+          />
+        ) : (
+          <div className="flex min-h-0 flex-1 items-center justify-center bg-muted/10">
+            <div className="flex items-center gap-3 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" />
+              <span>Loading plugin surface…</span>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-1 overflow-y-auto">
+      <div
+        className={`flex w-full flex-col gap-4 px-4 pb-8 pt-5 md:px-6 ${
+          mode === "companion" ? "" : "mx-auto max-w-4xl"
+        }`}
+      >
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-3">
+              <div className="flex size-10 items-center justify-center rounded-2xl border border-border bg-muted/40">
+                <ViewIcon className="size-5" />
+              </div>
+              <div>
+                <CardTitle>{page.title}</CardTitle>
+                <CardDescription>
+                  {page.description ?? "This plugin page does not have a description yet."}
+                </CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {plugin ? (
+              <>
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="secondary">{plugin.name}</Badge>
+                  <Badge variant="outline">{plugin.source}</Badge>
+                  <Badge variant={plugin.runtime.activated ? "secondary" : "outline"}>
+                    {plugin.runtime.activated ? "activated" : "discovered"}
+                  </Badge>
+                </div>
+
+                <p className="text-sm leading-relaxed text-muted-foreground">
+                  {plugin.description ??
+                    "The plugin was discovered from its manifest, but it has not registered a richer page yet."}
+                </p>
+              </>
+            ) : null}
+
+            {page.render.kind === "webview" ? (
+              isSupportedPluginWebviewEntrypoint(webviewEntrypoint) ? (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/60 bg-muted/20 px-4 py-3">
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium text-foreground">
+                        Plugin webview
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Rendering plugin-owned web content in the companion pane.
+                      </p>
+                    </div>
+                    <Button
+                      disabled={!resolvedWebviewSrc}
+                      onClick={() => {
+                        if (!resolvedWebviewSrc) {
+                          return;
+                        }
+                        window.open(resolvedWebviewSrc, "_blank", "noopener,noreferrer");
+                      }}
+                      type="button"
+                      variant="outline"
+                    >
+                      Open in browser
+                    </Button>
+                  </div>
+
+                  <div className="overflow-hidden rounded-2xl border border-border/70 bg-background shadow-sm">
+                    {webviewError ? (
+                      <Alert className="m-4">
+                        <AlertTitle>Webview failed to load</AlertTitle>
+                        <AlertDescription>{webviewError}</AlertDescription>
+                      </Alert>
+                    ) : contextualWebviewSrc ? (
+                      <iframe
+                        title={`${page.title} plugin webview`}
+                        src={contextualWebviewSrc}
+                        className="min-h-[640px] w-full bg-white"
+                        sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                        referrerPolicy="no-referrer"
+                      />
+                    ) : (
+                      <div className="flex min-h-[640px] items-center justify-center bg-muted/10">
+                        <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                          <Loader2 className="size-4 animate-spin" />
+                          <span>Loading plugin surface…</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <Alert>
+                  <AlertTitle>Unsupported webview entrypoint</AlertTitle>
+                  <AlertDescription>
+                    Plugin webviews currently support `https:`, `http:`, `data:`,
+                    and plugin-local HTML entrypoints.
+                  </AlertDescription>
+                </Alert>
+              )
+            ) : (
+              <Alert>
+                <AlertTitle>Host-rendered fallback</AlertTitle>
+                <AlertDescription>
+                  This view currently uses a host-rendered surface. Plugin-owned
+                  React/webview rendering can layer on top of the same manifest
+                  and activation model later.
+                </AlertDescription>
+              </Alert>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+const MemoizedCompanionWebviewPane = memo(
+  function CompanionWebviewPane({
+    title,
+    entrypoint,
+    activeThreadId,
+    pluginId,
+    pageId,
+  }: {
+    title: string;
+    entrypoint: string;
+    activeThreadId: string | null;
+    pluginId: string | null;
+    pageId: string;
+  }) {
+    const [resolvedWebviewSrc, setResolvedWebviewSrc] = useState<string | null>(null);
+    const [webviewError, setWebviewError] = useState<string | null>(null);
+
+    useEffect(() => {
+      let cancelled = false;
+
+      async function resolveWebviewSource() {
+        if (!isSupportedPluginWebviewEntrypoint(entrypoint)) {
+          setResolvedWebviewSrc(null);
+          setWebviewError(null);
+          return;
+        }
+
+        if (desktopShell?.resolveWebviewSrc) {
+          try {
+            const nextSrc = await desktopShell.resolveWebviewSrc(entrypoint);
+            if (!cancelled) {
+              setResolvedWebviewSrc(nextSrc);
+              setWebviewError(null);
+            }
+            return;
+          } catch (error) {
+            if (!cancelled) {
+              setResolvedWebviewSrc(null);
+              setWebviewError(error instanceof Error ? error.message : String(error));
+            }
+            return;
+          }
+        }
+
+        if (!cancelled) {
+          setResolvedWebviewSrc(entrypoint);
+          setWebviewError(null);
+        }
+      }
+
+      void resolveWebviewSource();
+
+      return () => {
+        cancelled = true;
+      };
+    }, [entrypoint]);
+
+    const contextualWebviewSrc = resolvedWebviewSrc
+      ? withPluginWebviewContext(resolvedWebviewSrc, {
+          threadId: activeThreadId,
+          pluginId,
+          pageId,
+          mode: "companion",
+        })
+      : null;
+
+    return (
+      <div className="flex min-h-0 flex-1 bg-background">
+        {webviewError ? (
+          <Alert className="m-4 self-start">
+            <AlertTitle>Webview failed to load</AlertTitle>
+            <AlertDescription>{webviewError}</AlertDescription>
+          </Alert>
+        ) : contextualWebviewSrc ? (
+          <iframe
+            title={`${title} plugin webview`}
+            src={contextualWebviewSrc}
+            className="min-h-0 w-full flex-1 bg-white"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+            referrerPolicy="no-referrer"
+          />
+        ) : (
+          <div className="flex min-h-0 flex-1 items-center justify-center bg-muted/10">
+            <div className="flex items-center gap-3 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" />
+              <span>Loading plugin surface…</span>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  },
+  (prev, next) =>
+    prev.title === next.title &&
+    prev.entrypoint === next.entrypoint &&
+    prev.activeThreadId === next.activeThreadId &&
+    prev.pluginId === next.pluginId &&
+    prev.pageId === next.pageId,
+);
+
+function PluginPane({
+  snapshot,
+  page,
+  activeThreadId = null,
+  mode = "full",
+}: {
+  snapshot: DesktopSnapshot;
+  page: DesktopPage;
+  activeThreadId?: string | null;
+  mode?: "full" | "companion";
+}) {
+  if (page.render.kind === "host" && page.render.component === "extension-catalog") {
+    return <PluginCatalogPane snapshot={snapshot} mode={mode} />;
+  }
+
+  return (
+    <PluginDetailPane
+      snapshot={snapshot}
+      page={page}
+      activeThreadId={activeThreadId}
+      mode={mode}
+    />
+  );
+}
+
 export function App() {
   const [snapshot, setSnapshot] = useState<DesktopSnapshot | null>(null);
   const [uiMessagesByThread, setUiMessagesByThread] = useState<
     Record<string, Message[]>
   >({});
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [activePluginPageId, setActivePluginPageId] = useState<string | null>(null);
   const [connectionState, setConnectionState] = useState<
     "connecting" | "open" | "closed"
   >("connecting");
@@ -455,6 +1116,29 @@ export function App() {
   const activeThread = useMemo(
     () => getActiveThread(snapshot, activeThreadId),
     [snapshot, activeThreadId],
+  );
+  const activePluginPage = useMemo(
+    () => getPluginPage(snapshot, activePluginPageId),
+    [snapshot, activePluginPageId],
+  );
+  const activeThreadPreviewState = useMemo(() => {
+    if (!snapshot || !activeThreadId) {
+      return null;
+    }
+
+    return (
+      snapshot.threadPreviewStateById[activeThreadId] ?? {
+        pageId: null,
+        visible: false,
+      }
+    );
+  }, [snapshot, activeThreadId]);
+  const activeThreadPreviewPage = useMemo(
+    () =>
+      activeThreadPreviewState?.visible
+        ? getPluginPage(snapshot, activeThreadPreviewState.pageId)
+        : null,
+    [activeThreadPreviewState, snapshot],
   );
   const rawMessages = useMemo(() => {
     if (!activeThreadId) return [];
@@ -499,6 +1183,7 @@ export function App() {
           return merged;
         });
         setActiveThreadId(next.activeThreadId ?? next.threads[0]?.id ?? null);
+        setActivePluginPageId(next.activePluginPageId ?? null);
       } catch {
         setConnectionState("closed");
       }
@@ -534,6 +1219,7 @@ export function App() {
             event.snapshot.threads[0]?.id ??
             null,
         );
+        setActivePluginPageId(event.snapshot.activePluginPageId ?? null);
         setConnectionState("open");
         return;
       }
@@ -648,12 +1334,26 @@ export function App() {
   }, []);
 
   const handleCreateThread = useCallback(() => {
+    setActivePluginPageId(null);
     sendEvent({ type: "create_thread" });
   }, [sendEvent]);
 
   const handleSelectThread = useCallback((threadId: string) => {
     setActiveThreadId(threadId);
+    setActivePluginPageId(null);
     sendEvent({ type: "select_thread", threadId });
+  }, [sendEvent]);
+
+  const handleShowChat = useCallback(() => {
+    setActivePluginPageId(null);
+    if (activeThreadId) {
+      sendEvent({ type: "select_thread", threadId: activeThreadId });
+    }
+  }, [activeThreadId, sendEvent]);
+
+  const handleSelectPluginPage = useCallback((pageId: string) => {
+    setActivePluginPageId(pageId);
+    sendEvent({ type: "select_plugin_page", pageId });
   }, [sendEvent]);
 
   const handleSetModel = useCallback((model: string) => {
@@ -768,18 +1468,26 @@ export function App() {
           <SidebarProvider defaultOpen>
             <DesktopSidebar
               activeThreadId={activeThreadId}
+              activePluginPageId={activePluginPageId}
               connectionState={connectionState}
               onCreateThread={handleCreateThread}
+              onShowChat={handleShowChat}
               onSelectThread={handleSelectThread}
+              onSelectPluginPage={handleSelectPluginPage}
               snapshot={snapshot}
               threads={snapshot?.threads ?? []}
+              pluginPages={snapshot?.pages ?? []}
             />
             <SidebarInset className="overflow-hidden flex flex-col">
               <PageHeader
-                breadcrumbs={[
-                  { label: "Chat" },
-                  { label: activeThread?.title ?? "New Chat" },
-                ]}
+                breadcrumbs={
+                  activePluginPage
+                    ? [{ label: activePluginPage.title }]
+                    : [
+                        { label: "Chat" },
+                        { label: activeThread?.title ?? "New Chat" },
+                      ]
+                }
                 className="border-b border-border/60"
               />
 
@@ -791,27 +1499,52 @@ export function App() {
                   />
                 ) : (
                   <>
-                    <MemoizedTranscriptPane rawMessages={rawMessages} />
-
-                    <div className="sticky bottom-0 z-20 shrink-0">
-                      <div
-                        className="pointer-events-none absolute inset-x-0 bottom-full h-8 bg-gradient-to-t from-background to-transparent"
-                        aria-hidden="true"
+                    {snapshot && activePluginPage ? (
+                      <PluginPane
+                        snapshot={snapshot}
+                        page={activePluginPage}
+                        activeThreadId={activeThreadId}
+                        mode="full"
                       />
-                      <div className="bg-background">
-                        <div className="px-4 pb-4 pt-2">
-                          <div className="mx-auto flex w-full max-w-3xl flex-col max-h-[calc(100dvh-2rem)]">
-                            <MemoizedComposer
-                              activeThreadId={activeThreadId}
-                              initialDraft={initialDraft}
-                              isStreaming={isStreaming}
-                              onDraftChange={handleDraftChange}
-                              onSubmitMessage={handleSubmitMessage}
-                            />
-                          </div>
+                    ) : (
+                      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+                        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                          <ChatPane
+                            rawMessages={rawMessages}
+                            activeThreadId={activeThreadId}
+                            initialDraft={initialDraft}
+                            isStreaming={isStreaming}
+                            onDraftChange={handleDraftChange}
+                            onSubmitMessage={handleSubmitMessage}
+                          />
                         </div>
+
+                        {snapshot && activeThreadPreviewPage ? (
+                          <aside className="flex min-h-[320px] w-full min-w-0 border-t border-border/60 bg-muted/10 lg:min-h-0 lg:w-[420px] lg:border-l lg:border-t-0 xl:w-[480px] 2xl:w-[560px]">
+                            {activeThreadPreviewPage.render.kind === "webview" ? (
+                              <MemoizedCompanionWebviewPane
+                                title={activeThreadPreviewPage.title}
+                                entrypoint={
+                                  activeThreadPreviewPage.render.kind === "webview"
+                                    ? (activeThreadPreviewPage.render.entrypoint ?? "")
+                                    : ""
+                                }
+                                activeThreadId={activeThreadId}
+                                pluginId={activeThreadPreviewPage.pluginId}
+                                pageId={activeThreadPreviewPage.id}
+                              />
+                            ) : (
+                              <PluginPane
+                                snapshot={snapshot}
+                                page={activeThreadPreviewPage}
+                                activeThreadId={activeThreadId}
+                                mode="companion"
+                              />
+                            )}
+                          </aside>
+                        ) : null}
                       </div>
-                    </div>
+                    )}
                   </>
                 )}
               </div>

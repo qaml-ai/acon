@@ -1,9 +1,5 @@
 import {
-  AppWindowMac,
-  Cable,
   CircleHelp,
-  Home,
-  LayoutGrid,
   MessagesSquare,
   Plus,
   TerminalSquare,
@@ -26,15 +22,24 @@ import {
   SidebarSeparator,
   useSidebar,
 } from "@/components/ui/sidebar";
-import type { DesktopSnapshot, DesktopThread } from "../../shared/protocol";
+import type {
+  DesktopPage,
+  DesktopSnapshot,
+  DesktopThread,
+} from "../../shared/protocol";
+import { getDesktopIcon } from "./desktop-icons";
 
 interface DesktopSidebarProps {
   activeThreadId: string | null;
+  activePluginPageId: string | null;
   connectionState: "connecting" | "open" | "closed";
   onCreateThread: () => void;
+  onShowChat: () => void;
   onSelectThread: (threadId: string) => void;
+  onSelectPluginPage: (pageId: string) => void;
   snapshot: DesktopSnapshot | null;
   threads: DesktopThread[];
+  pluginPages: DesktopPage[];
 }
 
 function formatTime(timestamp: number): string {
@@ -76,11 +81,15 @@ function shouldShowRuntimeCard(snapshot: DesktopSnapshot | null): boolean {
 
 export function DesktopSidebar({
   activeThreadId,
+  activePluginPageId,
   connectionState,
   onCreateThread,
+  onShowChat,
   onSelectThread,
+  onSelectPluginPage,
   snapshot,
   threads,
+  pluginPages,
 }: DesktopSidebarProps) {
   const { state } = useSidebar();
 
@@ -126,35 +135,30 @@ export function DesktopSidebar({
         <SidebarGroup>
           <SidebarMenu>
             <SidebarMenuItem>
-              <SidebarMenuButton tooltip="New Chat" isActive>
-                <Home />
-                <span>New Chat</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton tooltip="Computer" disabled>
-                <AppWindowMac />
-                <span>Computer</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton tooltip="Chat History" disabled>
+              <SidebarMenuButton
+                tooltip="Chat"
+                isActive={activePluginPageId === null}
+                onClick={onShowChat}
+              >
                 <MessagesSquare />
-                <span>Chat History</span>
+                <span>Chat</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton tooltip="Connections" disabled>
-                <Cable />
-                <span>Connections</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton tooltip="Apps" disabled>
-                <LayoutGrid />
-                <span>Apps</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
+            {pluginPages.filter((page) => page.surface === "page").map((page) => {
+              const PageIcon = getDesktopIcon(page.icon);
+              return (
+                <SidebarMenuItem key={page.id}>
+                  <SidebarMenuButton
+                    tooltip={page.title}
+                    isActive={page.id === activePluginPageId}
+                    onClick={() => onSelectPluginPage(page.id)}
+                  >
+                    <PageIcon />
+                    <span>{page.title}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              );
+            })}
           </SidebarMenu>
         </SidebarGroup>
 
@@ -174,7 +178,9 @@ export function DesktopSidebar({
                 <SidebarMenuItem key={thread.id}>
                   <SidebarMenuButton
                     size="lg"
-                    isActive={thread.id === activeThreadId}
+                    isActive={
+                      thread.id === activeThreadId && activePluginPageId === null
+                    }
                     tooltip={thread.title}
                     onClick={() => onSelectThread(thread.id)}
                     className="h-auto min-h-12"
