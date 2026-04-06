@@ -1,0 +1,12 @@
+{
+  "name": "@camelai/chat-core",
+  "version": "0.1.0",
+  "type": "module",
+  "camelai": {
+    "id": "chat-core",
+    "name": "Chat",
+    "description": "Provides the primary thread chat workbench view.",
+    "icon": "MessagesSquare",
+    "main": "./index.ts"
+  }
+}

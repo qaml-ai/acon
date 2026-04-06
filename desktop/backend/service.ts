@@ -88,6 +88,9 @@ export class DesktopService {
       model,
       provider.getAvailableModels(),
       provider.getAuthState(),
+      [],
+      [],
+      [],
     );
   }
 
@@ -123,6 +126,21 @@ export class DesktopService {
             this.getCurrentModel(provider),
           );
         }
+        return;
+      }
+      case "select_view": {
+        this.store.setActiveView(event.viewId);
+        this.emitSnapshot();
+        return;
+      }
+      case "open_thread_panel": {
+        this.store.openThreadPanel(event.threadId, event.panelId);
+        this.emitSnapshot();
+        return;
+      }
+      case "close_thread_panel": {
+        this.store.closeThreadPanel(event.threadId);
+        this.emitSnapshot();
         return;
       }
       case "set_provider": {

@@ -19,12 +19,15 @@ import {
   requireDesktopProvider,
 } from "./providers";
 import { AgentOsRuntimeManager } from "./runtime";
+import { CamelAIExtensionHost } from "./extensions/host";
+import { getHarnessAdapterForProvider } from "./extensions/harness-adapters";
 
 type Listener = (event: DesktopServerEvent) => void;
 
 export class DesktopService {
   private readonly store = new DesktopStore();
   private readonly runtimeManager = new AgentOsRuntimeManager();
+  private readonly extensionHost = new CamelAIExtensionHost();
   private readonly activeThreads = new Set<string>();
   private readonly listeners = new Set<Listener>();
   private runtimeStatus = this.runtimeManager.getCachedStatus();
@@ -38,6 +41,19 @@ export class DesktopService {
       model,
       authSource: provider.getAuthState(model).source,
     });
+    void this.extensionHost
+      .initialize(this.getExtensionActivationContext())
+      .then(() => {
+        this.ensureDefaultView();
+        this.ensureDefaultThreadPanels();
+        this.emitSnapshot();
+      })
+      .catch((error) => {
+        logDesktop("agentos-service", "extension-startup-activation-error", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        this.emitSnapshot();
+      });
     void this.ensureRuntimeRunning("startup");
   }
 
@@ -69,6 +85,9 @@ export class DesktopService {
   getSnapshot(): DesktopSnapshot {
     const provider = this.getCurrentProvider();
     const model = this.getCurrentModel(provider);
+    const extensionSnapshot = this.extensionHost.getSnapshot(
+      this.getExtensionActivationContext(),
+    );
     return this.store.buildSnapshot(
       this.getRuntimeStatus(),
       provider.id,
@@ -76,6 +95,9 @@ export class DesktopService {
       model,
       provider.getAvailableModels(),
       provider.getAuthState(model),
+      extensionSnapshot.views,
+      extensionSnapshot.panels,
+      extensionSnapshot.plugins,
     );
   }
 
@@ -91,17 +113,74 @@ export class DesktopService {
     return this.runtimeStatus;
   }
 
+  private getExtensionActivationContext() {
+    const provider = this.getCurrentProvider();
+    const model = this.getCurrentModel(provider);
+    const runtimeStatus = this.getRuntimeStatus();
+    const activeThreadId = this.store.getActiveThreadId();
+    const harness = getHarnessAdapterForProvider(provider.id).id;
+    return {
+      provider: provider.id,
+      harness,
+      model,
+      activeThreadId,
+      runtimeStatus,
+      runtimeDirectory:
+        runtimeStatus.runtimeDirectory ?? this.runtimeManager.getRuntimeDirectory(),
+      workspaceDirectory: this.runtimeManager.getWorkspaceDirectory(),
+      threadStateDirectory: activeThreadId
+        ? this.runtimeManager.getThreadStateDirectory(activeThreadId)
+        : null,
+    };
+  }
+
   handleClientEvent(event: DesktopClientEvent): void {
     switch (event.type) {
       case "create_thread": {
-        this.store.createThread(event.title, this.store.getProvider());
+        const thread = this.store.createThread(event.title, this.store.getProvider());
+        this.selectDefaultView("thread");
+        this.ensureDefaultThreadPanel(thread.id);
         this.emitSnapshot();
         return;
       }
       case "select_thread": {
         this.store.setActiveThread(event.threadId);
+        this.selectDefaultView("thread");
+        this.ensureDefaultThreadPanel(event.threadId);
         this.emitSnapshot();
         void this.ensureRuntimeRunning("startup");
+        return;
+      }
+      case "select_view": {
+        this.store.setActiveView(event.viewId);
+        this.emitSnapshot();
+        void this.extensionHost.emit(
+          "page_open",
+          {
+            type: "page_open",
+            pageId: event.viewId,
+          },
+          this.getExtensionActivationContext(),
+        );
+        return;
+      }
+      case "open_thread_panel": {
+        this.store.openThreadPanel(event.threadId, event.panelId);
+        this.emitSnapshot();
+        void this.extensionHost.emit(
+          "preview_open",
+          {
+            type: "preview_open",
+            threadId: event.threadId,
+            pageId: event.panelId,
+          },
+          this.getExtensionActivationContext(),
+        );
+        return;
+      }
+      case "close_thread_panel": {
+        this.store.closeThreadPanel(event.threadId);
+        this.emitSnapshot();
         return;
       }
       case "set_provider": {
@@ -152,6 +231,49 @@ export class DesktopService {
     for (const listener of this.listeners) {
       listener(event);
     }
+  }
+
+  private ensureDefaultView(scope?: "thread" | "workspace"): void {
+    const currentViewId = this.store.getActiveViewId();
+    if (currentViewId) {
+      return;
+    }
+
+    const defaultViewId = this.extensionHost.getDefaultViewId(scope);
+    if (!defaultViewId) {
+      return;
+    }
+
+    this.store.setActiveView(defaultViewId);
+  }
+
+  private selectDefaultView(scope?: "thread" | "workspace"): void {
+    const defaultViewId = this.extensionHost.getDefaultViewId(scope);
+    if (!defaultViewId) {
+      return;
+    }
+
+    this.store.setActiveView(defaultViewId);
+  }
+
+  private ensureDefaultThreadPanels(): void {
+    const defaultPanelId = this.extensionHost.getDefaultThreadPanelId();
+    if (!defaultPanelId) {
+      return;
+    }
+
+    for (const thread of this.store.listThreads()) {
+      this.store.openThreadPanel(thread.id, defaultPanelId);
+    }
+  }
+
+  private ensureDefaultThreadPanel(threadId: string): void {
+    const defaultPanelId = this.extensionHost.getDefaultThreadPanelId();
+    if (!defaultPanelId) {
+      return;
+    }
+
+    this.store.openThreadPanel(threadId, defaultPanelId);
   }
 
   private async ensureRuntimeRunning(
@@ -233,6 +355,21 @@ export class DesktopService {
       return;
     }
 
+    const promptUpdate = await this.extensionHost.applyBeforePrompt(
+      threadId,
+      trimmed,
+      this.getExtensionActivationContext(),
+    );
+    if (promptUpdate.cancelled) {
+      this.broadcast({
+        type: "error",
+        threadId,
+        message: "A plugin cancelled this prompt before it reached the runtime.",
+      });
+      return;
+    }
+    const promptContent = promptUpdate.content;
+
     this.activeThreads.add(threadId);
     const turnId = randomUUID();
     let assistantId: string | null = null;
@@ -246,7 +383,7 @@ export class DesktopService {
     );
 
     try {
-      this.store.appendMessage(threadId, "user", trimmed, "done");
+      this.store.appendMessage(threadId, "user", promptContent, "done");
       const assistant = this.store.appendMessage(
         threadId,
         "assistant",
@@ -264,11 +401,29 @@ export class DesktopService {
       };
 
       await this.ensureRuntimeRunning("send_message");
+      await this.extensionHost.emit(
+        "session_start",
+        {
+          type: "session_start",
+          threadId,
+        },
+        this.getExtensionActivationContext(),
+      );
+      await this.extensionHost.emit(
+        "turn_start",
+        {
+          type: "turn_start",
+          threadId,
+          content: promptContent,
+        },
+        this.getExtensionActivationContext(),
+      );
+      this.emitSnapshot();
 
       const result = await this.runtimeManager.streamPrompt({
         provider,
         threadId,
-        content: trimmed,
+        content: promptContent,
         model,
         sessionId: providerSessionId,
         onSessionId: (sessionId) => {
@@ -302,6 +457,16 @@ export class DesktopService {
           this.emitSnapshot();
         },
       });
+      await this.extensionHost.emit(
+        "turn_end",
+        {
+          type: "turn_end",
+          threadId,
+          content: promptContent,
+          response: result.finalText,
+        },
+        this.getExtensionActivationContext(),
+      );
 
       const latestAssistant = this.store
         .getThreadMessages(threadId)

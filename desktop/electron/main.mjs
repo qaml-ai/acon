@@ -1,8 +1,21 @@
-import { app, BrowserWindow, ipcMain, nativeTheme, shell } from 'electron';
-import { existsSync } from 'node:fs';
+import { app, BrowserWindow, ipcMain, nativeTheme, protocol, shell, net } from 'electron';
+import { existsSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'desktop-plugin',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+    },
+  },
+]);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const devRendererUrl = process.env.DESKTOP_RENDERER_URL;
@@ -115,6 +128,34 @@ function resolveDesktopOverridePath(target) {
     return null;
   }
   return isAbsolute(target) ? target : resolve(repoRoot, target);
+}
+
+function canResolveLocalWebviewPath(targetPath) {
+  if (!targetPath || typeof targetPath !== 'string' || !isAbsolute(targetPath)) {
+    return false;
+  }
+
+  try {
+    return statSync(targetPath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function toDesktopPluginUrl(entrypoint) {
+  const fileUrl =
+    typeof entrypoint === 'string' && entrypoint.startsWith('file:')
+      ? new URL(entrypoint)
+      : pathToFileURL(entrypoint);
+  return `desktop-plugin://local${fileUrl.pathname}`;
+}
+
+function fromDesktopPluginUrl(requestUrl) {
+  const url = new URL(requestUrl);
+  if (url.protocol !== 'desktop-plugin:' || url.hostname !== 'local') {
+    throw new Error(`Unsupported desktop plugin URL: ${requestUrl}`);
+  }
+  return fileURLToPath(`file://${url.pathname}`);
 }
 
 function getDesktopRuntimeEnv() {
@@ -377,6 +418,26 @@ ipcMain.handle('desktop:get-snapshot', async () => {
   return latestSnapshot;
 });
 
+ipcMain.handle('desktop:resolve-webview-src', async (_event, entrypoint) => {
+  if (typeof entrypoint !== 'string') {
+    throw new Error('Webview entrypoint must be a string.');
+  }
+
+  if (/^(https?:|data:)/.test(entrypoint)) {
+    return entrypoint;
+  }
+
+  if (entrypoint.startsWith('file:')) {
+    return toDesktopPluginUrl(entrypoint);
+  }
+
+  if (!canResolveLocalWebviewPath(entrypoint)) {
+    throw new Error(`Unsupported local webview entrypoint: ${entrypoint}`);
+  }
+
+  return toDesktopPluginUrl(entrypoint);
+});
+
 ipcMain.on('desktop:send', (_event, payload) => {
   void sendBackendEvent(payload).catch((error) => {
     for (const window of BrowserWindow.getAllWindows()) {
@@ -405,6 +466,15 @@ ipcMain.on('desktop:ready', (_event, payload) => {
 
 app.whenReady().then(async () => {
   recordStartup('app_ready');
+  protocol.handle('desktop-plugin', (request) => {
+    try {
+      return net.fetch(pathToFileURL(fromDesktopPluginUrl(request.url)).toString());
+    } catch (error) {
+      return new Response(error instanceof Error ? error.message : String(error), {
+        status: 404,
+      });
+    }
+  });
   if (startupProbeEnabled) {
     startupProbeTimeout = setTimeout(() => {
       finishStartupProbe(false, { timeout: true });

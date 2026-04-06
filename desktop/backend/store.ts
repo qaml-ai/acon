@@ -1,17 +1,20 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type {
   DesktopAuthState,
   DesktopMessage,
   DesktopModel,
   DesktopModelOption,
+  DesktopPanel,
   DesktopProvider,
   DesktopProviderOption,
   DesktopRuntimeStatus,
   DesktopSnapshot,
   DesktopThread,
+  DesktopThreadPanelState,
+  DesktopView,
 } from '../shared/protocol';
 import type { ContentBlock } from '../../src/types';
 import { extractTextContent } from '../shared/message-state';
@@ -22,8 +25,10 @@ import {
 
 interface PersistedState {
   activeThreadId: string | null;
+  activeViewId?: string | null;
   provider: DesktopProvider;
   modelsByProvider: Partial<Record<DesktopProvider, DesktopModel>>;
+  threadPanelStateById?: Record<string, DesktopThreadPanelState>;
   providerStateByThread?: Partial<
     Record<
       string,
@@ -69,6 +74,31 @@ function previewText(content: string | ContentBlock[]): string | null {
   return text ? text.slice(0, 140) : null;
 }
 
+function normalizePersistedId(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizePanelState(value: unknown): DesktopThreadPanelState | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const panel = value as {
+    panelId?: unknown;
+    pageId?: unknown;
+    visible?: unknown;
+  };
+  return {
+    panelId: normalizePersistedId(panel.panelId ?? panel.pageId),
+    visible: panel.visible === true,
+  };
+}
+
 export class DesktopStore {
   private readonly statePath: string;
   private state: PersistedState;
@@ -90,6 +120,8 @@ export class DesktopStore {
       const parsed = JSON.parse(raw) as PersistedState & {
         model?: DesktopModel;
         threads?: PersistedDesktopThread[];
+        activePluginPageId?: string | null;
+        threadPreviewStateById?: Record<string, unknown>;
       };
       const providerAdapter = requireDesktopProvider(
         parsed.provider ?? getDefaultProvider(),
@@ -102,6 +134,9 @@ export class DesktopStore {
       const modelsByProvider = parsed.modelsByProvider ?? {};
       const persistedProviderModel = modelsByProvider[fallbackProvider];
       const providerStateByThread = parsed.providerStateByThread ?? {};
+      const activeViewId =
+        normalizePersistedId(parsed.activeViewId) ??
+        normalizePersistedId(parsed.activePluginPageId);
       const inferThreadProvider = (
         thread: PersistedDesktopThread,
       ): DesktopProvider => {
@@ -133,8 +168,10 @@ export class DesktopStore {
         (activeThreadId
           ? threads.find((thread) => thread.id === activeThreadId)?.provider
           : null) ?? fallbackProvider;
+
       return {
         activeThreadId,
+        activeViewId,
         provider: activeThreadProvider,
         modelsByProvider: {
           ...modelsByProvider,
@@ -145,6 +182,14 @@ export class DesktopStore {
               requireDesktopProvider(activeThreadProvider).getDefaultModel(),
           ),
         },
+        threadPanelStateById: Object.fromEntries(
+          Object.entries(
+            parsed.threadPanelStateById ?? parsed.threadPreviewStateById ?? {},
+          ).flatMap(([threadId, panelState]) => {
+            const normalized = normalizePanelState(panelState);
+            return normalized ? [[threadId, normalized]] : [];
+          }),
+        ),
         providerStateByThread,
         threads,
         messagesByThread: parsed.messagesByThread ?? {},
@@ -153,10 +198,12 @@ export class DesktopStore {
       const provider = getDefaultProvider();
       return {
         activeThreadId: null,
+        activeViewId: null,
         provider,
         modelsByProvider: {
           [provider]: requireDesktopProvider(provider).getDefaultModel(),
         },
+        threadPanelStateById: {},
         providerStateByThread: {},
         threads: [],
         messagesByThread: {},
@@ -182,6 +229,10 @@ export class DesktopStore {
     return this.state.activeThreadId;
   }
 
+  getActiveViewId(): string | null {
+    return normalizePersistedId(this.state.activeViewId);
+  }
+
   getProvider(): DesktopProvider {
     return this.state.provider;
   }
@@ -190,6 +241,56 @@ export class DesktopStore {
     const normalizedProvider = requireDesktopProvider(provider).id;
     this.state.provider = normalizedProvider;
     this.ensureProviderModel(normalizedProvider);
+    this.persist();
+  }
+
+  setActiveView(viewId: string | null): void {
+    this.state.activeViewId = normalizePersistedId(viewId);
+    this.persist();
+  }
+
+  getThreadPanelStateById(): Record<string, DesktopThreadPanelState> {
+    return Object.fromEntries(
+      Object.entries(this.state.threadPanelStateById ?? {}).map(
+        ([threadId, panelState]) => [
+          threadId,
+          {
+            panelId: normalizePersistedId(panelState.panelId),
+            visible: panelState.visible === true,
+          },
+        ],
+      ),
+    );
+  }
+
+  openThreadPanel(threadId: string, panelId: string): void {
+    if (!this.getThread(threadId)) {
+      throw new Error(`Thread ${threadId} does not exist`);
+    }
+
+    this.state.threadPanelStateById = {
+      ...(this.state.threadPanelStateById ?? {}),
+      [threadId]: {
+        panelId: normalizePersistedId(panelId),
+        visible: true,
+      },
+    };
+    this.persist();
+  }
+
+  closeThreadPanel(threadId: string): void {
+    if (!this.getThread(threadId)) {
+      throw new Error(`Thread ${threadId} does not exist`);
+    }
+
+    const current = this.state.threadPanelStateById ?? {};
+    this.state.threadPanelStateById = {
+      ...current,
+      [threadId]: {
+        panelId: normalizePersistedId(current[threadId]?.panelId),
+        visible: false,
+      },
+    };
     this.persist();
   }
 
@@ -208,7 +309,8 @@ export class DesktopStore {
   }
 
   setModel(model: DesktopModel, provider = this.state.provider): void {
-    this.state.modelsByProvider[provider] = requireDesktopProvider(provider).normalizeModel(model);
+    this.state.modelsByProvider[provider] =
+      requireDesktopProvider(provider).normalizeModel(model);
     this.persist();
   }
 
@@ -244,7 +346,7 @@ export class DesktopStore {
       Object.entries(this.state.messagesByThread).map(([threadId, messages]) => [
         threadId,
         messages.map((message) => ({ ...message })),
-      ])
+      ]),
     );
   }
 
@@ -294,7 +396,9 @@ export class DesktopStore {
   }
 
   getThreadMessages(threadId: string): DesktopMessage[] {
-    return (this.state.messagesByThread[threadId] ?? []).map((message) => ({ ...message }));
+    return (this.state.messagesByThread[threadId] ?? []).map((message) => ({
+      ...message,
+    }));
   }
 
   createThread(
@@ -312,6 +416,13 @@ export class DesktopStore {
     };
     this.state.threads.unshift(thread);
     this.state.messagesByThread[thread.id] = [];
+    this.state.threadPanelStateById = {
+      ...(this.state.threadPanelStateById ?? {}),
+      [thread.id]: {
+        panelId: null,
+        visible: false,
+      },
+    };
     this.state.providerStateByThread = {
       ...(this.state.providerStateByThread ?? {}),
       [thread.id]: {},
@@ -328,7 +439,7 @@ export class DesktopStore {
     role: DesktopMessage['role'],
     content: DesktopMessage['content'],
     status: DesktopMessage['status'],
-    extras: Pick<DesktopMessage, 'isMeta' | 'sourceToolUseID'> = {}
+    extras: Pick<DesktopMessage, 'isMeta' | 'sourceToolUseID'> = {},
   ): DesktopMessage {
     const thread = this.getThread(threadId);
     if (!thread) {
@@ -386,7 +497,7 @@ export class DesktopStore {
     threadId: string,
     messageId: string,
     status: DesktopMessage['status'],
-    content?: DesktopMessage['content']
+    content?: DesktopMessage['content'],
   ): DesktopMessage {
     const messages = this.state.messagesByThread[threadId];
     if (!messages) {
@@ -418,7 +529,9 @@ export class DesktopStore {
       throw new Error(`Thread ${threadId} does not exist`);
     }
 
-    this.state.messagesByThread[threadId] = messages.map((message) => ({ ...message }));
+    this.state.messagesByThread[threadId] = messages.map((message) => ({
+      ...message,
+    }));
     thread.updatedAt = now();
 
     const lastMessage = messages[messages.length - 1];
@@ -437,9 +550,14 @@ export class DesktopStore {
     model: DesktopModel,
     availableModels: DesktopModelOption[],
     auth: DesktopAuthState,
+    views: DesktopView[],
+    panels: DesktopPanel[],
+    plugins: DesktopSnapshot['plugins'],
   ): DesktopSnapshot {
     return {
       activeThreadId: this.state.activeThreadId,
+      activeViewId: this.getActiveViewId(),
+      threadPanelStateById: this.getThreadPanelStateById(),
       threads: this.listThreads(),
       messagesByThread: this.getMessagesByThread(),
       provider,
@@ -448,6 +566,9 @@ export class DesktopStore {
       availableModels,
       auth,
       runtimeStatus,
+      views,
+      panels,
+      plugins,
     };
   }
 }

@@ -19,6 +19,7 @@ const DEFAULT_WORKSPACE_DIRECTORY = resolve(process.cwd());
 const VM_WORKSPACE_PATH = "/workspace";
 const VM_PI_HOME_PATH = "/home/user/.pi";
 const VM_PI_THREAD_SESSIONS_PATH = `${VM_PI_HOME_PATH}/thread-sessions`;
+const VM_CAMELAI_THREAD_STATE_PATH = `${VM_PI_HOME_PATH}/camelai-state/threads`;
 
 function getPiAgentSoftware() {
   return process.env.DESKTOP_AGENTOS_PI_ADAPTER?.trim() === "upstream"
@@ -126,6 +127,10 @@ function getVmPiSessionDir(threadId: string, providerId: string): string {
   return `${VM_PI_THREAD_SESSIONS_PATH}/${providerId}/${threadId}`;
 }
 
+function getVmThreadStateDir(threadId: string): string {
+  return `${VM_CAMELAI_THREAD_STATE_PATH}/${threadId}`;
+}
+
 export class AgentOsRuntimeManager {
   private vm: AgentOs | null = null;
   private lastRuntimeStatus: DesktopRuntimeStatus | null = null;
@@ -138,6 +143,18 @@ export class AgentOsRuntimeManager {
   private readonly piAgentDirectory = resolve(this.piHomeDirectory, "agent");
   private readonly piAuthPath = resolve(this.piAgentDirectory, "auth.json");
   private readonly piSettingsPath = resolve(this.piAgentDirectory, "settings.json");
+
+  getWorkspaceDirectory(): string {
+    return this.workspaceDirectory;
+  }
+
+  getRuntimeDirectory(): string {
+    return this.runtimeDirectory;
+  }
+
+  getThreadStateDirectory(threadId: string): string {
+    return resolve(this.piHomeDirectory, "camelai-state", "threads", threadId);
+  }
 
   getCachedStatus(): DesktopRuntimeStatus {
     return (
@@ -291,6 +308,8 @@ export class AgentOsRuntimeManager {
       const env = {
         ...provider.buildSessionEnv(model),
         PI_SESSION_DIR: getVmPiSessionDir(threadId, provider.id),
+        CAMELAI_THREAD_ID: threadId,
+        CAMELAI_THREAD_STATE_DIR: getVmThreadStateDir(threadId),
       };
       const created = await vm.createSession("pi", {
         cwd: VM_WORKSPACE_PATH,
@@ -323,7 +342,12 @@ export class AgentOsRuntimeManager {
       throw new Error("AgentOS runtime failed to initialize.");
     }
 
-    const resolvedSessionId = await this.ensureSession(provider, threadId, model, sessionId);
+    const resolvedSessionId = await this.ensureSession(
+      provider,
+      threadId,
+      model,
+      sessionId,
+    );
     onSessionId?.(resolvedSessionId);
     let accumulatedText = "";
 

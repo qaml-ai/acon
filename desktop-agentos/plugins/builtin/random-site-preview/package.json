@@ -1,0 +1,15 @@
+{
+  "name": "@camelai/random-site-preview",
+  "version": "0.1.0",
+  "type": "module",
+  "camelai": {
+    "id": "random-site-preview",
+    "name": "Random Site Preview",
+    "description": "Pins a stable random site to each chat thread's right preview pane.",
+    "icon": "Globe",
+    "main": "./index.ts",
+    "webviews": {
+      "random-site-frame": "./site/index.html"
+    }
+  }
+}
