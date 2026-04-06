@@ -126,6 +126,17 @@ export interface DesktopThreadPanelState {
   visible: boolean;
 }
 
+export interface DesktopTab {
+  id: string;
+  kind: "thread" | "workspace";
+  threadId: string | null;
+  viewId: string;
+  title: string;
+  subtitle: string | null;
+  icon: string | null;
+  closable: boolean;
+}
+
 export interface DesktopProviderOption {
   id: DesktopProvider;
   label: string;
@@ -179,6 +190,8 @@ export interface DesktopRuntimeStatus {
 export interface DesktopSnapshot {
   threads: DesktopThread[];
   messagesByThread: Record<string, DesktopMessage[]>;
+  tabs: DesktopTab[];
+  activeTabId: string | null;
   activeThreadId: string | null;
   activeViewId: string | null;
   threadPanelStateById: Record<string, DesktopThreadPanelState>;
@@ -211,6 +224,14 @@ export type DesktopClientEvent =
   | {
       type: "select_view";
       viewId: string;
+    }
+  | {
+      type: "select_tab";
+      tabId: string;
+    }
+  | {
+      type: "close_tab";
+      tabId: string;
     }
   | {
       type: "open_thread_panel";

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -236,6 +236,19 @@ function createSnapshot(): DesktopSnapshot {
     messagesByThread: {
       "thread-1": [],
     },
+    tabs: [
+      {
+        id: "tab-thread-1",
+        kind: "thread",
+        threadId: "thread-1",
+        viewId: "plugin:chat-core:chat-core.thread",
+        title: "AgentOS test thread",
+        subtitle: null,
+        icon: "MessagesSquare",
+        closable: true,
+      },
+    ],
+    activeTabId: "tab-thread-1",
     activeThreadId: "thread-1",
     activeViewId: "plugin:chat-core:chat-core.thread",
     threadPanelStateById: {
@@ -580,6 +593,17 @@ describe("desktop AgentOS renderer streaming", () => {
 
   it("opens workbench views as a full-page surface with chat hidden", async () => {
     const snapshot = createSnapshot();
+    snapshot.tabs.push({
+      id: "tab-extension-lab",
+      kind: "workspace",
+      threadId: null,
+      viewId: "plugin:extension-lab:extension-lab.home",
+      title: "Extension Lab",
+      subtitle: null,
+      icon: "Blocks",
+      closable: true,
+    });
+    snapshot.activeTabId = "tab-extension-lab";
     snapshot.activeViewId = "plugin:extension-lab:extension-lab.home";
     snapshot.messagesByThread["thread-1"] = [
       {
@@ -606,6 +630,17 @@ describe("desktop AgentOS renderer streaming", () => {
 
   it("switches back to the default thread view when a chat thread is selected", async () => {
     const snapshot = createSnapshot();
+    snapshot.tabs.push({
+      id: "tab-extension-lab",
+      kind: "workspace",
+      threadId: null,
+      viewId: "plugin:extension-lab:extension-lab.home",
+      title: "Extension Lab",
+      subtitle: null,
+      icon: "Blocks",
+      closable: true,
+    });
+    snapshot.activeTabId = "tab-extension-lab";
     snapshot.activeViewId = "plugin:extension-lab:extension-lab.home";
     snapshot.messagesByThread["thread-1"] = [
       {
@@ -620,7 +655,12 @@ describe("desktop AgentOS renderer streaming", () => {
 
     const { shell, emit } = await renderAppWithShell(snapshot);
 
-    fireEvent.click(screen.getByRole("button", { name: /AgentOS test thread/ }));
+    const sidebarThreadLabel = within(screen.getByRole("complementary")).getByText(
+      "AgentOS test thread",
+    );
+    const sidebarThreadButton = sidebarThreadLabel.closest("button");
+    expect(sidebarThreadButton).not.toBeNull();
+    fireEvent.click(sidebarThreadButton!);
 
     expect(shell.sendEvent).toHaveBeenCalledWith({
       type: "select_thread",
@@ -631,6 +671,7 @@ describe("desktop AgentOS renderer streaming", () => {
       type: "snapshot",
       snapshot: {
         ...snapshot,
+        activeTabId: "tab-thread-1",
         activeViewId: "plugin:chat-core:chat-core.thread",
       },
     });
@@ -645,6 +686,151 @@ describe("desktop AgentOS renderer streaming", () => {
     expect(
       screen.queryByText("Inspect the live extension runtime and installed extensions."),
     ).toBeNull();
+  });
+
+  it("switches between open tabs from the tab strip", async () => {
+    const snapshot = createSnapshot();
+    snapshot.tabs.push({
+      id: "tab-extension-lab",
+      kind: "workspace",
+      threadId: null,
+      viewId: "plugin:extension-lab:extension-lab.home",
+      title: "Extension Lab",
+      subtitle: null,
+      icon: "Blocks",
+      closable: true,
+    });
+    snapshot.activeTabId = "tab-extension-lab";
+    snapshot.activeViewId = "plugin:extension-lab:extension-lab.home";
+    snapshot.messagesByThread["thread-1"] = [
+      {
+        id: "message-1",
+        threadId: "thread-1",
+        role: "assistant",
+        content: "Tab strip switches back to chat.",
+        createdAt: Date.now(),
+        status: "done",
+      },
+    ];
+
+    const { shell, emit } = await renderAppWithShell(snapshot);
+
+    fireEvent.click(screen.getByRole("tab", { name: /AgentOS test thread/ }));
+
+    expect(shell.sendEvent).toHaveBeenCalledWith({
+      type: "select_tab",
+      tabId: "tab-thread-1",
+    });
+
+    await emit({
+      type: "snapshot",
+      snapshot: {
+        ...snapshot,
+        activeTabId: "tab-thread-1",
+        activeViewId: "plugin:chat-core:chat-core.thread",
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Tab strip switches back to chat.")).toBeInTheDocument();
+    });
+  });
+
+  it("switches tabs with the primary number shortcut", async () => {
+    const snapshot = createSnapshot();
+    snapshot.tabs.push({
+      id: "tab-extension-lab",
+      kind: "workspace",
+      threadId: null,
+      viewId: "plugin:extension-lab:extension-lab.home",
+      title: "Extension Lab",
+      subtitle: null,
+      icon: "Blocks",
+      closable: true,
+    });
+
+    const { shell } = await renderAppWithShell(snapshot);
+
+    fireEvent.keyDown(window, { key: "2", metaKey: true });
+
+    expect(shell.sendEvent).toHaveBeenCalledWith({
+      type: "select_tab",
+      tabId: "tab-extension-lab",
+    });
+  });
+
+  it("cycles tabs with the editor tab shortcut", async () => {
+    const snapshot = createSnapshot();
+    snapshot.tabs.push({
+      id: "tab-extension-lab",
+      kind: "workspace",
+      threadId: null,
+      viewId: "plugin:extension-lab:extension-lab.home",
+      title: "Extension Lab",
+      subtitle: null,
+      icon: "Blocks",
+      closable: true,
+    });
+
+    const { shell } = await renderAppWithShell(snapshot);
+
+    fireEvent.keyDown(window, { key: "Tab", ctrlKey: true });
+
+    expect(shell.sendEvent).toHaveBeenCalledWith({
+      type: "select_tab",
+      tabId: "tab-extension-lab",
+    });
+  });
+
+  it("closes the active tab with the primary close shortcut", async () => {
+    const snapshot = createSnapshot();
+    snapshot.tabs.push({
+      id: "tab-extension-lab",
+      kind: "workspace",
+      threadId: null,
+      viewId: "plugin:extension-lab:extension-lab.home",
+      title: "Extension Lab",
+      subtitle: null,
+      icon: "Blocks",
+      closable: true,
+    });
+    snapshot.activeTabId = "tab-extension-lab";
+    snapshot.activeViewId = "plugin:extension-lab:extension-lab.home";
+    snapshot.messagesByThread["thread-1"] = [
+      {
+        id: "message-1",
+        threadId: "thread-1",
+        role: "assistant",
+        content: "Close tab returns to the remaining chat tab.",
+        createdAt: Date.now(),
+        status: "done",
+      },
+    ];
+
+    const { shell, emit } = await renderAppWithShell(snapshot);
+
+    fireEvent.keyDown(window, { key: "w", metaKey: true });
+
+    expect(shell.sendEvent).toHaveBeenCalledWith({
+      type: "close_tab",
+      tabId: "tab-extension-lab",
+    });
+
+    await emit({
+      type: "snapshot",
+      snapshot: {
+        ...snapshot,
+        tabs: [snapshot.tabs[0]],
+        activeTabId: "tab-thread-1",
+        activeViewId: "plugin:chat-core:chat-core.thread",
+      },
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Close tab returns to the remaining chat tab."),
+      ).toBeInTheDocument();
+    });
   });
 
   it("renders the right panel from thread-owned state while chat stays visible", async () => {

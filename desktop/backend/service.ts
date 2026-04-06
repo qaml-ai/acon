@@ -133,6 +133,14 @@ export class DesktopService {
         this.emitSnapshot();
         return;
       }
+      case "select_tab": {
+        this.emitSnapshot();
+        return;
+      }
+      case "close_tab": {
+        this.emitSnapshot();
+        return;
+      }
       case "open_thread_panel": {
         this.store.openThreadPanel(event.threadId, event.panelId);
         this.emitSnapshot();
