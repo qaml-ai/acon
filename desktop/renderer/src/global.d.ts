@@ -1,4 +1,9 @@
-import type { DesktopClientEvent, DesktopServerEvent, DesktopSnapshot } from '../../shared/protocol';
+import type {
+  DesktopClientEvent,
+  DesktopPluginInstallResult,
+  DesktopServerEvent,
+  DesktopSnapshot,
+} from '../../shared/protocol';
 
 interface DesktopShellApi {
   platform: string;
@@ -8,6 +13,8 @@ interface DesktopShellApi {
     node: string;
   };
   getSnapshot: () => Promise<DesktopSnapshot | null>;
+  installPlugin?: () => Promise<DesktopPluginInstallResult>;
+  openPluginDirectory?: () => Promise<string>;
   resolveWebviewSrc?: (entrypoint: string) => Promise<string>;
   sendEvent: (event: DesktopClientEvent) => void;
   reportReady: (payload: {

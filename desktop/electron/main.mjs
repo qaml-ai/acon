@@ -1,7 +1,7 @@
-import { app, BrowserWindow, ipcMain, nativeTheme, protocol, shell, net } from 'electron';
-import { existsSync, statSync } from 'node:fs';
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, protocol, shell, net } from 'electron';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 protocol.registerSchemesAsPrivileged([
@@ -35,6 +35,7 @@ const startupEvents = [];
 let startupProbeResolved = false;
 let startupProbeTimeout = null;
 let startupProbeRendererReady = null;
+let pendingPluginRefresh = null;
 
 function getWindowBackgroundColor() {
   return nativeTheme.shouldUseDarkColors ? '#09090b' : '#f5f5f4';
@@ -186,9 +187,160 @@ function applyDesktopRuntimeEnv() {
   return runtimeEnv;
 }
 
+function ensureDirectory(path) {
+  mkdirSync(path, { recursive: true });
+}
+
+function getDesktopPluginDirectory() {
+  return resolve(getDesktopRuntimeEnv().DESKTOP_DATA_DIR, 'plugins');
+}
+
+function readPluginManifestFromDirectory(pluginDirectory) {
+  if (!pluginDirectory || !statSync(pluginDirectory).isDirectory()) {
+    throw new Error('Plugin selection must be a directory.');
+  }
+
+  const packagePath = resolve(pluginDirectory, 'package.json');
+  if (!existsSync(packagePath)) {
+    throw new Error('Selected folder is missing package.json.');
+  }
+
+  let packageJson;
+  try {
+    packageJson = JSON.parse(readFileSync(packagePath, 'utf8'));
+  } catch {
+    throw new Error('Selected plugin package.json is not valid JSON.');
+  }
+
+  const manifest =
+    packageJson?.camelai && typeof packageJson.camelai === 'object'
+      ? packageJson.camelai
+      : null;
+  const pluginId =
+    manifest && typeof manifest.id === 'string' && manifest.id.trim().length > 0
+      ? manifest.id.trim()
+      : null;
+
+  if (!pluginId) {
+    throw new Error('Selected folder is not a camelai plugin. Expected package.json camelai.id.');
+  }
+
+  if (pluginId === '.' || pluginId === '..') {
+    throw new Error('Plugin id may not be a dot-segment path.');
+  }
+
+  if (!/^[A-Za-z0-9._-]+$/.test(pluginId)) {
+    throw new Error('Plugin id may only contain letters, numbers, dots, underscores, and hyphens.');
+  }
+
+  const pluginName =
+    manifest && typeof manifest.name === 'string' && manifest.name.trim().length > 0
+      ? manifest.name.trim()
+      : typeof packageJson.name === 'string' && packageJson.name.trim().length > 0
+        ? packageJson.name.trim()
+        : pluginId;
+
+  return {
+    id: pluginId,
+    name: pluginName,
+    version:
+      typeof packageJson.version === 'string' && packageJson.version.trim().length > 0
+        ? packageJson.version.trim()
+        : '0.0.0',
+  };
+}
+
+function installPluginFromDirectory(sourceDirectory) {
+  const sourcePath = resolve(sourceDirectory);
+  const manifest = readPluginManifestFromDirectory(sourcePath);
+  const pluginDirectory = getDesktopPluginDirectory();
+  const targetPath = resolve(pluginDirectory, manifest.id);
+  const targetRelativePath = relative(pluginDirectory, targetPath);
+  const replacing = existsSync(targetPath);
+
+  if (
+    targetRelativePath === '' ||
+    targetRelativePath === '.' ||
+    targetRelativePath === '..' ||
+    targetRelativePath.startsWith('..\\') ||
+    targetRelativePath.startsWith('../') ||
+    isAbsolute(targetRelativePath)
+  ) {
+    throw new Error('Plugin install target must stay within the desktop plugins directory.');
+  }
+
+  ensureDirectory(pluginDirectory);
+
+  if (sourcePath !== targetPath) {
+    rmSync(targetPath, { recursive: true, force: true });
+    cpSync(sourcePath, targetPath, { recursive: true, force: true });
+  }
+
+  return {
+    status: 'installed',
+    pluginId: manifest.id,
+    pluginName: manifest.name,
+    installPath: targetPath,
+    replaced: replacing,
+  };
+}
+
+function settlePendingPluginRefresh(result) {
+  if (!pendingPluginRefresh) {
+    return;
+  }
+
+  const { resolve, reject, timeoutId } = pendingPluginRefresh;
+  pendingPluginRefresh = null;
+  clearTimeout(timeoutId);
+
+  if (result instanceof Error) {
+    reject(result);
+    return;
+  }
+
+  resolve(result);
+}
+
+async function refreshPluginsInBackend() {
+  if (pendingPluginRefresh) {
+    return pendingPluginRefresh.promise;
+  }
+
+  const promise = new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      settlePendingPluginRefresh(
+        new Error('Timed out while refreshing installed plugins.'),
+      );
+    }, 10000);
+
+    pendingPluginRefresh = {
+      promise: null,
+      resolve,
+      reject,
+      timeoutId,
+    };
+  });
+
+  if (pendingPluginRefresh) {
+    pendingPluginRefresh.promise = promise;
+  }
+
+  try {
+    await sendBackendEvent({ type: 'refresh_plugins' });
+    await promise;
+  } catch (error) {
+    settlePendingPluginRefresh(
+      error instanceof Error ? error : new Error(String(error)),
+    );
+    throw error;
+  }
+}
+
 function publishBackendEvent(event) {
   if (event.type === 'snapshot') {
     latestSnapshot = event.snapshot;
+    settlePendingPluginRefresh(event.snapshot);
     recordStartup('backend_snapshot', {
       provider: event.snapshot.provider,
       authSource: event.snapshot.auth.source,
@@ -206,6 +358,10 @@ function publishBackendEvent(event) {
         settledRuntimeDetail: event.snapshot.runtimeStatus.detail,
       });
     }
+  }
+
+  if (event.type === 'error') {
+    settlePendingPluginRefresh(new Error(event.message));
   }
 
   for (const window of BrowserWindow.getAllWindows()) {
@@ -416,6 +572,39 @@ ipcMain.handle('desktop:get-snapshot', async () => {
   recordStartup('renderer_requested_snapshot');
   await ensureBackend();
   return latestSnapshot;
+});
+
+ipcMain.handle('desktop:install-plugin', async () => {
+  const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
+  const selection = await dialog.showOpenDialog(window ?? undefined, {
+    title: 'Install plugin',
+    buttonLabel: 'Install Plugin',
+    properties: ['openDirectory'],
+  });
+
+  if (selection.canceled || selection.filePaths.length === 0) {
+    return {
+      status: 'cancelled',
+      pluginId: null,
+      pluginName: null,
+      installPath: null,
+      replaced: false,
+    };
+  }
+
+  const installation = installPluginFromDirectory(selection.filePaths[0]);
+  await refreshPluginsInBackend();
+  return installation;
+});
+
+ipcMain.handle('desktop:open-plugin-directory', async () => {
+  const pluginDirectory = getDesktopPluginDirectory();
+  ensureDirectory(pluginDirectory);
+  const error = await shell.openPath(pluginDirectory);
+  if (error) {
+    throw new Error(error);
+  }
+  return pluginDirectory;
 });
 
 ipcMain.handle('desktop:resolve-webview-src', async (_event, entrypoint) => {

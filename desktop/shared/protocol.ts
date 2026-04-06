@@ -90,6 +90,14 @@ export interface DesktopPluginRecord {
   };
 }
 
+export interface DesktopPluginInstallResult {
+  status: "installed" | "cancelled";
+  pluginId: string | null;
+  pluginName: string | null;
+  installPath: string | null;
+  replaced: boolean;
+}
+
 export interface DesktopView {
   id: string;
   title: string;
@@ -225,6 +233,9 @@ export type DesktopClientEvent =
   | {
       type: "set_model";
       model: DesktopModel;
+    }
+  | {
+      type: "refresh_plugins";
     }
   | {
       type: "ping";

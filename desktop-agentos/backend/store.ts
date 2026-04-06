@@ -302,6 +302,25 @@ export class DesktopStore {
     this.persist();
   }
 
+  setThreadPanelState(
+    threadId: string,
+    panelId: string | null,
+    visible: boolean,
+  ): void {
+    if (!this.getThread(threadId)) {
+      throw new Error(`Thread ${threadId} does not exist`);
+    }
+
+    this.state.threadPanelStateById = {
+      ...(this.state.threadPanelStateById ?? {}),
+      [threadId]: {
+        panelId: normalizePersistedId(panelId),
+        visible,
+      },
+    };
+    this.persist();
+  }
+
   private ensureProviderModel(provider: DesktopProvider): void {
     if (!this.state.modelsByProvider[provider]) {
       this.state.modelsByProvider[provider] =

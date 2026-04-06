@@ -209,6 +209,10 @@ export class DesktopService {
         this.emitSnapshot();
         return;
       }
+      case "refresh_plugins": {
+        void this.handleRefreshPlugins();
+        return;
+      }
       case "send_message": {
         void this.handleSendMessage(event.threadId, event.content);
         return;
@@ -274,6 +278,52 @@ export class DesktopService {
     }
 
     this.store.openThreadPanel(threadId, defaultPanelId);
+  }
+
+  private reconcileWorkbenchState(): void {
+    const extensionSnapshot = this.extensionHost.getSnapshot(
+      this.getExtensionActivationContext(),
+    );
+    const validViewIds = new Set(extensionSnapshot.views.map((view) => view.id));
+    const validPanelIds = new Set(extensionSnapshot.panels.map((panel) => panel.id));
+    const defaultPanelId = this.extensionHost.getDefaultThreadPanelId();
+    const activeViewId = this.store.getActiveViewId();
+
+    if (activeViewId && !validViewIds.has(activeViewId)) {
+      this.store.setActiveView(null);
+    }
+
+    for (const thread of this.store.listThreads()) {
+      const panelState = this.store.getThreadPanelState(thread.id);
+      if (!panelState.panelId || validPanelIds.has(panelState.panelId)) {
+        continue;
+      }
+
+      if (panelState.visible && defaultPanelId) {
+        this.store.openThreadPanel(thread.id, defaultPanelId);
+        continue;
+      }
+
+      this.store.setThreadPanelState(thread.id, null, false);
+    }
+  }
+
+  private async handleRefreshPlugins(): Promise<void> {
+    try {
+      await this.extensionHost.refresh(this.getExtensionActivationContext());
+      this.reconcileWorkbenchState();
+      this.ensureDefaultView();
+      this.ensureDefaultThreadPanels();
+      this.emitSnapshot();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logDesktop("agentos-service", "plugin-refresh-error", { error: message });
+      this.broadcast({
+        type: "error",
+        message,
+      });
+      this.emitSnapshot();
+    }
   }
 
   private async ensureRuntimeRunning(

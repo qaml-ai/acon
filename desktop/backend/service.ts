@@ -176,6 +176,10 @@ export class DesktopService {
         this.emitSnapshot();
         return;
       }
+      case "refresh_plugins": {
+        this.emitSnapshot();
+        return;
+      }
       case "send_message": {
         void this.handleSendMessage(event.threadId, event.content);
         return;
