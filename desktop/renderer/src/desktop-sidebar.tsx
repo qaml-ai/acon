@@ -71,6 +71,7 @@ export function DesktopSidebar({
   views,
 }: DesktopSidebarProps) {
   const { state } = useSidebar();
+  const workspaceViews = views.filter((view) => view.scope === "workspace");
 
   return (
     <Sidebar collapsible="icon">
@@ -114,7 +115,7 @@ export function DesktopSidebar({
         <SidebarGroup>
           <SidebarGroupLabel>Workbench</SidebarGroupLabel>
           <SidebarMenu>
-            {views.map((view) => {
+            {workspaceViews.map((view) => {
               const ViewIcon = getDesktopIcon(view.icon);
               return (
                 <SidebarMenuItem key={view.id}>

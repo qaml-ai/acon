@@ -138,14 +138,14 @@ export class DesktopService {
     switch (event.type) {
       case "create_thread": {
         const thread = this.store.createThread(event.title, this.store.getProvider());
-        this.ensureDefaultView("thread");
+        this.selectDefaultView("thread");
         this.ensureDefaultThreadPanel(thread.id);
         this.emitSnapshot();
         return;
       }
       case "select_thread": {
         this.store.setActiveThread(event.threadId);
-        this.ensureDefaultView("thread");
+        this.selectDefaultView("thread");
         this.ensureDefaultThreadPanel(event.threadId);
         this.emitSnapshot();
         void this.ensureRuntimeRunning("startup");
@@ -239,6 +239,15 @@ export class DesktopService {
       return;
     }
 
+    const defaultViewId = this.extensionHost.getDefaultViewId(scope);
+    if (!defaultViewId) {
+      return;
+    }
+
+    this.store.setActiveView(defaultViewId);
+  }
+
+  private selectDefaultView(scope?: "thread" | "workspace"): void {
     const defaultViewId = this.extensionHost.getDefaultViewId(scope);
     if (!defaultViewId) {
       return;

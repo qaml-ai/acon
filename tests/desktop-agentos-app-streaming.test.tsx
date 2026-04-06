@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -567,6 +567,17 @@ afterEach(() => {
 });
 
 describe("desktop AgentOS renderer streaming", () => {
+  it("does not show the thread chat view as a separate workbench button", async () => {
+    const snapshot = createSnapshot();
+
+    await renderAppWithShell(snapshot);
+
+    expect(screen.queryByRole("button", { name: /^Chat$/ })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: /Extension Lab/ }),
+    ).toBeInTheDocument();
+  });
+
   it("opens workbench views as a full-page surface with chat hidden", async () => {
     const snapshot = createSnapshot();
     snapshot.activeViewId = "plugin:extension-lab:extension-lab.home";
@@ -591,6 +602,49 @@ describe("desktop AgentOS renderer streaming", () => {
 
     expect(screen.queryByText("Chat stays visible while the plugin pane is open.")).toBeNull();
     expect(screen.queryByLabelText("Prompt input")).toBeNull();
+  });
+
+  it("switches back to the default thread view when a chat thread is selected", async () => {
+    const snapshot = createSnapshot();
+    snapshot.activeViewId = "plugin:extension-lab:extension-lab.home";
+    snapshot.messagesByThread["thread-1"] = [
+      {
+        id: "message-1",
+        threadId: "thread-1",
+        role: "assistant",
+        content: "Chat returns when the thread is selected.",
+        createdAt: Date.now(),
+        status: "done",
+      },
+    ];
+
+    const { shell, emit } = await renderAppWithShell(snapshot);
+
+    fireEvent.click(screen.getByRole("button", { name: /AgentOS test thread/ }));
+
+    expect(shell.sendEvent).toHaveBeenCalledWith({
+      type: "select_thread",
+      threadId: "thread-1",
+    });
+
+    await emit({
+      type: "snapshot",
+      snapshot: {
+        ...snapshot,
+        activeViewId: "plugin:chat-core:chat-core.thread",
+      },
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Chat returns when the thread is selected."),
+      ).toBeInTheDocument();
+    });
+
+    expect(screen.getByLabelText("Prompt input")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Inspect the live extension runtime and installed extensions."),
+    ).toBeNull();
   });
 
   it("renders the right panel from thread-owned state while chat stays visible", async () => {

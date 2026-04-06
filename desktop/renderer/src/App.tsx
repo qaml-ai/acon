@@ -1242,13 +1242,27 @@ export function App() {
   }, []);
 
   const handleCreateThread = useCallback(() => {
+    const defaultThreadViewId =
+      snapshot?.views.find((view) => view.scope === "thread" && view.isDefault)?.id ??
+      snapshot?.views.find((view) => view.scope === "thread")?.id ??
+      null;
+    if (defaultThreadViewId) {
+      setActiveViewId(defaultThreadViewId);
+    }
     sendEvent({ type: "create_thread" });
-  }, [sendEvent]);
+  }, [sendEvent, snapshot?.views]);
 
   const handleSelectThread = useCallback((threadId: string) => {
+    const defaultThreadViewId =
+      snapshot?.views.find((view) => view.scope === "thread" && view.isDefault)?.id ??
+      snapshot?.views.find((view) => view.scope === "thread")?.id ??
+      null;
     setActiveThreadId(threadId);
+    if (defaultThreadViewId) {
+      setActiveViewId(defaultThreadViewId);
+    }
     sendEvent({ type: "select_thread", threadId });
-  }, [sendEvent]);
+  }, [sendEvent, snapshot?.views]);
 
   const handleSelectView = useCallback((viewId: string) => {
     setActiveViewId(viewId);
