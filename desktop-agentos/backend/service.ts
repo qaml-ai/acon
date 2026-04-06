@@ -44,7 +44,7 @@ export class DesktopService {
     void this.extensionHost
       .initialize(this.getExtensionActivationContext())
       .then(() => {
-        this.ensureDefaultView();
+        this.ensureDefaultTab();
         this.ensureDefaultThreadPanels();
         this.emitSnapshot();
       })
@@ -138,30 +138,41 @@ export class DesktopService {
     switch (event.type) {
       case "create_thread": {
         const thread = this.store.createThread(event.title, this.store.getProvider());
-        this.selectDefaultView("thread");
+        this.activateDefaultThreadView(thread.id);
         this.ensureDefaultThreadPanel(thread.id);
         this.emitSnapshot();
         return;
       }
       case "select_thread": {
-        this.store.setActiveThread(event.threadId);
-        this.selectDefaultView("thread");
+        if (!this.activateDefaultThreadView(event.threadId)) {
+          this.store.setActiveThread(event.threadId);
+        }
         this.ensureDefaultThreadPanel(event.threadId);
         this.emitSnapshot();
         void this.ensureRuntimeRunning("startup");
         return;
       }
       case "select_view": {
-        this.store.setActiveView(event.viewId);
+        this.store.activateWorkspaceView(event.viewId);
         this.emitSnapshot();
-        void this.extensionHost.emit(
-          "page_open",
-          {
-            type: "page_open",
-            pageId: event.viewId,
-          },
+        this.emitPageOpen(event.viewId);
+        return;
+      }
+      case "select_tab": {
+        this.store.selectTab(event.tabId);
+        this.emitSnapshot();
+        const selectedTab = this.getSnapshot().tabs.find((tab) => tab.id === event.tabId);
+        if (selectedTab?.kind === "workspace") {
+          this.emitPageOpen(selectedTab.viewId);
+        }
+        return;
+      }
+      case "close_tab": {
+        const views = this.extensionHost.getSnapshot(
           this.getExtensionActivationContext(),
-        );
+        ).views;
+        this.store.closeTab(event.tabId, views);
+        this.emitSnapshot();
         return;
       }
       case "open_thread_panel": {
@@ -237,27 +248,20 @@ export class DesktopService {
     }
   }
 
-  private ensureDefaultView(scope?: "thread" | "workspace"): void {
-    const currentViewId = this.store.getActiveViewId();
-    if (currentViewId) {
+  private ensureDefaultTab(): void {
+    if (this.store.getActiveTabId()) {
       return;
     }
 
-    const defaultViewId = this.extensionHost.getDefaultViewId(scope);
-    if (!defaultViewId) {
+    const activeThreadId = this.store.getActiveThreadId();
+    if (activeThreadId && this.activateDefaultThreadView(activeThreadId)) {
       return;
     }
 
-    this.store.setActiveView(defaultViewId);
-  }
-
-  private selectDefaultView(scope?: "thread" | "workspace"): void {
-    const defaultViewId = this.extensionHost.getDefaultViewId(scope);
-    if (!defaultViewId) {
-      return;
+    const defaultWorkspaceViewId = this.extensionHost.getDefaultViewId("workspace");
+    if (defaultWorkspaceViewId) {
+      this.store.activateWorkspaceView(defaultWorkspaceViewId);
     }
-
-    this.store.setActiveView(defaultViewId);
   }
 
   private ensureDefaultThreadPanels(): void {
@@ -312,7 +316,7 @@ export class DesktopService {
     try {
       await this.extensionHost.refresh(this.getExtensionActivationContext());
       this.reconcileWorkbenchState();
-      this.ensureDefaultView();
+      this.ensureDefaultTab();
       this.ensureDefaultThreadPanels();
       this.emitSnapshot();
     } catch (error) {
@@ -324,6 +328,27 @@ export class DesktopService {
       });
       this.emitSnapshot();
     }
+  }
+
+  private activateDefaultThreadView(threadId: string): boolean {
+    const defaultViewId = this.extensionHost.getDefaultViewId("thread");
+    if (!defaultViewId) {
+      return false;
+    }
+
+    this.store.activateThreadView(threadId, defaultViewId);
+    return true;
+  }
+
+  private emitPageOpen(viewId: string): void {
+    void this.extensionHost.emit(
+      "page_open",
+      {
+        type: "page_open",
+        pageId: viewId,
+      },
+      this.getExtensionActivationContext(),
+    );
   }
 
   private async ensureRuntimeRunning(

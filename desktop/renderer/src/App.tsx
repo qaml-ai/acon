@@ -7,7 +7,7 @@ import {
   useState,
   type ComponentType,
 } from "react";
-import { AlertCircle, Loader2, Plus } from "lucide-react";
+import { AlertCircle, Loader2, X } from "lucide-react";
 import { ContentBlockRenderer } from "@/components/message-bubble";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -19,7 +19,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { PageHeader } from "@/components/page-header";
 import { Progress } from "@/components/ui/progress";
 import {
   Select,
@@ -33,6 +32,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { LoadingDots } from "@/components/loading-dots";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
+import { cn } from "@/lib/utils";
 import {
   mergeTaskNotifications,
   mergeTeammateMessages,
@@ -43,9 +43,9 @@ import type {
   DesktopClientEvent,
   DesktopModel,
   DesktopPanel,
-  DesktopProvider,
   DesktopServerEvent,
   DesktopSnapshot,
+  DesktopTab,
   DesktopThread,
   DesktopView,
 } from "../../shared/protocol";
@@ -72,6 +72,7 @@ type HostSurfaceComponentProps = {
   initialDraft: string;
   isStreaming: boolean;
   onDraftChange: (threadId: string | null, draft: string) => void;
+  onSetModel: (model: string) => void;
   onSubmitMessage: (threadId: string, content: string) => void;
 };
 
@@ -165,14 +166,13 @@ function formatTime(timestamp: number): string {
   });
 }
 
-function authBadgeLabel(snapshot: DesktopSnapshot | null): string {
-  if (!snapshot) {
-    return "Checking auth";
-  }
-  if (!snapshot.auth.available) {
-    return snapshot.auth.label;
-  }
-  return `${snapshot.auth.label} · ${snapshot.model}`;
+function focusWorkbenchTab(tabId: string): void {
+  window.requestAnimationFrame(() => {
+    const tabButton = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[role="tab"][data-tab-id]'),
+    ).find((button) => button.dataset.tabId === tabId);
+    tabButton?.focus();
+  });
 }
 
 function runtimeDetail(snapshot: DesktopSnapshot | null): string | null {
@@ -472,16 +472,22 @@ const MemoizedTranscriptPane = memo(
 );
 
 function Composer({
+  availableModels,
   activeThreadId,
   initialDraft,
   isStreaming,
+  model,
   onDraftChange,
+  onSetModel,
   onSubmitMessage,
 }: {
+  availableModels: DesktopSnapshot["availableModels"];
   activeThreadId: string | null;
   initialDraft: string;
   isStreaming: boolean;
+  model: DesktopModel;
   onDraftChange: (threadId: string | null, draft: string) => void;
+  onSetModel: (model: string) => void;
   onSubmitMessage: (threadId: string, content: string) => void;
 }) {
   const [draft, setDraft] = useState(initialDraft);
@@ -504,42 +510,69 @@ function Composer({
   }, [activeThreadId, draft, isStreaming, onDraftChange, onSubmitMessage]);
 
   return (
-    <PromptInput
-      className="shrink-0"
-      value={draft}
-      onChange={handleChange}
-      onSubmit={handleSubmit}
-      placeholder="Type a message..."
-      isAssistantRunning={isStreaming}
-      textareaRef={composerTextareaRef}
-    />
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-end">
+        <Select value={model} onValueChange={onSetModel}>
+          <SelectTrigger
+            size="sm"
+            className="desktop-chat-model-switcher w-[168px]"
+            aria-label="Model"
+          >
+            <SelectValue placeholder="Model" />
+          </SelectTrigger>
+          <SelectContent>
+            {availableModels.map((option) => (
+              <SelectItem key={option.id} value={option.id}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <PromptInput
+        className="shrink-0"
+        value={draft}
+        onChange={handleChange}
+        onSubmit={handleSubmit}
+        placeholder="Type a message..."
+        isAssistantRunning={isStreaming}
+        textareaRef={composerTextareaRef}
+      />
+    </div>
   );
 }
 
 const MemoizedComposer = memo(
   Composer,
   (prev, next) =>
+    prev.availableModels === next.availableModels &&
     prev.activeThreadId === next.activeThreadId &&
     prev.initialDraft === next.initialDraft &&
     prev.isStreaming === next.isStreaming &&
+    prev.model === next.model &&
     prev.onDraftChange === next.onDraftChange &&
+    prev.onSetModel === next.onSetModel &&
     prev.onSubmitMessage === next.onSubmitMessage,
 );
 
 function ChatThreadView({
+  snapshot,
   activeThreadId,
   rawMessages,
   initialDraft,
   isStreaming,
   onDraftChange,
+  onSetModel,
   onSubmitMessage,
 }: Pick<
   HostSurfaceComponentProps,
+  | "snapshot"
   | "activeThreadId"
   | "rawMessages"
   | "initialDraft"
   | "isStreaming"
   | "onDraftChange"
+  | "onSetModel"
   | "onSubmitMessage"
 >) {
   return (
@@ -555,10 +588,13 @@ function ChatThreadView({
           <div className="px-4 pb-4 pt-2">
             <div className="mx-auto flex w-full max-w-3xl flex-col max-h-[calc(100dvh-2rem)]">
               <MemoizedComposer
+                availableModels={snapshot.availableModels}
                 activeThreadId={activeThreadId}
                 initialDraft={initialDraft}
                 isStreaming={isStreaming}
+                model={snapshot.model}
                 onDraftChange={onDraftChange}
+                onSetModel={onSetModel}
                 onSubmitMessage={onSubmitMessage}
               />
             </div>
@@ -1092,11 +1128,110 @@ const MemoizedCompanionPanelPane = memo(
     prev.isStreaming === next.isStreaming,
 );
 
+function WorkbenchTabStrip({
+  activeTabId,
+  onCycleTabs,
+  onCloseTab,
+  onSelectTab,
+  tabs,
+}: {
+  activeTabId: string | null;
+  onCycleTabs: (offset: -1 | 1) => void;
+  onCloseTab: (tabId: string) => void;
+  onSelectTab: (tabId: string) => void;
+  tabs: DesktopTab[];
+}) {
+  if (tabs.length === 0) {
+    return null;
+  }
+
+  return (
+    <div
+      role="tablist"
+      aria-label="Open workbench tabs"
+      className="desktop-workbench-tablist desktop-no-drag"
+    >
+      {tabs.map((tab) => {
+        const TabIcon = getDesktopIcon(tab.icon);
+        const isActive = tab.id === activeTabId;
+        const closeLabel =
+          tab.kind === "thread"
+            ? `Close ${tab.title} chat tab`
+            : `Close ${tab.title} tab`;
+
+        return (
+          <div
+            key={tab.id}
+            className={cn("desktop-workbench-tab group/tab", isActive && "is-active")}
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              data-tab-id={tab.id}
+              tabIndex={isActive ? 0 : -1}
+              className="desktop-workbench-tab-button"
+              onClick={() => onSelectTab(tab.id)}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowRight") {
+                  event.preventDefault();
+                  onCycleTabs(1);
+                  return;
+                }
+                if (event.key === "ArrowLeft") {
+                  event.preventDefault();
+                  onCycleTabs(-1);
+                  return;
+                }
+                if (event.key === "Home") {
+                  event.preventDefault();
+                  const firstTabId = tabs[0]?.id ?? tab.id;
+                  onSelectTab(firstTabId);
+                  focusWorkbenchTab(firstTabId);
+                  return;
+                }
+                if (event.key === "End") {
+                  event.preventDefault();
+                  const lastTabId = tabs[tabs.length - 1]?.id ?? tab.id;
+                  onSelectTab(lastTabId);
+                  focusWorkbenchTab(lastTabId);
+                }
+              }}
+            >
+              <TabIcon className="desktop-workbench-tab-icon" />
+              <span className="desktop-workbench-tab-title">{tab.title}</span>
+              {tab.subtitle ? (
+                <span className="desktop-workbench-tab-subtitle">
+                  {tab.subtitle}
+                </span>
+              ) : null}
+            </button>
+            {tab.closable ? (
+              <button
+                type="button"
+                aria-label={closeLabel}
+                className="desktop-workbench-tab-close"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onCloseTab(tab.id);
+                }}
+              >
+                <X className="size-3" />
+              </button>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function App() {
   const [snapshot, setSnapshot] = useState<DesktopSnapshot | null>(null);
   const [uiMessagesByThread, setUiMessagesByThread] = useState<
     Record<string, Message[]>
   >({});
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [activeViewId, setActiveViewId] = useState<string | null>(null);
   const [connectionState, setConnectionState] = useState<
@@ -1177,6 +1312,7 @@ export function App() {
           }
           return merged;
         });
+        setActiveTabId(next.activeTabId);
         setActiveThreadId(next.activeThreadId ?? next.threads[0]?.id ?? null);
         setActiveViewId(
           next.activeViewId ??
@@ -1214,6 +1350,7 @@ export function App() {
           }
           return merged;
         });
+        setActiveTabId(event.snapshot.activeTabId);
         setActiveThreadId(
           event.snapshot.activeThreadId ??
             event.snapshot.threads[0]?.id ??
@@ -1343,6 +1480,7 @@ export function App() {
       snapshot?.views.find((view) => view.scope === "thread" && view.isDefault)?.id ??
       snapshot?.views.find((view) => view.scope === "thread")?.id ??
       null;
+    setActiveTabId(null);
     if (defaultThreadViewId) {
       setActiveViewId(defaultThreadViewId);
     }
@@ -1354,17 +1492,88 @@ export function App() {
       snapshot?.views.find((view) => view.scope === "thread" && view.isDefault)?.id ??
       snapshot?.views.find((view) => view.scope === "thread")?.id ??
       null;
+    const existingTab =
+      snapshot?.tabs.find(
+        (tab) =>
+          tab.kind === "thread" &&
+          tab.threadId === threadId &&
+          tab.viewId === defaultThreadViewId,
+      ) ??
+      snapshot?.tabs.find(
+        (tab) => tab.kind === "thread" && tab.threadId === threadId,
+      ) ??
+      null;
     setActiveThreadId(threadId);
     if (defaultThreadViewId) {
       setActiveViewId(defaultThreadViewId);
     }
+    setActiveTabId(existingTab?.id ?? null);
     sendEvent({ type: "select_thread", threadId });
-  }, [sendEvent, snapshot?.views]);
+  }, [sendEvent, snapshot?.tabs, snapshot?.views]);
 
   const handleSelectView = useCallback((viewId: string) => {
+    const existingTab =
+      snapshot?.tabs.find(
+        (tab) => tab.kind === "workspace" && tab.viewId === viewId,
+      ) ?? null;
     setActiveViewId(viewId);
+    setActiveTabId(existingTab?.id ?? null);
     sendEvent({ type: "select_view", viewId });
-  }, [sendEvent]);
+  }, [sendEvent, snapshot?.tabs]);
+
+  const handleSelectTab = useCallback((tabId: string) => {
+    const tab = snapshot?.tabs.find((entry) => entry.id === tabId) ?? null;
+    if (!tab) {
+      return;
+    }
+
+    setActiveTabId(tab.id);
+    setActiveViewId(tab.viewId);
+    if (tab.kind === "thread" && tab.threadId) {
+      setActiveThreadId(tab.threadId);
+    }
+    sendEvent({ type: "select_tab", tabId });
+  }, [sendEvent, snapshot?.tabs]);
+
+  const handleCloseTab = useCallback((tabId: string) => {
+    const tabs = snapshot?.tabs ?? [];
+    const index = tabs.findIndex((tab) => tab.id === tabId);
+    if (index === -1) {
+      return;
+    }
+
+    const nextTabs = tabs.filter((tab) => tab.id !== tabId);
+    if (activeTabId === tabId) {
+      const fallback = nextTabs[index] ?? nextTabs[index - 1] ?? nextTabs[0] ?? null;
+      setActiveTabId(fallback?.id ?? null);
+      setActiveViewId(fallback?.viewId ?? null);
+      if (fallback?.kind === "thread" && fallback.threadId) {
+        setActiveThreadId(fallback.threadId);
+      }
+      if (fallback?.id) {
+        focusWorkbenchTab(fallback.id);
+      }
+    }
+    sendEvent({ type: "close_tab", tabId });
+  }, [activeTabId, sendEvent, snapshot?.tabs]);
+
+  const handleCycleTabs = useCallback((offset: -1 | 1) => {
+    const tabs = snapshot?.tabs ?? [];
+    if (tabs.length < 2) {
+      return;
+    }
+
+    const currentIndex = tabs.findIndex((tab) => tab.id === activeTabId);
+    const baseIndex = currentIndex === -1 ? 0 : currentIndex;
+    const nextIndex = (baseIndex + offset + tabs.length) % tabs.length;
+    const nextTab = tabs[nextIndex];
+    if (!nextTab) {
+      return;
+    }
+
+    handleSelectTab(nextTab.id);
+    focusWorkbenchTab(nextTab.id);
+  }, [activeTabId, handleSelectTab, snapshot?.tabs]);
 
   const handleSetModel = useCallback((model: string) => {
     if (!snapshot?.availableModels.some((option) => option.id === model)) {
@@ -1372,13 +1581,6 @@ export function App() {
     }
     sendEvent({ type: "set_model", model: model as DesktopModel });
   }, [sendEvent, snapshot?.availableModels]);
-
-  const handleSetProvider = useCallback((provider: string) => {
-    if (!snapshot?.availableProviders.some((option) => option.id === provider)) {
-      return;
-    }
-    sendEvent({ type: "set_provider", provider: provider as DesktopProvider });
-  }, [sendEvent, snapshot?.availableProviders]);
 
   const initialDraft = composerDraftsRef.current[getDraftKey(activeThreadId)] ?? "";
 
@@ -1395,6 +1597,64 @@ export function App() {
     });
   }, [sendEvent]);
 
+  useEffect(() => {
+    const handleWindowKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) {
+        return;
+      }
+
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) {
+        return;
+      }
+
+      if (event.key === "w") {
+        if (!activeTabId) {
+          return;
+        }
+        event.preventDefault();
+        handleCloseTab(activeTabId);
+        return;
+      }
+
+      if (event.ctrlKey && event.key === "Tab") {
+        event.preventDefault();
+        handleCycleTabs(event.shiftKey ? -1 : 1);
+        return;
+      }
+
+      if (event.shiftKey && (event.key === "]" || event.key === "[")) {
+        event.preventDefault();
+        handleCycleTabs(event.key === "]" ? 1 : -1);
+        return;
+      }
+
+      if (event.key === "PageDown" || event.key === "PageUp") {
+        event.preventDefault();
+        handleCycleTabs(event.key === "PageDown" ? 1 : -1);
+        return;
+      }
+
+      if (event.shiftKey) {
+        return;
+      }
+
+      if (/^[1-9]$/.test(event.key)) {
+        const nextTab = snapshot?.tabs[Number(event.key) - 1];
+        if (!nextTab) {
+          return;
+        }
+        event.preventDefault();
+        handleSelectTab(nextTab.id);
+        focusWorkbenchTab(nextTab.id);
+      }
+    };
+
+    window.addEventListener("keydown", handleWindowKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleWindowKeyDown);
+    };
+  }, [activeTabId, handleCloseTab, handleCycleTabs, handleSelectTab, snapshot?.tabs]);
+
   const activeSurfaceProps = snapshot && activeView ? {
     snapshot,
     surface: activeView,
@@ -1404,6 +1664,7 @@ export function App() {
     initialDraft,
     isStreaming,
     onDraftChange: handleDraftChange,
+    onSetModel: handleSetModel,
     onSubmitMessage: handleSubmitMessage,
   } : null;
 
@@ -1416,6 +1677,7 @@ export function App() {
     initialDraft,
     isStreaming,
     onDraftChange: handleDraftChange,
+    onSetModel: handleSetModel,
     onSubmitMessage: handleSubmitMessage,
   } : null;
 
@@ -1425,62 +1687,13 @@ export function App() {
         <header className="desktop-titlebar desktop-drag">
           <div className="desktop-titlebar-inner">
             <div className="desktop-traffic-spacer" />
-            <div className="min-w-0">
-              <p className="truncate text-[0.7rem] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
-                camelAI Desktop
-              </p>
-            </div>
-            <div className="desktop-no-drag ml-auto flex items-center gap-2">
-              {snapshot && snapshot.availableProviders.length > 1 ? (
-                <Select
-                  value={snapshot.provider}
-                  onValueChange={handleSetProvider}
-                >
-                  <SelectTrigger
-                    size="sm"
-                    className="w-[118px] bg-background/70 backdrop-blur"
-                    aria-label="Provider"
-                  >
-                    <SelectValue placeholder="Provider" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {snapshot.availableProviders.map((provider) => (
-                      <SelectItem key={provider.id} value={provider.id}>
-                        {provider.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : null}
-              <Select
-                value={snapshot?.model ?? ""}
-                onValueChange={handleSetModel}
-              >
-                <SelectTrigger
-                  size="sm"
-                  className="w-[118px] bg-background/70 backdrop-blur"
-                  aria-label="Model"
-                >
-                  <SelectValue placeholder="Model" />
-                </SelectTrigger>
-                <SelectContent>
-                  {(snapshot?.availableModels ?? []).map((model) => (
-                    <SelectItem key={model.id} value={model.id}>
-                      {model.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Badge
-                variant={snapshot?.auth.available ? "secondary" : "destructive"}
-              >
-                {authBadgeLabel(snapshot)}
-              </Badge>
-              <Button variant="outline" size="sm" onClick={handleCreateThread}>
-                <Plus />
-                New thread
-              </Button>
-            </div>
+            <WorkbenchTabStrip
+              activeTabId={activeTabId}
+              onCycleTabs={handleCycleTabs}
+              onCloseTab={handleCloseTab}
+              onSelectTab={handleSelectTab}
+              tabs={snapshot?.tabs ?? []}
+            />
           </div>
           {shouldShowRuntimeNotice(snapshot) ? (
             <div className="desktop-no-drag border-t border-border/50 px-4 py-2">
@@ -1511,21 +1724,7 @@ export function App() {
               threads={snapshot?.threads ?? []}
               views={snapshot?.views ?? []}
             />
-            <SidebarInset className="h-full min-h-0 overflow-hidden flex flex-col">
-              <PageHeader
-                breadcrumbs={
-                  activeView
-                    ? activeView.scope === "thread"
-                      ? [
-                          { label: activeView.title },
-                          { label: activeThread?.title ?? "New Chat" },
-                        ]
-                      : [{ label: activeView.title }]
-                    : [{ label: activeThread?.title ?? "New Chat" }]
-                }
-                className="border-b border-border/60"
-              />
-
+            <SidebarInset className="overflow-hidden flex flex-col">
               <div className="flex flex-1 min-h-0 flex-col">
                 {shouldBlockRuntime ? (
                   <RuntimeBootScreen

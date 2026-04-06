@@ -556,6 +556,8 @@ export class DesktopStore {
   ): DesktopSnapshot {
     return {
       activeThreadId: this.state.activeThreadId,
+      tabs: [],
+      activeTabId: null,
       activeViewId: this.getActiveViewId(),
       threadPanelStateById: this.getThreadPanelStateById(),
       threads: this.listThreads(),

@@ -12,6 +12,7 @@ import type {
   DesktopProviderOption,
   DesktopRuntimeStatus,
   DesktopSnapshot,
+  DesktopTab,
   DesktopThread,
   DesktopThreadPanelState,
   DesktopView,
@@ -23,7 +24,16 @@ import {
   requireDesktopProvider,
 } from './providers';
 
+interface PersistedTab {
+  id: string;
+  kind: 'thread' | 'workspace';
+  threadId: string | null;
+  viewId: string;
+}
+
 interface PersistedState {
+  tabs?: PersistedTab[];
+  activeTabId?: string | null;
   activeThreadId: string | null;
   activeViewId?: string | null;
   provider: DesktopProvider;
@@ -99,6 +109,36 @@ function normalizePanelState(value: unknown): DesktopThreadPanelState | null {
   };
 }
 
+function normalizeTab(value: unknown): PersistedTab | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const tab = value as {
+    id?: unknown;
+    kind?: unknown;
+    threadId?: unknown;
+    viewId?: unknown;
+  };
+  const id = normalizePersistedId(tab.id);
+  const viewId = normalizePersistedId(tab.viewId);
+  if (!id || !viewId) {
+    return null;
+  }
+
+  const kind = tab.kind === 'thread' ? 'thread' : tab.kind === 'workspace' ? 'workspace' : null;
+  if (!kind) {
+    return null;
+  }
+
+  return {
+    id,
+    kind,
+    threadId: normalizePersistedId(tab.threadId),
+    viewId,
+  };
+}
+
 export class DesktopStore {
   private readonly statePath: string;
   private state: PersistedState;
@@ -170,6 +210,13 @@ export class DesktopStore {
           : null) ?? fallbackProvider;
 
       return {
+        tabs: Array.isArray(parsed.tabs)
+          ? parsed.tabs.flatMap((tab) => {
+              const normalized = normalizeTab(tab);
+              return normalized ? [normalized] : [];
+            })
+          : [],
+        activeTabId: normalizePersistedId(parsed.activeTabId),
         activeThreadId,
         activeViewId,
         provider: activeThreadProvider,
@@ -197,6 +244,8 @@ export class DesktopStore {
     } catch {
       const provider = getDefaultProvider();
       return {
+        tabs: [],
+        activeTabId: null,
         activeThreadId: null,
         activeViewId: null,
         provider,
@@ -220,6 +269,119 @@ export class DesktopStore {
     this.state.threads.sort((left, right) => right.updatedAt - left.updatedAt);
   }
 
+  private findThread(threadId: string | null): DesktopThread | null {
+    if (!threadId) {
+      return null;
+    }
+    return this.state.threads.find((thread) => thread.id === threadId) ?? null;
+  }
+
+  private syncStateFromTab(tab: PersistedTab | null): void {
+    if (!tab) {
+      this.state.activeTabId = null;
+      this.state.activeViewId = null;
+      return;
+    }
+
+    this.state.activeTabId = tab.id;
+    this.state.activeViewId = tab.viewId;
+    if (tab.kind === 'thread' && tab.threadId) {
+      this.state.activeThreadId = tab.threadId;
+      const thread = this.findThread(tab.threadId);
+      if (thread) {
+        this.state.provider = thread.provider;
+        this.ensureProviderModel(thread.provider);
+      }
+    }
+  }
+
+  private upsertTab(tab: Omit<PersistedTab, 'id'>): PersistedTab {
+    const existing = (this.state.tabs ?? []).find((current) =>
+      current.kind === tab.kind &&
+      current.threadId === tab.threadId &&
+      current.viewId === tab.viewId,
+    );
+    if (existing) {
+      return existing;
+    }
+
+    const created: PersistedTab = {
+      id: randomUUID(),
+      ...tab,
+    };
+    this.state.tabs = [...(this.state.tabs ?? []), created];
+    return created;
+  }
+
+  private normalizeTabs(
+    views: DesktopView[],
+  ): PersistedTab[] {
+    const viewIds = new Set(views.map((view) => view.id));
+    const threadIds = new Set(this.state.threads.map((thread) => thread.id));
+    return (this.state.tabs ?? []).filter((tab) => {
+      if (!viewIds.has(tab.viewId)) {
+        return false;
+      }
+      if (tab.kind === 'thread') {
+        return Boolean(tab.threadId && threadIds.has(tab.threadId));
+      }
+      return true;
+    });
+  }
+
+  private toDesktopTabs(
+    tabs: PersistedTab[],
+    views: DesktopView[],
+  ): DesktopTab[] {
+    const viewById = new Map(views.map((view) => [view.id, view]));
+    return tabs.reduce<DesktopTab[]>((result, tab) => {
+      const view = viewById.get(tab.viewId);
+      if (!view) {
+        return result;
+      }
+
+      if (tab.kind === 'thread') {
+        const thread = this.findThread(tab.threadId);
+        if (!thread) {
+          return result;
+        }
+        result.push({
+          id: tab.id,
+          kind: 'thread' as const,
+          threadId: thread.id,
+          viewId: view.id,
+          title: thread.title,
+          subtitle: view.title !== 'Chat' ? view.title : null,
+          icon: view.icon,
+          closable: true,
+        });
+        return result;
+      }
+
+      result.push({
+        id: tab.id,
+        kind: 'workspace' as const,
+        threadId: null,
+        viewId: view.id,
+        title: view.title,
+        subtitle: null,
+        icon: view.icon,
+        closable: true,
+      });
+      return result;
+    }, []);
+  }
+
+  private activateFallbackTab(views: DesktopView[]): void {
+    const tabs = this.normalizeTabs(views);
+    this.state.tabs = tabs;
+    const activeTab =
+      tabs.find((tab) => tab.id === this.state.activeTabId) ??
+      tabs[tabs.length - 1] ??
+      null;
+    this.syncStateFromTab(activeTab);
+  }
+
   listThreads(): DesktopThread[] {
     this.sortThreads();
     return [...this.state.threads];
@@ -231,6 +393,10 @@ export class DesktopStore {
 
   getActiveViewId(): string | null {
     return normalizePersistedId(this.state.activeViewId);
+  }
+
+  getActiveTabId(): string | null {
+    return normalizePersistedId(this.state.activeTabId);
   }
 
   getProvider(): DesktopProvider {
@@ -246,6 +412,58 @@ export class DesktopStore {
 
   setActiveView(viewId: string | null): void {
     this.state.activeViewId = normalizePersistedId(viewId);
+    this.persist();
+  }
+
+  activateThreadView(threadId: string, viewId: string): void {
+    const thread = this.getThread(threadId);
+    if (!thread) {
+      throw new Error(`Thread ${threadId} does not exist`);
+    }
+
+    const tab = this.upsertTab({
+      kind: 'thread',
+      threadId,
+      viewId,
+    });
+    this.syncStateFromTab(tab);
+    this.persist();
+  }
+
+  activateWorkspaceView(viewId: string): void {
+    const tab = this.upsertTab({
+      kind: 'workspace',
+      threadId: null,
+      viewId,
+    });
+    this.syncStateFromTab(tab);
+    this.persist();
+  }
+
+  selectTab(tabId: string): void {
+    const tab = (this.state.tabs ?? []).find((current) => current.id === tabId);
+    if (!tab) {
+      throw new Error(`Tab ${tabId} does not exist`);
+    }
+    this.syncStateFromTab(tab);
+    this.persist();
+  }
+
+  closeTab(tabId: string, views: DesktopView[]): void {
+    const tabs = this.normalizeTabs(views);
+    const index = tabs.findIndex((tab) => tab.id === tabId);
+    if (index === -1) {
+      throw new Error(`Tab ${tabId} does not exist`);
+    }
+
+    const nextTabs = tabs.filter((tab) => tab.id !== tabId);
+    this.state.tabs = nextTabs;
+    if (this.state.activeTabId === tabId) {
+      const fallback = nextTabs[index] ?? nextTabs[index - 1] ?? nextTabs[0] ?? null;
+      this.syncStateFromTab(fallback);
+    } else {
+      this.state.activeTabId = normalizePersistedId(this.state.activeTabId);
+    }
     this.persist();
   }
 
@@ -581,7 +799,15 @@ export class DesktopStore {
     panels: DesktopPanel[],
     plugins: DesktopSnapshot['plugins'],
   ): DesktopSnapshot {
+    const tabs = this.normalizeTabs(views);
+    this.state.tabs = tabs;
+    if (!tabs.some((tab) => tab.id === this.state.activeTabId)) {
+      this.activateFallbackTab(views);
+    }
+
     return {
+      tabs: this.toDesktopTabs(this.state.tabs ?? [], views),
+      activeTabId: this.getActiveTabId(),
       activeThreadId: this.state.activeThreadId,
       activeViewId: this.getActiveViewId(),
       threadPanelStateById: this.getThreadPanelStateById(),
