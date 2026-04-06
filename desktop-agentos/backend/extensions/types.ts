@@ -3,8 +3,10 @@ import type {
   DesktopModel,
   DesktopPluginHostPanelData,
   DesktopPluginRecord,
+  DesktopPanel,
   DesktopProvider,
   DesktopRuntimeStatus,
+  DesktopView,
 } from "../../../desktop/shared/protocol";
 import type {
   CamelAIHarnessAdapterInfo,
@@ -53,16 +55,16 @@ export interface CamelAIActivationContext {
   threadStateDirectory: string | null;
 }
 
-export interface CamelAIPageRenderContext extends CamelAIActivationContext {
+export interface CamelAIViewRenderContext extends CamelAIActivationContext {
   pluginId: string;
-  pageId: string;
+  viewId: string;
   threadState: AgentExtensionThreadStateStore;
   plugin: DesktopPluginRecord;
 }
 
-export interface CamelAIPreviewRenderContext extends CamelAIActivationContext {
+export interface CamelAIPanelRenderContext extends CamelAIActivationContext {
   pluginId: string;
-  previewId: string;
+  panelId: string;
   threadId: string | null;
   threadState: AgentExtensionThreadStateStore;
   plugin: DesktopPluginRecord;
@@ -82,19 +84,21 @@ export interface CamelAIToolExecutionContext {
   threadState: AgentExtensionThreadStateStore;
 }
 
-export interface CamelAIPageRegistration {
+export interface CamelAIViewRegistration {
   title: string;
   description?: string;
   icon?: string;
+  scope?: "thread" | "workspace";
+  default?: boolean;
   render:
     | { kind: "host"; component: string }
     | { kind: "webview"; webviewId: string };
   buildHostData?: (
-    context: CamelAIPageRenderContext,
+    context: CamelAIViewRenderContext,
   ) => DesktopPluginHostPanelData;
 }
 
-export interface CamelAIPreviewPaneRegistration {
+export interface CamelAIPanelRegistration {
   title: string;
   description?: string;
   icon?: string;
@@ -103,7 +107,7 @@ export interface CamelAIPreviewPaneRegistration {
     | { kind: "host"; component: string }
     | { kind: "webview"; webviewId: string };
   buildHostData?: (
-    context: CamelAIPreviewRenderContext,
+    context: CamelAIPanelRenderContext,
   ) => DesktopPluginHostPanelData;
 }
 
@@ -196,8 +200,8 @@ export interface CamelAIPluginApi {
   readonly pluginId: string;
   readonly harnessAdapters: CamelAIHarnessAdapterInfo[];
   on(event: CamelAIEventName, handler: CamelAIEventHandler): void;
-  registerPage(id: string, page: CamelAIPageRegistration): void;
-  registerPreviewPane(id: string, preview: CamelAIPreviewPaneRegistration): void;
+  registerView(id: string, view: CamelAIViewRegistration): void;
+  registerPanel(id: string, panel: CamelAIPanelRegistration): void;
   registerCommand(id: string, command: CamelAICommandRegistration): void;
   registerTool(id: string, tool: CamelAIToolRegistration): void;
   threadState(threadId?: string | null): AgentExtensionThreadStateStore;
@@ -211,10 +215,9 @@ export interface CamelAIRuntimeRecord {
   discovered: DiscoveredCamelAIExtension;
   activated: boolean;
   activationError: string | null;
-  pages: Map<string, CamelAIPageRegistration>;
-  previewPanes: Map<string, CamelAIPreviewPaneRegistration>;
+  views: Map<string, CamelAIViewRegistration>;
+  panels: Map<string, CamelAIPanelRegistration>;
   commands: Map<string, CamelAICommandRegistration>;
   tools: Map<string, CamelAIToolRegistration>;
   handlers: Map<CamelAIEventName, CamelAIEventHandler[]>;
 }
-

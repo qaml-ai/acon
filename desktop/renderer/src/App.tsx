@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentType,
 } from "react";
 import { AlertCircle, Loader2, Plus } from "lucide-react";
 import { ContentBlockRenderer } from "@/components/message-bubble";
@@ -41,11 +42,12 @@ import type { ContentBlock, Message } from "@/types";
 import type {
   DesktopClientEvent,
   DesktopModel,
-  DesktopPage,
+  DesktopPanel,
   DesktopProvider,
   DesktopServerEvent,
   DesktopSnapshot,
   DesktopThread,
+  DesktopView,
 } from "../../shared/protocol";
 import {
   applyRuntimeEventToMessages,
@@ -58,6 +60,21 @@ const desktopShell = window.desktopShell;
 const fallbackBackendUrl = "http://127.0.0.1:4315";
 const RUNTIME_BOOT_SCREEN_DELAY_MS = 450;
 const EMPTY_THREAD_DRAFT_KEY = "__no_thread__";
+
+type WorkbenchSurface = DesktopView | DesktopPanel;
+
+type HostSurfaceComponentProps = {
+  snapshot: DesktopSnapshot;
+  surface: WorkbenchSurface;
+  activeThreadId: string | null;
+  mode: "full" | "companion";
+  rawMessages: Message[];
+  initialDraft: string;
+  isStreaming: boolean;
+  onDraftChange: (threadId: string | null, draft: string) => void;
+  onSubmitMessage: (threadId: string, content: string) => void;
+};
+
 function getActiveThread(
   snapshot: DesktopSnapshot | null,
   threadId: string | null,
@@ -66,15 +83,26 @@ function getActiveThread(
   return snapshot.threads.find((thread) => thread.id === threadId) ?? null;
 }
 
-function getPluginPage(
+function getView(
   snapshot: DesktopSnapshot | null,
-  pageId: string | null,
-): DesktopPage | null {
-  if (!snapshot || !pageId) {
+  viewId: string | null,
+): DesktopView | null {
+  if (!snapshot || !viewId) {
     return null;
   }
 
-  return snapshot.pages.find((page) => page.id === pageId) ?? null;
+  return snapshot.views.find((view) => view.id === viewId) ?? null;
+}
+
+function getPanel(
+  snapshot: DesktopSnapshot | null,
+  panelId: string | null,
+): DesktopPanel | null {
+  if (!snapshot || !panelId) {
+    return null;
+  }
+
+  return snapshot.panels.find((panel) => panel.id === panelId) ?? null;
 }
 
 function isSupportedPluginWebviewEntrypoint(
@@ -97,7 +125,7 @@ function withPluginWebviewContext(
   context: {
     threadId?: string | null;
     pluginId?: string | null;
-    pageId?: string | null;
+    surfaceId?: string | null;
     mode: "full" | "companion";
   },
 ): string {
@@ -110,8 +138,8 @@ function withPluginWebviewContext(
     if (context.pluginId) {
       params.set("pluginId", context.pluginId);
     }
-    if (context.pageId) {
-      params.set("pageId", context.pageId);
+    if (context.surfaceId) {
+      params.set("surfaceId", context.surfaceId);
     }
     params.set("surface", context.mode);
 
@@ -258,7 +286,7 @@ function RuntimeBootScreen({
             className={`flex size-10 items-center justify-center rounded-2xl border ${
               isError
                 ? "border-destructive/30 bg-destructive/10 text-destructive"
-                : "border-border bg-background text-foreground"
+                : "border-border/60 bg-muted/40 text-foreground"
             }`}
           >
             {isError ? (
@@ -267,8 +295,8 @@ function RuntimeBootScreen({
               <Loader2 className="size-5 animate-spin" />
             )}
           </div>
-          <div className="min-w-0">
-            <h2 className="text-xl font-semibold">
+          <div className="space-y-1">
+            <h2 className="text-lg font-semibold">
               {getRuntimeBootTitle(snapshot, connectionState)}
             </h2>
             <p className="text-sm text-muted-foreground">
@@ -278,24 +306,17 @@ function RuntimeBootScreen({
         </div>
 
         <div className="mt-6 space-y-3">
-          <div className="flex items-center justify-between text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-            <span>Runtime boot</span>
-            <span>{isError ? "Error" : `${progress}%`}</span>
-          </div>
-          <Progress value={progress} className="h-2 rounded-full" />
+          <Progress value={progress} />
+          {detail ? (
+            <p
+              className={`text-sm leading-relaxed ${
+                isError ? "text-destructive" : "text-muted-foreground"
+              }`}
+            >
+              {detail}
+            </p>
+          ) : null}
         </div>
-
-        {detail ? (
-          <Alert
-            variant={isError ? "destructive" : "default"}
-            className="mt-6 bg-background/70"
-          >
-            <AlertTitle>
-              {isError ? "Runtime error" : "Current step"}
-            </AlertTitle>
-            <AlertDescription>{detail}</AlertDescription>
-          </Alert>
-        ) : null}
       </div>
     </div>
   );
@@ -303,13 +324,11 @@ function RuntimeBootScreen({
 
 function coerceTextContent(content: string | ContentBlock[]): string {
   if (typeof content === "string") {
-    return content;
+    return content.trim();
   }
+
   return content
-    .filter(
-      (block): block is Extract<ContentBlock, { type: "text" }> =>
-        block.type === "text",
-    )
+    .filter((block): block is Extract<ContentBlock, { type: "text" }> => block.type === "text")
     .map((block) => block.text)
     .join("\n")
     .trim();
@@ -432,9 +451,8 @@ function TranscriptPane({
             <div className="max-w-md text-center">
               <h2 className="text-xl font-semibold">Start a new chat</h2>
               <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-                This desktop renderer now uses the same sidebar, header, and
-                composer primitives as the web app. The remaining gap is deeper
-                message rendering parity for SDK tool events.
+                Chat is now a contributed workbench view. Builtin and trusted
+                extensions can own how thread conversations are rendered.
               </p>
             </div>
           </div>
@@ -452,48 +470,6 @@ const MemoizedTranscriptPane = memo(
   TranscriptPane,
   (prev, next) => prev.rawMessages === next.rawMessages,
 );
-
-function ChatPane({
-  rawMessages,
-  activeThreadId,
-  initialDraft,
-  isStreaming,
-  onDraftChange,
-  onSubmitMessage,
-}: {
-  rawMessages: Message[];
-  activeThreadId: string | null;
-  initialDraft: string;
-  isStreaming: boolean;
-  onDraftChange: (threadId: string | null, draft: string) => void;
-  onSubmitMessage: (threadId: string, content: string) => void;
-}) {
-  return (
-    <>
-      <MemoizedTranscriptPane rawMessages={rawMessages} />
-
-      <div className="sticky bottom-0 z-20 shrink-0">
-        <div
-          className="pointer-events-none absolute inset-x-0 bottom-full h-8 bg-gradient-to-t from-background to-transparent"
-          aria-hidden="true"
-        />
-        <div className="bg-background">
-          <div className="px-4 pb-4 pt-2">
-            <div className="mx-auto flex w-full max-w-3xl flex-col max-h-[calc(100dvh-2rem)]">
-              <MemoizedComposer
-                activeThreadId={activeThreadId}
-                initialDraft={initialDraft}
-                isStreaming={isStreaming}
-                onDraftChange={onDraftChange}
-                onSubmitMessage={onSubmitMessage}
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-    </>
-  );
-}
 
 function Composer({
   activeThreadId,
@@ -550,6 +526,49 @@ const MemoizedComposer = memo(
     prev.onSubmitMessage === next.onSubmitMessage,
 );
 
+function ChatThreadView({
+  activeThreadId,
+  rawMessages,
+  initialDraft,
+  isStreaming,
+  onDraftChange,
+  onSubmitMessage,
+}: Pick<
+  HostSurfaceComponentProps,
+  | "activeThreadId"
+  | "rawMessages"
+  | "initialDraft"
+  | "isStreaming"
+  | "onDraftChange"
+  | "onSubmitMessage"
+>) {
+  return (
+    <>
+      <MemoizedTranscriptPane rawMessages={rawMessages} />
+
+      <div className="sticky bottom-0 z-20 shrink-0">
+        <div
+          className="pointer-events-none absolute inset-x-0 bottom-full h-8 bg-gradient-to-t from-background to-transparent"
+          aria-hidden="true"
+        />
+        <div className="bg-background">
+          <div className="px-4 pb-4 pt-2">
+            <div className="mx-auto flex w-full max-w-3xl flex-col max-h-[calc(100dvh-2rem)]">
+              <MemoizedComposer
+                activeThreadId={activeThreadId}
+                initialDraft={initialDraft}
+                isStreaming={isStreaming}
+                onDraftChange={onDraftChange}
+                onSubmitMessage={onSubmitMessage}
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function capabilityLabel(
   label: string,
   count: number,
@@ -561,13 +580,10 @@ function capabilityLabel(
   return `${count} ${label}s`;
 }
 
-function PluginCatalogPane({
+function ExtensionCatalogPane({
   snapshot,
   mode = "full",
-}: {
-  snapshot: DesktopSnapshot;
-  mode?: "full" | "companion";
-}) {
+}: Pick<HostSurfaceComponentProps, "snapshot" | "mode">) {
   return (
     <div className="flex flex-1 overflow-y-auto">
       <div
@@ -579,9 +595,8 @@ function PluginCatalogPane({
           <CardHeader>
             <CardTitle>Extension Lab</CardTitle>
             <CardDescription>
-              The desktop host now discovers lightweight `camelai` manifests and
-              lets plugins imperatively register pages, preview panes, commands,
-              tools, and runtime hooks.
+              The desktop workbench is now assembled from extension-contributed
+              views, panels, commands, tools, and runtime hooks.
             </CardDescription>
           </CardHeader>
         </Card>
@@ -624,19 +639,13 @@ function PluginCatalogPane({
                 <CardContent className="space-y-4">
                   <div className="flex flex-wrap gap-2 text-xs">
                     <Badge variant="outline">
-                      {capabilityLabel("page", plugin.capabilities.pages.length)}
+                      {capabilityLabel("view", plugin.capabilities.views.length)}
                     </Badge>
                     <Badge variant="outline">
-                      {capabilityLabel(
-                        "preview",
-                        plugin.capabilities.previewPanes.length,
-                      )}
+                      {capabilityLabel("panel", plugin.capabilities.panels.length)}
                     </Badge>
                     <Badge variant="outline">
-                      {capabilityLabel(
-                        "command",
-                        plugin.capabilities.commands.length,
-                      )}
+                      {capabilityLabel("command", plugin.capabilities.commands.length)}
                     </Badge>
                     <Badge variant="outline">
                       {capabilityLabel("tool", plugin.capabilities.tools.length)}
@@ -644,9 +653,7 @@ function PluginCatalogPane({
                   </div>
 
                   <div className="space-y-2 text-sm text-muted-foreground">
-                    <p className="font-medium text-foreground">
-                      {plugin.id}
-                    </p>
+                    <p className="font-medium text-foreground">{plugin.id}</p>
                     <p>{plugin.path}</p>
                   </div>
 
@@ -698,23 +705,93 @@ function PluginCatalogPane({
   );
 }
 
-function PluginDetailPane({
-  snapshot,
-  page,
-  activeThreadId = null,
-  mode = "full",
+const HOST_SURFACE_COMPONENTS: Record<
+  string,
+  ComponentType<HostSurfaceComponentProps>
+> = {
+  "chat-thread": ChatThreadView,
+  "extension-catalog": ExtensionCatalogPane,
+};
+
+function GenericHostDataPane({
+  surface,
+  mode,
 }: {
-  snapshot: DesktopSnapshot;
-  page: DesktopPage;
-  activeThreadId?: string | null;
-  mode?: "full" | "companion";
+  surface: WorkbenchSurface;
+  mode: "full" | "companion";
+}) {
+  const ViewIcon = getDesktopIcon(surface.icon);
+  return (
+    <div className="flex flex-1 overflow-y-auto">
+      <div
+        className={`flex w-full flex-col gap-4 px-4 pb-8 pt-5 md:px-6 ${
+          mode === "companion" ? "" : "mx-auto max-w-4xl"
+        }`}
+      >
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-3">
+              <div className="flex size-10 items-center justify-center rounded-2xl border border-border bg-muted/40">
+                <ViewIcon className="size-5" />
+              </div>
+              <div>
+                <CardTitle>{surface.title}</CardTitle>
+                <CardDescription>
+                  {surface.description ??
+                    "Plugin-provided data for the current AgentOS context."}
+                </CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+        </Card>
+
+        {surface.hostData?.sections.map((section) => (
+          <Card key={section.id}>
+            <CardHeader>
+              <CardTitle className="text-base">{section.title}</CardTitle>
+              <CardDescription>
+                {section.description ?? "Plugin-provided section"}
+              </CardDescription>
+            </CardHeader>
+            <CardContent
+              className={`grid gap-3 ${
+                mode === "companion" ? "grid-cols-1" : "md:grid-cols-2"
+              }`}
+            >
+              {section.items.map((item) => (
+                <div
+                  key={`${section.id}:${item.label}`}
+                  className="rounded-lg border border-border/60 bg-background/70 px-3 py-3"
+                >
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                    {item.label}
+                  </p>
+                  <p className="mt-2 break-all text-sm text-foreground">
+                    {item.value}
+                  </p>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function WebviewSurfacePane({
+  surface,
+  activeThreadId,
+  mode,
+}: {
+  surface: WorkbenchSurface;
+  activeThreadId: string | null;
+  mode: "full" | "companion";
 }) {
   const [resolvedWebviewSrc, setResolvedWebviewSrc] = useState<string | null>(null);
   const [webviewError, setWebviewError] = useState<string | null>(null);
-  const plugin = snapshot.plugins.find((item) => item.id === page.pluginId);
-  const ViewIcon = getDesktopIcon(page.icon);
   const webviewEntrypoint =
-    page.render.kind === "webview" ? page.render.entrypoint : null;
+    surface.render.kind === "webview" ? surface.render.entrypoint : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -759,76 +836,13 @@ function PluginDetailPane({
   const contextualWebviewSrc = resolvedWebviewSrc
     ? withPluginWebviewContext(resolvedWebviewSrc, {
         threadId: mode === "companion" ? activeThreadId : null,
-        pluginId: page.pluginId,
-        pageId: page.id,
+        pluginId: surface.pluginId,
+        surfaceId: surface.id,
         mode,
       })
     : null;
 
-  if (page.hostData) {
-    return (
-      <div className="flex flex-1 overflow-y-auto">
-        <div
-          className={`flex w-full flex-col gap-4 px-4 pb-8 pt-5 md:px-6 ${
-            mode === "companion" ? "" : "mx-auto max-w-4xl"
-          }`}
-        >
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-3">
-                <div className="flex size-10 items-center justify-center rounded-2xl border border-border bg-muted/40">
-                  <ViewIcon className="size-5" />
-                </div>
-                <div>
-                  <CardTitle>{page.title}</CardTitle>
-                  <CardDescription>
-                    {page.description ??
-                      "Plugin-provided data for the current AgentOS context."}
-                  </CardDescription>
-                </div>
-              </div>
-            </CardHeader>
-          </Card>
-
-          {page.hostData.sections.map((section) => (
-            <Card key={section.id}>
-              <CardHeader>
-                <CardTitle className="text-base">{section.title}</CardTitle>
-                <CardDescription>
-                  {section.description ?? "Plugin-provided section"}
-                </CardDescription>
-              </CardHeader>
-              <CardContent
-                className={`grid gap-3 ${
-                  mode === "companion" ? "grid-cols-1" : "md:grid-cols-2"
-                }`}
-              >
-                {section.items.map((item) => (
-                  <div
-                    key={`${section.id}:${item.label}`}
-                    className="rounded-lg border border-border/60 bg-background/70 px-3 py-3"
-                  >
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                      {item.label}
-                    </p>
-                    <p className="mt-2 break-all text-sm text-foreground">
-                      {item.value}
-                    </p>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  if (
-    mode === "companion" &&
-    page.render.kind === "webview" &&
-    isSupportedPluginWebviewEntrypoint(webviewEntrypoint)
-  ) {
+  if (mode === "companion") {
     return (
       <div className="flex min-h-0 flex-1 bg-background">
         {webviewError ? (
@@ -838,7 +852,7 @@ function PluginDetailPane({
           </Alert>
         ) : contextualWebviewSrc ? (
           <iframe
-            title={`${page.title} plugin webview`}
+            title={`${surface.title} plugin webview`}
             src={contextualWebviewSrc}
             className="min-h-0 w-full flex-1 bg-white"
             sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
@@ -858,112 +872,73 @@ function PluginDetailPane({
 
   return (
     <div className="flex flex-1 overflow-y-auto">
-      <div
-        className={`flex w-full flex-col gap-4 px-4 pb-8 pt-5 md:px-6 ${
-          mode === "companion" ? "" : "mx-auto max-w-4xl"
-        }`}
-      >
+      <div className="mx-auto flex w-full max-w-4xl flex-col gap-4 px-4 pb-8 pt-5 md:px-6">
         <Card>
           <CardHeader>
-            <div className="flex items-center gap-3">
-              <div className="flex size-10 items-center justify-center rounded-2xl border border-border bg-muted/40">
-                <ViewIcon className="size-5" />
-              </div>
-              <div>
-                <CardTitle>{page.title}</CardTitle>
-                <CardDescription>
-                  {page.description ?? "This plugin page does not have a description yet."}
-                </CardDescription>
-              </div>
-            </div>
+            <CardTitle>{surface.title}</CardTitle>
+            <CardDescription>
+              {surface.description ?? "Plugin-owned webview surface."}
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            {plugin ? (
-              <>
-                <div className="flex flex-wrap gap-2">
-                  <Badge variant="secondary">{plugin.name}</Badge>
-                  <Badge variant="outline">{plugin.source}</Badge>
-                  <Badge variant={plugin.runtime.activated ? "secondary" : "outline"}>
-                    {plugin.runtime.activated ? "activated" : "discovered"}
-                  </Badge>
-                </div>
-
-                <p className="text-sm leading-relaxed text-muted-foreground">
-                  {plugin.description ??
-                    "The plugin was discovered from its manifest, but it has not registered a richer page yet."}
-                </p>
-              </>
-            ) : null}
-
-            {page.render.kind === "webview" ? (
-              isSupportedPluginWebviewEntrypoint(webviewEntrypoint) ? (
-                <div className="space-y-4">
-                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/60 bg-muted/20 px-4 py-3">
-                    <div className="space-y-1">
-                      <p className="text-sm font-medium text-foreground">
-                        Plugin webview
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        Rendering plugin-owned web content in the companion pane.
-                      </p>
-                    </div>
-                    <Button
-                      disabled={!resolvedWebviewSrc}
-                      onClick={() => {
-                        if (!resolvedWebviewSrc) {
-                          return;
-                        }
-                        window.open(resolvedWebviewSrc, "_blank", "noopener,noreferrer");
-                      }}
-                      type="button"
-                      variant="outline"
-                    >
-                      Open in browser
-                    </Button>
-                  </div>
-
-                  <div className="overflow-hidden rounded-2xl border border-border/70 bg-background shadow-sm">
-                    {webviewError ? (
-                      <Alert className="m-4">
-                        <AlertTitle>Webview failed to load</AlertTitle>
-                        <AlertDescription>{webviewError}</AlertDescription>
-                      </Alert>
-                    ) : contextualWebviewSrc ? (
-                      <iframe
-                        title={`${page.title} plugin webview`}
-                        src={contextualWebviewSrc}
-                        className="min-h-[640px] w-full bg-white"
-                        sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-                        referrerPolicy="no-referrer"
-                      />
-                    ) : (
-                      <div className="flex min-h-[640px] items-center justify-center bg-muted/10">
-                        <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                          <Loader2 className="size-4 animate-spin" />
-                          <span>Loading plugin surface…</span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <Alert>
-                  <AlertTitle>Unsupported webview entrypoint</AlertTitle>
-                  <AlertDescription>
-                    Plugin webviews currently support `https:`, `http:`, `data:`,
-                    and plugin-local HTML entrypoints.
-                  </AlertDescription>
-                </Alert>
-              )
-            ) : (
+            {!isSupportedPluginWebviewEntrypoint(webviewEntrypoint) ? (
               <Alert>
-                <AlertTitle>Host-rendered fallback</AlertTitle>
+                <AlertTitle>Unsupported webview entrypoint</AlertTitle>
                 <AlertDescription>
-                  This view currently uses a host-rendered surface. Plugin-owned
-                  React/webview rendering can layer on top of the same manifest
-                  and activation model later.
+                  Plugin webviews currently support `https:`, `http:`, `data:`,
+                  and plugin-local HTML entrypoints.
                 </AlertDescription>
               </Alert>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/60 bg-muted/20 px-4 py-3">
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-foreground">
+                      Plugin webview
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Rendering plugin-owned workbench content.
+                    </p>
+                  </div>
+                  <Button
+                    disabled={!resolvedWebviewSrc}
+                    onClick={() => {
+                      if (!resolvedWebviewSrc) {
+                        return;
+                      }
+                      window.open(resolvedWebviewSrc, "_blank", "noopener,noreferrer");
+                    }}
+                    type="button"
+                    variant="outline"
+                  >
+                    Open in browser
+                  </Button>
+                </div>
+
+                <div className="overflow-hidden rounded-2xl border border-border/70 bg-background shadow-sm">
+                  {webviewError ? (
+                    <Alert className="m-4">
+                      <AlertTitle>Webview failed to load</AlertTitle>
+                      <AlertDescription>{webviewError}</AlertDescription>
+                    </Alert>
+                  ) : contextualWebviewSrc ? (
+                    <iframe
+                      title={`${surface.title} plugin webview`}
+                      src={contextualWebviewSrc}
+                      className="min-h-[640px] w-full bg-white"
+                      sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <div className="flex min-h-[640px] items-center justify-center bg-muted/10">
+                      <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                        <Loader2 className="size-4 animate-spin" />
+                        <span>Loading plugin surface…</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
             )}
           </CardContent>
         </Card>
@@ -972,130 +947,53 @@ function PluginDetailPane({
   );
 }
 
-const MemoizedCompanionWebviewPane = memo(
-  function CompanionWebviewPane({
-    title,
-    entrypoint,
-    activeThreadId,
-    pluginId,
-    pageId,
-  }: {
-    title: string;
-    entrypoint: string;
-    activeThreadId: string | null;
-    pluginId: string | null;
-    pageId: string;
-  }) {
-    const [resolvedWebviewSrc, setResolvedWebviewSrc] = useState<string | null>(null);
-    const [webviewError, setWebviewError] = useState<string | null>(null);
+function WorkbenchSurfacePane(props: HostSurfaceComponentProps) {
+  const { surface, activeThreadId, mode } = props;
 
-    useEffect(() => {
-      let cancelled = false;
-
-      async function resolveWebviewSource() {
-        if (!isSupportedPluginWebviewEntrypoint(entrypoint)) {
-          setResolvedWebviewSrc(null);
-          setWebviewError(null);
-          return;
-        }
-
-        if (desktopShell?.resolveWebviewSrc) {
-          try {
-            const nextSrc = await desktopShell.resolveWebviewSrc(entrypoint);
-            if (!cancelled) {
-              setResolvedWebviewSrc(nextSrc);
-              setWebviewError(null);
-            }
-            return;
-          } catch (error) {
-            if (!cancelled) {
-              setResolvedWebviewSrc(null);
-              setWebviewError(error instanceof Error ? error.message : String(error));
-            }
-            return;
-          }
-        }
-
-        if (!cancelled) {
-          setResolvedWebviewSrc(entrypoint);
-          setWebviewError(null);
-        }
-      }
-
-      void resolveWebviewSource();
-
-      return () => {
-        cancelled = true;
-      };
-    }, [entrypoint]);
-
-    const contextualWebviewSrc = resolvedWebviewSrc
-      ? withPluginWebviewContext(resolvedWebviewSrc, {
-          threadId: activeThreadId,
-          pluginId,
-          pageId,
-          mode: "companion",
-        })
+  if (surface.render.kind === "host") {
+    const HostComponent = surface.render.component
+      ? HOST_SURFACE_COMPONENTS[surface.render.component]
       : null;
+    if (HostComponent) {
+      return <HostComponent {...props} />;
+    }
+
+    if (surface.hostData) {
+      return <GenericHostDataPane surface={surface} mode={mode} />;
+    }
 
     return (
-      <div className="flex min-h-0 flex-1 bg-background">
-        {webviewError ? (
-          <Alert className="m-4 self-start">
-            <AlertTitle>Webview failed to load</AlertTitle>
-            <AlertDescription>{webviewError}</AlertDescription>
-          </Alert>
-        ) : contextualWebviewSrc ? (
-          <iframe
-            title={`${title} plugin webview`}
-            src={contextualWebviewSrc}
-            className="min-h-0 w-full flex-1 bg-white"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-            referrerPolicy="no-referrer"
-          />
-        ) : (
-          <div className="flex min-h-0 flex-1 items-center justify-center bg-muted/10">
-            <div className="flex items-center gap-3 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" />
-              <span>Loading plugin surface…</span>
-            </div>
-          </div>
-        )}
+      <div className="flex flex-1 items-center justify-center p-6">
+        <Alert className="max-w-xl">
+          <AlertTitle>Unknown host surface</AlertTitle>
+          <AlertDescription>
+            No renderer host component is registered for `{surface.render.component}`.
+          </AlertDescription>
+        </Alert>
       </div>
     );
-  },
-  (prev, next) =>
-    prev.title === next.title &&
-    prev.entrypoint === next.entrypoint &&
-    prev.activeThreadId === next.activeThreadId &&
-    prev.pluginId === next.pluginId &&
-    prev.pageId === next.pageId,
-);
-
-function PluginPane({
-  snapshot,
-  page,
-  activeThreadId = null,
-  mode = "full",
-}: {
-  snapshot: DesktopSnapshot;
-  page: DesktopPage;
-  activeThreadId?: string | null;
-  mode?: "full" | "companion";
-}) {
-  if (page.render.kind === "host" && page.render.component === "extension-catalog") {
-    return <PluginCatalogPane snapshot={snapshot} mode={mode} />;
   }
 
   return (
-    <PluginDetailPane
-      snapshot={snapshot}
-      page={page}
+    <WebviewSurfacePane
+      surface={surface}
       activeThreadId={activeThreadId}
       mode={mode}
     />
   );
 }
+
+const MemoizedCompanionPanelPane = memo(
+  function CompanionPanelPane(props: HostSurfaceComponentProps) {
+    return <WorkbenchSurfacePane {...props} mode="companion" />;
+  },
+  (prev, next) =>
+    prev.surface === next.surface &&
+    prev.activeThreadId === next.activeThreadId &&
+    prev.rawMessages === next.rawMessages &&
+    prev.initialDraft === next.initialDraft &&
+    prev.isStreaming === next.isStreaming,
+);
 
 export function App() {
   const [snapshot, setSnapshot] = useState<DesktopSnapshot | null>(null);
@@ -1103,7 +1001,7 @@ export function App() {
     Record<string, Message[]>
   >({});
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
-  const [activePluginPageId, setActivePluginPageId] = useState<string | null>(null);
+  const [activeViewId, setActiveViewId] = useState<string | null>(null);
   const [connectionState, setConnectionState] = useState<
     "connecting" | "open" | "closed"
   >("connecting");
@@ -1117,28 +1015,28 @@ export function App() {
     () => getActiveThread(snapshot, activeThreadId),
     [snapshot, activeThreadId],
   );
-  const activePluginPage = useMemo(
-    () => getPluginPage(snapshot, activePluginPageId),
-    [snapshot, activePluginPageId],
+  const activeView = useMemo(
+    () => getView(snapshot, activeViewId),
+    [snapshot, activeViewId],
   );
-  const activeThreadPreviewState = useMemo(() => {
+  const activeThreadPanelState = useMemo(() => {
     if (!snapshot || !activeThreadId) {
       return null;
     }
 
     return (
-      snapshot.threadPreviewStateById[activeThreadId] ?? {
-        pageId: null,
+      snapshot.threadPanelStateById[activeThreadId] ?? {
+        panelId: null,
         visible: false,
       }
     );
   }, [snapshot, activeThreadId]);
-  const activeThreadPreviewPage = useMemo(
+  const activeThreadPanel = useMemo(
     () =>
-      activeThreadPreviewState?.visible
-        ? getPluginPage(snapshot, activeThreadPreviewState.pageId)
+      activeThreadPanelState?.visible
+        ? getPanel(snapshot, activeThreadPanelState.panelId)
         : null,
-    [activeThreadPreviewState, snapshot],
+    [activeThreadPanelState, snapshot],
   );
   const rawMessages = useMemo(() => {
     if (!activeThreadId) return [];
@@ -1183,7 +1081,12 @@ export function App() {
           return merged;
         });
         setActiveThreadId(next.activeThreadId ?? next.threads[0]?.id ?? null);
-        setActivePluginPageId(next.activePluginPageId ?? null);
+        setActiveViewId(
+          next.activeViewId ??
+            next.views.find((view) => view.isDefault)?.id ??
+            next.views[0]?.id ??
+            null,
+        );
       } catch {
         setConnectionState("closed");
       }
@@ -1219,7 +1122,12 @@ export function App() {
             event.snapshot.threads[0]?.id ??
             null,
         );
-        setActivePluginPageId(event.snapshot.activePluginPageId ?? null);
+        setActiveViewId(
+          event.snapshot.activeViewId ??
+            event.snapshot.views.find((view) => view.isDefault)?.id ??
+            event.snapshot.views[0]?.id ??
+            null,
+        );
         setConnectionState("open");
         return;
       }
@@ -1334,26 +1242,17 @@ export function App() {
   }, []);
 
   const handleCreateThread = useCallback(() => {
-    setActivePluginPageId(null);
     sendEvent({ type: "create_thread" });
   }, [sendEvent]);
 
   const handleSelectThread = useCallback((threadId: string) => {
     setActiveThreadId(threadId);
-    setActivePluginPageId(null);
     sendEvent({ type: "select_thread", threadId });
   }, [sendEvent]);
 
-  const handleShowChat = useCallback(() => {
-    setActivePluginPageId(null);
-    if (activeThreadId) {
-      sendEvent({ type: "select_thread", threadId: activeThreadId });
-    }
-  }, [activeThreadId, sendEvent]);
-
-  const handleSelectPluginPage = useCallback((pageId: string) => {
-    setActivePluginPageId(pageId);
-    sendEvent({ type: "select_plugin_page", pageId });
+  const handleSelectView = useCallback((viewId: string) => {
+    setActiveViewId(viewId);
+    sendEvent({ type: "select_view", viewId });
   }, [sendEvent]);
 
   const handleSetModel = useCallback((model: string) => {
@@ -1384,6 +1283,30 @@ export function App() {
       content,
     });
   }, [sendEvent]);
+
+  const activeSurfaceProps = snapshot && activeView ? {
+    snapshot,
+    surface: activeView,
+    activeThreadId,
+    mode: "full" as const,
+    rawMessages,
+    initialDraft,
+    isStreaming,
+    onDraftChange: handleDraftChange,
+    onSubmitMessage: handleSubmitMessage,
+  } : null;
+
+  const activePanelProps = snapshot && activeThreadPanel ? {
+    snapshot,
+    surface: activeThreadPanel,
+    activeThreadId,
+    mode: "companion" as const,
+    rawMessages,
+    initialDraft,
+    isStreaming,
+    onDraftChange: handleDraftChange,
+    onSubmitMessage: handleSubmitMessage,
+  } : null;
 
   return (
     <TooltipProvider>
@@ -1468,25 +1391,26 @@ export function App() {
           <SidebarProvider defaultOpen>
             <DesktopSidebar
               activeThreadId={activeThreadId}
-              activePluginPageId={activePluginPageId}
+              activeViewId={activeViewId}
               connectionState={connectionState}
               onCreateThread={handleCreateThread}
-              onShowChat={handleShowChat}
               onSelectThread={handleSelectThread}
-              onSelectPluginPage={handleSelectPluginPage}
+              onSelectView={handleSelectView}
               snapshot={snapshot}
               threads={snapshot?.threads ?? []}
-              pluginPages={snapshot?.pages ?? []}
+              views={snapshot?.views ?? []}
             />
             <SidebarInset className="overflow-hidden flex flex-col">
               <PageHeader
                 breadcrumbs={
-                  activePluginPage
-                    ? [{ label: activePluginPage.title }]
-                    : [
-                        { label: "Chat" },
-                        { label: activeThread?.title ?? "New Chat" },
-                      ]
+                  activeView
+                    ? activeView.scope === "thread"
+                      ? [
+                          { label: activeView.title },
+                          { label: activeThread?.title ?? "New Chat" },
+                        ]
+                      : [{ label: activeView.title }]
+                    : [{ label: activeThread?.title ?? "New Chat" }]
                 }
                 className="border-b border-border/60"
               />
@@ -1497,55 +1421,28 @@ export function App() {
                     snapshot={snapshot}
                     connectionState={connectionState}
                   />
-                ) : (
-                  <>
-                    {snapshot && activePluginPage ? (
-                      <PluginPane
-                        snapshot={snapshot}
-                        page={activePluginPage}
-                        activeThreadId={activeThreadId}
-                        mode="full"
-                      />
-                    ) : (
-                      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-                        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                          <ChatPane
-                            rawMessages={rawMessages}
-                            activeThreadId={activeThreadId}
-                            initialDraft={initialDraft}
-                            isStreaming={isStreaming}
-                            onDraftChange={handleDraftChange}
-                            onSubmitMessage={handleSubmitMessage}
-                          />
-                        </div>
+                ) : activeSurfaceProps ? (
+                  <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+                    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                      <WorkbenchSurfacePane {...activeSurfaceProps} />
+                    </div>
 
-                        {snapshot && activeThreadPreviewPage ? (
-                          <aside className="flex min-h-[320px] w-full min-w-0 border-t border-border/60 bg-muted/10 lg:min-h-0 lg:w-[420px] lg:border-l lg:border-t-0 xl:w-[480px] 2xl:w-[560px]">
-                            {activeThreadPreviewPage.render.kind === "webview" ? (
-                              <MemoizedCompanionWebviewPane
-                                title={activeThreadPreviewPage.title}
-                                entrypoint={
-                                  activeThreadPreviewPage.render.kind === "webview"
-                                    ? (activeThreadPreviewPage.render.entrypoint ?? "")
-                                    : ""
-                                }
-                                activeThreadId={activeThreadId}
-                                pluginId={activeThreadPreviewPage.pluginId}
-                                pageId={activeThreadPreviewPage.id}
-                              />
-                            ) : (
-                              <PluginPane
-                                snapshot={snapshot}
-                                page={activeThreadPreviewPage}
-                                activeThreadId={activeThreadId}
-                                mode="companion"
-                              />
-                            )}
-                          </aside>
-                        ) : null}
-                      </div>
-                    )}
-                  </>
+                    {activePanelProps ? (
+                      <aside className="flex min-h-[320px] w-full min-w-0 border-t border-border/60 bg-muted/10 lg:min-h-0 lg:w-[420px] lg:border-l lg:border-t-0 xl:w-[480px] 2xl:w-[560px]">
+                        <MemoizedCompanionPanelPane {...activePanelProps} />
+                      </aside>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="flex flex-1 items-center justify-center p-6">
+                    <Alert className="max-w-xl">
+                      <AlertTitle>No active view</AlertTitle>
+                      <AlertDescription>
+                        No workbench view is available yet. Install or activate a
+                        builtin extension that contributes one.
+                      </AlertDescription>
+                    </Alert>
+                  </div>
                 )}
               </div>
             </SidebarInset>

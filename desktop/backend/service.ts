@@ -90,6 +90,7 @@ export class DesktopService {
       provider.getAuthState(),
       [],
       [],
+      [],
     );
   }
 
@@ -127,18 +128,18 @@ export class DesktopService {
         }
         return;
       }
-      case "select_plugin_page": {
-        this.store.setActivePluginPage(event.pageId);
+      case "select_view": {
+        this.store.setActiveView(event.viewId);
         this.emitSnapshot();
         return;
       }
-      case "open_thread_preview": {
-        this.store.openThreadPreview(event.threadId, event.pageId);
+      case "open_thread_panel": {
+        this.store.openThreadPanel(event.threadId, event.panelId);
         this.emitSnapshot();
         return;
       }
-      case "close_thread_preview": {
-        this.store.closeThreadPreview(event.threadId);
+      case "close_thread_panel": {
+        this.store.closeThreadPanel(event.threadId);
         this.emitSnapshot();
         return;
       }

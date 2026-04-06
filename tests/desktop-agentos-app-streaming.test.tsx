@@ -237,10 +237,10 @@ function createSnapshot(): DesktopSnapshot {
       "thread-1": [],
     },
     activeThreadId: "thread-1",
-    activePluginPageId: null,
-    threadPreviewStateById: {
+    activeViewId: "plugin:chat-core:chat-core.thread",
+    threadPanelStateById: {
       "thread-1": {
-        pageId: null,
+        panelId: null,
         visible: false,
       },
     },
@@ -265,27 +265,44 @@ function createSnapshot(): DesktopSnapshot {
       detail: "Runtime ready",
       helperPath: null,
     },
-    pages: [
+    views: [
+      {
+        id: "plugin:chat-core:chat-core.thread",
+        title: "Chat",
+        description: "Thread-focused chat workspace.",
+        icon: "MessagesSquare",
+        pluginId: "chat-core",
+        scope: "thread",
+        isDefault: true,
+        render: {
+          kind: "host",
+          component: "chat-thread",
+        },
+        hostData: null,
+      },
       {
         id: "plugin:extension-lab:extension-lab.home",
         title: "Extension Lab",
         description: "Inspect the new V2 extension runtime and installed plugins.",
         icon: "Blocks",
         pluginId: "extension-lab",
-        surface: "page",
+        scope: "workspace",
+        isDefault: false,
         render: {
           kind: "host",
           component: "extension-catalog",
         },
         hostData: null,
       },
+    ],
+    panels: [
       {
         id: "plugin:random-site-preview:random-site-preview.frame",
         title: "Random Site Preview",
         description: "Shows a thread-specific random website.",
         icon: "Globe",
         pluginId: "random-site-preview",
-        surface: "preview",
+        autoOpen: "all-threads",
         render: {
           kind: "webview",
           entrypoint: "/tmp/random-site-preview/site/index.html",
@@ -294,6 +311,41 @@ function createSnapshot(): DesktopSnapshot {
       },
     ],
     plugins: [
+      {
+        id: "chat-core",
+        name: "Chat",
+        version: "0.1.0",
+        description: "Provides the primary thread chat workbench view.",
+        source: "builtin",
+        enabled: true,
+        path: "/tmp/chat-core",
+        main: "/tmp/chat-core/index.ts",
+        webviews: [],
+        capabilities: {
+          views: [
+            {
+              id: "chat-core.thread",
+              title: "Chat",
+              description: "Thread-focused chat workspace.",
+              icon: "MessagesSquare",
+              scope: "thread",
+              default: true,
+            },
+          ],
+          panels: [],
+          commands: [],
+          tools: [],
+        },
+        runtime: {
+          activated: true,
+          activationError: null,
+          subscribedEvents: [],
+          registeredViewIds: ["chat-core.thread"],
+          registeredPanelIds: [],
+          registeredCommandIds: [],
+          registeredToolIds: [],
+        },
+      },
       {
         id: "extension-lab",
         name: "Extension Lab",
@@ -305,15 +357,17 @@ function createSnapshot(): DesktopSnapshot {
         main: "/tmp/extension-lab/index.ts",
         webviews: [],
         capabilities: {
-          pages: [
+          views: [
             {
               id: "extension-lab.home",
               title: "Extension Lab",
               description: "Inspect the new V2 extension runtime and installed plugins.",
               icon: "Blocks",
+              scope: "workspace",
+              default: false,
             },
           ],
-          previewPanes: [],
+          panels: [],
           commands: [],
           tools: [],
         },
@@ -321,8 +375,8 @@ function createSnapshot(): DesktopSnapshot {
           activated: true,
           activationError: null,
           subscribedEvents: [],
-          registeredPageIds: ["extension-lab.home"],
-          registeredPreviewPaneIds: [],
+          registeredViewIds: ["extension-lab.home"],
+          registeredPanelIds: [],
           registeredCommandIds: [],
           registeredToolIds: [],
         },
@@ -343,8 +397,8 @@ function createSnapshot(): DesktopSnapshot {
           },
         ],
         capabilities: {
-          pages: [],
-          previewPanes: [
+          views: [],
+          panels: [
             {
               id: "random-site-preview.frame",
               title: "Random Site Preview",
@@ -360,8 +414,8 @@ function createSnapshot(): DesktopSnapshot {
           activated: true,
           activationError: null,
           subscribedEvents: [],
-          registeredPageIds: [],
-          registeredPreviewPaneIds: ["random-site-preview.frame"],
+          registeredViewIds: [],
+          registeredPanelIds: ["random-site-preview.frame"],
           registeredCommandIds: [],
           registeredToolIds: [],
         },
@@ -377,8 +431,8 @@ function createSnapshot(): DesktopSnapshot {
         main: "/tmp/thread-journal/index.ts",
         webviews: [],
         capabilities: {
-          pages: [],
-          previewPanes: [],
+          views: [],
+          panels: [],
           commands: [
             {
               id: "thread-journal.reset",
@@ -400,8 +454,8 @@ function createSnapshot(): DesktopSnapshot {
           activated: true,
           activationError: null,
           subscribedEvents: ["before_prompt"],
-          registeredPageIds: [],
-          registeredPreviewPaneIds: [],
+          registeredViewIds: [],
+          registeredPanelIds: [],
           registeredCommandIds: ["thread-journal.reset"],
           registeredToolIds: ["thread-journal.snapshot"],
         },
@@ -513,9 +567,9 @@ afterEach(() => {
 });
 
 describe("desktop AgentOS renderer streaming", () => {
-  it("opens plugin clicks as a full-page plugin surface with chat hidden", async () => {
+  it("opens workbench views as a full-page surface with chat hidden", async () => {
     const snapshot = createSnapshot();
-    snapshot.activePluginPageId = "plugin:extension-lab:extension-lab.home";
+    snapshot.activeViewId = "plugin:extension-lab:extension-lab.home";
     snapshot.messagesByThread["thread-1"] = [
       {
         id: "message-1",
@@ -539,10 +593,10 @@ describe("desktop AgentOS renderer streaming", () => {
     expect(screen.queryByLabelText("Prompt input")).toBeNull();
   });
 
-  it("renders the right preview pane from thread-owned state while chat stays visible", async () => {
+  it("renders the right panel from thread-owned state while chat stays visible", async () => {
     const snapshot = createSnapshot();
-    snapshot.threadPreviewStateById["thread-1"] = {
-      pageId: "plugin:random-site-preview:random-site-preview.frame",
+    snapshot.threadPanelStateById["thread-1"] = {
+      panelId: "plugin:random-site-preview:random-site-preview.frame",
       visible: true,
     };
     snapshot.messagesByThread["thread-1"] = [
@@ -568,14 +622,14 @@ describe("desktop AgentOS renderer streaming", () => {
     expect(screen.getByLabelText("Prompt input")).toBeInTheDocument();
     expect(screen.getByTitle("Random Site Preview plugin webview")).toHaveAttribute(
       "src",
-      "desktop-plugin://local/tmp/random-site-preview/site/index.html?threadId=thread-1&pluginId=random-site-preview&pageId=plugin%3Arandom-site-preview%3Arandom-site-preview.frame&surface=companion",
+      "desktop-plugin://local/tmp/random-site-preview/site/index.html?threadId=thread-1&pluginId=random-site-preview&surfaceId=plugin%3Arandom-site-preview%3Arandom-site-preview.frame&surface=companion",
     );
   });
 
-  it("can render a thread-specific random-site companion in the right pane", async () => {
+  it("can render a thread-specific random-site panel in the right pane", async () => {
     const snapshot = createSnapshot();
-    snapshot.threadPreviewStateById["thread-1"] = {
-      pageId: "plugin:random-site-preview:random-site-preview.frame",
+    snapshot.threadPanelStateById["thread-1"] = {
+      panelId: "plugin:random-site-preview:random-site-preview.frame",
       visible: true,
     };
 
@@ -591,14 +645,14 @@ describe("desktop AgentOS renderer streaming", () => {
       screen.getByTitle("Random Site Preview plugin webview"),
     ).toHaveAttribute(
       "src",
-      "desktop-plugin://local/tmp/random-site-preview/site/index.html?threadId=thread-1&pluginId=random-site-preview&pageId=plugin%3Arandom-site-preview%3Arandom-site-preview.frame&surface=companion",
+      "desktop-plugin://local/tmp/random-site-preview/site/index.html?threadId=thread-1&pluginId=random-site-preview&surfaceId=plugin%3Arandom-site-preview%3Arandom-site-preview.frame&surface=companion",
     );
   });
 
   it("keeps the companion webview mounted while chat messages stream", async () => {
     const snapshot = createSnapshot();
-    snapshot.threadPreviewStateById["thread-1"] = {
-      pageId: "plugin:random-site-preview:random-site-preview.frame",
+    snapshot.threadPanelStateById["thread-1"] = {
+      panelId: "plugin:random-site-preview:random-site-preview.frame",
       visible: true,
     };
 

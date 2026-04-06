@@ -1,18 +1,20 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type {
   DesktopAuthState,
   DesktopMessage,
   DesktopModel,
   DesktopModelOption,
+  DesktopPanel,
   DesktopProvider,
   DesktopProviderOption,
   DesktopRuntimeStatus,
   DesktopSnapshot,
   DesktopThread,
-  DesktopThreadPreviewPaneState,
+  DesktopThreadPanelState,
+  DesktopView,
 } from '../../desktop/shared/protocol';
 import type { ContentBlock } from '../../src/types';
 import { extractTextContent } from '../../desktop/shared/message-state';
@@ -23,11 +25,10 @@ import {
 
 interface PersistedState {
   activeThreadId: string | null;
-  activePluginPageId?: string | null;
-  activeViewId?: string;
+  activeViewId?: string | null;
   provider: DesktopProvider;
   modelsByProvider: Partial<Record<DesktopProvider, DesktopModel>>;
-  threadPreviewStateById?: Record<string, DesktopThreadPreviewPaneState>;
+  threadPanelStateById?: Record<string, DesktopThreadPanelState>;
   providerStateByThread?: Partial<
     Record<
       string,
@@ -73,7 +74,7 @@ function previewText(content: string | ContentBlock[]): string | null {
   return text ? text.slice(0, 140) : null;
 }
 
-function normalizePersistedViewId(value: unknown): string | null {
+function normalizePersistedId(value: unknown): string | null {
   if (typeof value !== 'string') {
     return null;
   }
@@ -82,24 +83,19 @@ function normalizePersistedViewId(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function normalizePersistedPageId(value: unknown): string | null {
-  return normalizePersistedViewId(value);
-}
-
-function normalizePreviewState(
-  value: unknown,
-): DesktopThreadPreviewPaneState | null {
+function normalizePanelState(value: unknown): DesktopThreadPanelState | null {
   if (!value || typeof value !== 'object') {
     return null;
   }
 
-  const preview = value as {
+  const panel = value as {
+    panelId?: unknown;
     pageId?: unknown;
     visible?: unknown;
   };
   return {
-    pageId: normalizePersistedPageId(preview.pageId),
-    visible: preview.visible === true,
+    panelId: normalizePersistedId(panel.panelId ?? panel.pageId),
+    visible: panel.visible === true,
   };
 }
 
@@ -124,6 +120,8 @@ export class DesktopStore {
       const parsed = JSON.parse(raw) as PersistedState & {
         model?: DesktopModel;
         threads?: PersistedDesktopThread[];
+        activePluginPageId?: string | null;
+        threadPreviewStateById?: Record<string, unknown>;
       };
       const providerAdapter = requireDesktopProvider(
         parsed.provider ?? getDefaultProvider(),
@@ -136,9 +134,9 @@ export class DesktopStore {
       const modelsByProvider = parsed.modelsByProvider ?? {};
       const persistedProviderModel = modelsByProvider[fallbackProvider];
       const providerStateByThread = parsed.providerStateByThread ?? {};
-      const activePluginPageId =
-        normalizePersistedPageId(parsed.activePluginPageId) ??
-        normalizePersistedPageId(parsed.activeViewId);
+      const activeViewId =
+        normalizePersistedId(parsed.activeViewId) ??
+        normalizePersistedId(parsed.activePluginPageId);
       const inferThreadProvider = (
         thread: PersistedDesktopThread,
       ): DesktopProvider => {
@@ -170,9 +168,10 @@ export class DesktopStore {
         (activeThreadId
           ? threads.find((thread) => thread.id === activeThreadId)?.provider
           : null) ?? fallbackProvider;
+
       return {
         activeThreadId,
-        activePluginPageId,
+        activeViewId,
         provider: activeThreadProvider,
         modelsByProvider: {
           ...modelsByProvider,
@@ -183,13 +182,13 @@ export class DesktopStore {
               requireDesktopProvider(activeThreadProvider).getDefaultModel(),
           ),
         },
-        threadPreviewStateById: Object.fromEntries(
-          Object.entries(parsed.threadPreviewStateById ?? {}).flatMap(
-            ([threadId, previewState]) => {
-              const normalized = normalizePreviewState(previewState);
-              return normalized ? [[threadId, normalized]] : [];
-            },
-          ),
+        threadPanelStateById: Object.fromEntries(
+          Object.entries(
+            parsed.threadPanelStateById ?? parsed.threadPreviewStateById ?? {},
+          ).flatMap(([threadId, panelState]) => {
+            const normalized = normalizePanelState(panelState);
+            return normalized ? [[threadId, normalized]] : [];
+          }),
         ),
         providerStateByThread,
         threads,
@@ -199,12 +198,12 @@ export class DesktopStore {
       const provider = getDefaultProvider();
       return {
         activeThreadId: null,
-        activePluginPageId: null,
+        activeViewId: null,
         provider,
         modelsByProvider: {
           [provider]: requireDesktopProvider(provider).getDefaultModel(),
         },
-        threadPreviewStateById: {},
+        threadPanelStateById: {},
         providerStateByThread: {},
         threads: [],
         messagesByThread: {},
@@ -230,8 +229,8 @@ export class DesktopStore {
     return this.state.activeThreadId;
   }
 
-  getActivePluginPageId(): string | null {
-    return normalizePersistedPageId(this.state.activePluginPageId);
+  getActiveViewId(): string | null {
+    return normalizePersistedId(this.state.activeViewId);
   }
 
   getProvider(): DesktopProvider {
@@ -245,58 +244,58 @@ export class DesktopStore {
     this.persist();
   }
 
-  setActivePluginPage(pageId: string | null): void {
-    this.state.activePluginPageId = normalizePersistedPageId(pageId);
+  setActiveView(viewId: string | null): void {
+    this.state.activeViewId = normalizePersistedId(viewId);
     this.persist();
   }
 
-  getThreadPreviewStateById(): Record<string, DesktopThreadPreviewPaneState> {
+  getThreadPanelStateById(): Record<string, DesktopThreadPanelState> {
     return Object.fromEntries(
-      Object.entries(this.state.threadPreviewStateById ?? {}).map(
-        ([threadId, previewState]) => [
+      Object.entries(this.state.threadPanelStateById ?? {}).map(
+        ([threadId, panelState]) => [
           threadId,
           {
-            pageId: normalizePersistedPageId(previewState.pageId),
-            visible: previewState.visible === true,
+            panelId: normalizePersistedId(panelState.panelId),
+            visible: panelState.visible === true,
           },
         ],
       ),
     );
   }
 
-  getThreadPreviewState(threadId: string): DesktopThreadPreviewPaneState {
-    const previewState = this.state.threadPreviewStateById?.[threadId];
+  getThreadPanelState(threadId: string): DesktopThreadPanelState {
+    const panelState = this.state.threadPanelStateById?.[threadId];
     return {
-      pageId: normalizePersistedPageId(previewState?.pageId),
-      visible: previewState?.visible === true,
+      panelId: normalizePersistedId(panelState?.panelId),
+      visible: panelState?.visible === true,
     };
   }
 
-  openThreadPreview(threadId: string, pageId: string): void {
+  openThreadPanel(threadId: string, panelId: string): void {
     if (!this.getThread(threadId)) {
       throw new Error(`Thread ${threadId} does not exist`);
     }
 
-    this.state.threadPreviewStateById = {
-      ...(this.state.threadPreviewStateById ?? {}),
+    this.state.threadPanelStateById = {
+      ...(this.state.threadPanelStateById ?? {}),
       [threadId]: {
-        pageId: normalizePersistedPageId(pageId),
+        panelId: normalizePersistedId(panelId),
         visible: true,
       },
     };
     this.persist();
   }
 
-  closeThreadPreview(threadId: string): void {
+  closeThreadPanel(threadId: string): void {
     if (!this.getThread(threadId)) {
       throw new Error(`Thread ${threadId} does not exist`);
     }
 
-    const current = this.state.threadPreviewStateById ?? {};
-    this.state.threadPreviewStateById = {
+    const current = this.state.threadPanelStateById ?? {};
+    this.state.threadPanelStateById = {
       ...current,
       [threadId]: {
-        pageId: normalizePersistedPageId(current[threadId]?.pageId),
+        panelId: normalizePersistedId(current[threadId]?.panelId),
         visible: false,
       },
     };
@@ -318,7 +317,8 @@ export class DesktopStore {
   }
 
   setModel(model: DesktopModel, provider = this.state.provider): void {
-    this.state.modelsByProvider[provider] = requireDesktopProvider(provider).normalizeModel(model);
+    this.state.modelsByProvider[provider] =
+      requireDesktopProvider(provider).normalizeModel(model);
     this.persist();
   }
 
@@ -354,7 +354,7 @@ export class DesktopStore {
       Object.entries(this.state.messagesByThread).map(([threadId, messages]) => [
         threadId,
         messages.map((message) => ({ ...message })),
-      ])
+      ]),
     );
   }
 
@@ -373,7 +373,6 @@ export class DesktopStore {
     }
 
     this.state.activeThreadId = threadId;
-    this.state.activePluginPageId = null;
     this.state.provider = thread.provider;
     this.ensureProviderModel(thread.provider);
     this.persist();
@@ -405,7 +404,9 @@ export class DesktopStore {
   }
 
   getThreadMessages(threadId: string): DesktopMessage[] {
-    return (this.state.messagesByThread[threadId] ?? []).map((message) => ({ ...message }));
+    return (this.state.messagesByThread[threadId] ?? []).map((message) => ({
+      ...message,
+    }));
   }
 
   createThread(
@@ -423,10 +424,10 @@ export class DesktopStore {
     };
     this.state.threads.unshift(thread);
     this.state.messagesByThread[thread.id] = [];
-    this.state.threadPreviewStateById = {
-      ...(this.state.threadPreviewStateById ?? {}),
+    this.state.threadPanelStateById = {
+      ...(this.state.threadPanelStateById ?? {}),
       [thread.id]: {
-        pageId: null,
+        panelId: null,
         visible: false,
       },
     };
@@ -435,7 +436,6 @@ export class DesktopStore {
       [thread.id]: {},
     };
     this.state.activeThreadId = thread.id;
-    this.state.activePluginPageId = null;
     this.state.provider = normalizedProvider;
     this.ensureProviderModel(normalizedProvider);
     this.persist();
@@ -447,7 +447,7 @@ export class DesktopStore {
     role: DesktopMessage['role'],
     content: DesktopMessage['content'],
     status: DesktopMessage['status'],
-    extras: Pick<DesktopMessage, 'isMeta' | 'sourceToolUseID'> = {}
+    extras: Pick<DesktopMessage, 'isMeta' | 'sourceToolUseID'> = {},
   ): DesktopMessage {
     const thread = this.getThread(threadId);
     if (!thread) {
@@ -505,7 +505,7 @@ export class DesktopStore {
     threadId: string,
     messageId: string,
     status: DesktopMessage['status'],
-    content?: DesktopMessage['content']
+    content?: DesktopMessage['content'],
   ): DesktopMessage {
     const messages = this.state.messagesByThread[threadId];
     if (!messages) {
@@ -537,7 +537,9 @@ export class DesktopStore {
       throw new Error(`Thread ${threadId} does not exist`);
     }
 
-    this.state.messagesByThread[threadId] = messages.map((message) => ({ ...message }));
+    this.state.messagesByThread[threadId] = messages.map((message) => ({
+      ...message,
+    }));
     thread.updatedAt = now();
 
     const lastMessage = messages[messages.length - 1];
@@ -556,13 +558,14 @@ export class DesktopStore {
     model: DesktopModel,
     availableModels: DesktopModelOption[],
     auth: DesktopAuthState,
-    pages: DesktopSnapshot["pages"],
-    plugins: DesktopSnapshot["plugins"],
+    views: DesktopView[],
+    panels: DesktopPanel[],
+    plugins: DesktopSnapshot['plugins'],
   ): DesktopSnapshot {
     return {
       activeThreadId: this.state.activeThreadId,
-      activePluginPageId: this.getActivePluginPageId(),
-      threadPreviewStateById: this.getThreadPreviewStateById(),
+      activeViewId: this.getActiveViewId(),
+      threadPanelStateById: this.getThreadPanelStateById(),
       threads: this.listThreads(),
       messagesByThread: this.getMessagesByThread(),
       provider,
@@ -571,7 +574,8 @@ export class DesktopStore {
       availableModels,
       auth,
       runtimeStatus,
-      pages,
+      views,
+      panels,
       plugins,
     };
   }

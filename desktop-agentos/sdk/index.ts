@@ -34,16 +34,18 @@ export interface CamelAIHarnessAdapterInfo {
   label: string;
 }
 
-export interface CamelAIPageRegistration {
+export interface CamelAIViewRegistration {
   title: string;
   description?: string;
   icon?: string;
+  scope?: "thread" | "workspace";
+  default?: boolean;
   render:
     | { kind: "host"; component: string }
     | { kind: "webview"; webviewId: string };
 }
 
-export interface CamelAIPreviewPaneRegistration {
+export interface CamelAIPanelRegistration {
   title: string;
   description?: string;
   icon?: string;
@@ -105,8 +107,8 @@ export interface CamelAIActivationApi {
       },
     ) => Promise<unknown> | unknown,
   ): void;
-  registerPage(id: string, page: CamelAIPageRegistration): void;
-  registerPreviewPane(id: string, preview: CamelAIPreviewPaneRegistration): void;
+  registerView(id: string, view: CamelAIViewRegistration): void;
+  registerPanel(id: string, panel: CamelAIPanelRegistration): void;
   registerCommand(id: string, command: CamelAICommandRegistration): void;
   registerTool<TParams = unknown, TResult = unknown>(
     id: string,

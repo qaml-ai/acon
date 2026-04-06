@@ -27,15 +27,20 @@ export interface DesktopPluginHostPanelData {
   sections: DesktopPluginHostPanelSection[];
 }
 
-export interface DesktopPluginPageContribution {
+export interface DesktopPluginViewContribution {
   id: string;
   title: string;
   description: string | null;
   icon: string | null;
+  scope: "thread" | "workspace";
+  default: boolean;
 }
 
-export interface DesktopPluginPreviewContribution
-  extends DesktopPluginPageContribution {
+export interface DesktopPluginPanelContribution {
+  id: string;
+  title: string;
+  description: string | null;
+  icon: string | null;
   autoOpen: "never" | "new-thread" | "all-threads";
 }
 
@@ -69,8 +74,8 @@ export interface DesktopPluginRecord {
   main: string | null;
   webviews: DesktopPluginWebviewContribution[];
   capabilities: {
-    pages: DesktopPluginPageContribution[];
-    previewPanes: DesktopPluginPreviewContribution[];
+    views: DesktopPluginViewContribution[];
+    panels: DesktopPluginPanelContribution[];
     commands: DesktopPluginCommandContribution[];
     tools: DesktopPluginToolContribution[];
   };
@@ -78,26 +83,38 @@ export interface DesktopPluginRecord {
     activated: boolean;
     activationError: string | null;
     subscribedEvents: string[];
-    registeredPageIds: string[];
-    registeredPreviewPaneIds: string[];
+    registeredViewIds: string[];
+    registeredPanelIds: string[];
     registeredCommandIds: string[];
     registeredToolIds: string[];
   };
 }
 
-export interface DesktopPage {
+export interface DesktopView {
   id: string;
   title: string;
   description: string | null;
   icon: string | null;
   pluginId: string | null;
-  surface: "page" | "preview";
+  scope: "thread" | "workspace";
+  isDefault: boolean;
   render: DesktopPluginSurfaceRender;
   hostData?: DesktopPluginHostPanelData | null;
 }
 
-export interface DesktopThreadPreviewPaneState {
-  pageId: string | null;
+export interface DesktopPanel {
+  id: string;
+  title: string;
+  description: string | null;
+  icon: string | null;
+  pluginId: string | null;
+  autoOpen: "never" | "new-thread" | "all-threads";
+  render: DesktopPluginSurfaceRender;
+  hostData?: DesktopPluginHostPanelData | null;
+}
+
+export interface DesktopThreadPanelState {
+  panelId: string | null;
   visible: boolean;
 }
 
@@ -155,15 +172,16 @@ export interface DesktopSnapshot {
   threads: DesktopThread[];
   messagesByThread: Record<string, DesktopMessage[]>;
   activeThreadId: string | null;
-  activePluginPageId: string | null;
-  threadPreviewStateById: Record<string, DesktopThreadPreviewPaneState>;
+  activeViewId: string | null;
+  threadPanelStateById: Record<string, DesktopThreadPanelState>;
   provider: DesktopProvider;
   availableProviders: DesktopProviderOption[];
   model: DesktopModel;
   availableModels: DesktopModelOption[];
   auth: DesktopAuthState;
   runtimeStatus: DesktopRuntimeStatus;
-  pages: DesktopPage[];
+  views: DesktopView[];
+  panels: DesktopPanel[];
   plugins: DesktopPluginRecord[];
 }
 
@@ -183,16 +201,16 @@ export type DesktopClientEvent =
       threadId: string;
     }
   | {
-      type: "select_plugin_page";
-      pageId: string;
+      type: "select_view";
+      viewId: string;
     }
   | {
-      type: "open_thread_preview";
+      type: "open_thread_panel";
       threadId: string;
-      pageId: string;
+      panelId: string;
     }
   | {
-      type: "close_thread_preview";
+      type: "close_thread_panel";
       threadId: string;
     }
   | {

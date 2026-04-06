@@ -20,7 +20,7 @@ function createActivationContext() {
 }
 
 describe("CamelAIExtensionHost", () => {
-  it("discovers builtin v2 extensions and exposes page plus preview surfaces", async () => {
+  it("discovers builtin v2 extensions and exposes workbench views plus panels", async () => {
     const host = new CamelAIExtensionHost();
     const context = createActivationContext();
 
@@ -29,25 +29,39 @@ describe("CamelAIExtensionHost", () => {
 
     expect(snapshot.plugins.map((plugin) => plugin.id)).toEqual(
       expect.arrayContaining([
+        "chat-core",
         "extension-lab",
         "random-site-preview",
         "thread-journal",
       ]),
     );
 
-    expect(snapshot.pages).toEqual(
+    expect(snapshot.views).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          id: "plugin:extension-lab:extension-lab.home",
-          surface: "page",
+          id: "plugin:chat-core:chat-core.thread",
+          scope: "thread",
+          isDefault: true,
         }),
         expect.objectContaining({
-          id: "plugin:random-site-preview:random-site-preview.frame",
-          surface: "preview",
+          id: "plugin:extension-lab:extension-lab.home",
+          scope: "workspace",
+          isDefault: false,
         }),
       ]),
     );
-    expect(host.getDefaultThreadPreviewPageId()).toBe(
+    expect(snapshot.panels).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "plugin:random-site-preview:random-site-preview.frame",
+          autoOpen: "all-threads",
+        }),
+      ]),
+    );
+    expect(host.getDefaultViewId("thread")).toBe(
+      "plugin:chat-core:chat-core.thread",
+    );
+    expect(host.getDefaultThreadPanelId()).toBe(
       "plugin:random-site-preview:random-site-preview.frame",
     );
   });

@@ -1,6 +1,5 @@
 import {
   CircleHelp,
-  MessagesSquare,
   Plus,
   TerminalSquare,
 } from "lucide-react";
@@ -23,23 +22,22 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import type {
-  DesktopPage,
   DesktopSnapshot,
   DesktopThread,
+  DesktopView,
 } from "../../shared/protocol";
 import { getDesktopIcon } from "./desktop-icons";
 
 interface DesktopSidebarProps {
   activeThreadId: string | null;
-  activePluginPageId: string | null;
+  activeViewId: string | null;
   connectionState: "connecting" | "open" | "closed";
   onCreateThread: () => void;
-  onShowChat: () => void;
   onSelectThread: (threadId: string) => void;
-  onSelectPluginPage: (pageId: string) => void;
+  onSelectView: (viewId: string) => void;
   snapshot: DesktopSnapshot | null;
   threads: DesktopThread[];
-  pluginPages: DesktopPage[];
+  views: DesktopView[];
 }
 
 function formatTime(timestamp: number): string {
@@ -48,24 +46,6 @@ function formatTime(timestamp: number): string {
     minute: "2-digit",
     hour12: true,
   });
-}
-
-function authLabel(snapshot: DesktopSnapshot | null): string {
-  if (!snapshot) {
-    return "Checking auth";
-  }
-  if (!snapshot.auth.available) {
-    return snapshot.auth.label;
-  }
-  return `${snapshot.model} via ${snapshot.auth.label}`;
-}
-
-function runtimeDetail(snapshot: DesktopSnapshot | null): string | null {
-  if (!snapshot) {
-    return null;
-  }
-  const detail = snapshot.runtimeStatus.detail?.trim();
-  return detail || null;
 }
 
 function shouldShowRuntimeCard(snapshot: DesktopSnapshot | null): boolean {
@@ -81,15 +61,14 @@ function shouldShowRuntimeCard(snapshot: DesktopSnapshot | null): boolean {
 
 export function DesktopSidebar({
   activeThreadId,
-  activePluginPageId,
+  activeViewId,
   connectionState,
   onCreateThread,
-  onShowChat,
   onSelectThread,
-  onSelectPluginPage,
+  onSelectView,
   snapshot,
   threads,
-  pluginPages,
+  views,
 }: DesktopSidebarProps) {
   const { state } = useSidebar();
 
@@ -133,28 +112,19 @@ export function DesktopSidebar({
 
       <SidebarContent>
         <SidebarGroup>
+          <SidebarGroupLabel>Workbench</SidebarGroupLabel>
           <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                tooltip="Chat"
-                isActive={activePluginPageId === null}
-                onClick={onShowChat}
-              >
-                <MessagesSquare />
-                <span>Chat</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            {pluginPages.filter((page) => page.surface === "page").map((page) => {
-              const PageIcon = getDesktopIcon(page.icon);
+            {views.map((view) => {
+              const ViewIcon = getDesktopIcon(view.icon);
               return (
-                <SidebarMenuItem key={page.id}>
+                <SidebarMenuItem key={view.id}>
                   <SidebarMenuButton
-                    tooltip={page.title}
-                    isActive={page.id === activePluginPageId}
-                    onClick={() => onSelectPluginPage(page.id)}
+                    tooltip={view.title}
+                    isActive={view.id === activeViewId}
+                    onClick={() => onSelectView(view.id)}
                   >
-                    <PageIcon />
-                    <span>{page.title}</span>
+                    <ViewIcon />
+                    <span>{view.title}</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               );
@@ -178,14 +148,14 @@ export function DesktopSidebar({
                 <SidebarMenuItem key={thread.id}>
                   <SidebarMenuButton
                     size="lg"
-                    isActive={
-                      thread.id === activeThreadId && activePluginPageId === null
-                    }
+                    isActive={thread.id === activeThreadId}
                     tooltip={thread.title}
                     onClick={() => onSelectThread(thread.id)}
                     className="h-auto min-h-12"
                   >
-                    <MessagesSquare />
+                    <span className="flex size-4 items-center justify-center rounded-full bg-sidebar-accent text-[10px] font-semibold text-sidebar-accent-foreground">
+                      {thread.title.slice(0, 1).toUpperCase()}
+                    </span>
                     <div className="grid flex-1 min-w-0 text-left text-sm leading-tight">
                       <span className="truncate font-medium">
                         {thread.title}
@@ -221,59 +191,20 @@ export function DesktopSidebar({
                   variant={
                     snapshot?.runtimeStatus.state === "error"
                       ? "destructive"
-                      : "outline"
+                      : "secondary"
                   }
                 >
-                  {snapshot
-                    ? `Runtime ${snapshot.runtimeStatus.state}`
-                    : "Runtime starting"}
+                  {connectionState === "connecting"
+                    ? "Connecting"
+                    : snapshot?.runtimeStatus.state ?? "Offline"}
                 </Badge>
-                <Badge
-                  variant={connectionState === "open" ? "secondary" : "outline"}
-                >
-                  {connectionState === "open"
-                    ? "backend connected"
-                    : "connecting"}
-                </Badge>
+                {!snapshot?.auth.available ? (
+                  <Badge variant="outline">{snapshot?.auth.label ?? "Auth"}</Badge>
+                ) : null}
               </div>
-              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-                {authLabel(snapshot)}
-              </p>
-              {runtimeDetail(snapshot) ? (
-                <p
-                  className={`mt-2 text-xs leading-relaxed ${
-                    snapshot?.runtimeStatus.state === "error"
-                      ? "text-destructive"
-                      : "text-muted-foreground"
-                  }`}
-                  title={runtimeDetail(snapshot) ?? undefined}
-                >
-                  {runtimeDetail(snapshot)}
-                </p>
-              ) : null}
             </div>
           </div>
         ) : null}
-
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              size="lg"
-              tooltip="Local User"
-              className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
-            >
-              <Avatar size="default">
-                <AvatarFallback content="ME">ME</AvatarFallback>
-              </Avatar>
-              <div className="grid flex-1 text-left text-sm leading-tight">
-                <span className="truncate font-medium">Local User</span>
-                <span className="truncate text-xs text-muted-foreground">
-                  No login
-                </span>
-              </div>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
       </SidebarFooter>
       <SidebarRail />
     </Sidebar>

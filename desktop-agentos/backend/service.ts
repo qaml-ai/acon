@@ -44,7 +44,8 @@ export class DesktopService {
     void this.extensionHost
       .initialize(this.getExtensionActivationContext())
       .then(() => {
-        this.ensureDefaultThreadPreviews();
+        this.ensureDefaultView();
+        this.ensureDefaultThreadPanels();
         this.emitSnapshot();
       })
       .catch((error) => {
@@ -94,7 +95,8 @@ export class DesktopService {
       model,
       provider.getAvailableModels(),
       provider.getAuthState(model),
-      extensionSnapshot.pages,
+      extensionSnapshot.views,
+      extensionSnapshot.panels,
       extensionSnapshot.plugins,
     );
   }
@@ -136,47 +138,48 @@ export class DesktopService {
     switch (event.type) {
       case "create_thread": {
         const thread = this.store.createThread(event.title, this.store.getProvider());
-        this.ensureDefaultThreadPreview(thread.id);
+        this.ensureDefaultView("thread");
+        this.ensureDefaultThreadPanel(thread.id);
         this.emitSnapshot();
         return;
       }
       case "select_thread": {
         this.store.setActiveThread(event.threadId);
-        this.store.setActivePluginPage(null);
-        this.ensureDefaultThreadPreview(event.threadId);
+        this.ensureDefaultView("thread");
+        this.ensureDefaultThreadPanel(event.threadId);
         this.emitSnapshot();
         void this.ensureRuntimeRunning("startup");
         return;
       }
-      case "select_plugin_page": {
-        this.store.setActivePluginPage(event.pageId);
+      case "select_view": {
+        this.store.setActiveView(event.viewId);
         this.emitSnapshot();
         void this.extensionHost.emit(
           "page_open",
           {
             type: "page_open",
-            pageId: event.pageId,
+            pageId: event.viewId,
           },
           this.getExtensionActivationContext(),
         );
         return;
       }
-      case "open_thread_preview": {
-        this.store.openThreadPreview(event.threadId, event.pageId);
+      case "open_thread_panel": {
+        this.store.openThreadPanel(event.threadId, event.panelId);
         this.emitSnapshot();
         void this.extensionHost.emit(
           "preview_open",
           {
             type: "preview_open",
             threadId: event.threadId,
-            pageId: event.pageId,
+            pageId: event.panelId,
           },
           this.getExtensionActivationContext(),
         );
         return;
       }
-      case "close_thread_preview": {
-        this.store.closeThreadPreview(event.threadId);
+      case "close_thread_panel": {
+        this.store.closeThreadPanel(event.threadId);
         this.emitSnapshot();
         return;
       }
@@ -230,24 +233,38 @@ export class DesktopService {
     }
   }
 
-  private ensureDefaultThreadPreviews(): void {
-    const defaultPageId = this.extensionHost.getDefaultThreadPreviewPageId();
-    if (!defaultPageId) {
+  private ensureDefaultView(scope?: "thread" | "workspace"): void {
+    const currentViewId = this.store.getActiveViewId();
+    if (currentViewId) {
+      return;
+    }
+
+    const defaultViewId = this.extensionHost.getDefaultViewId(scope);
+    if (!defaultViewId) {
+      return;
+    }
+
+    this.store.setActiveView(defaultViewId);
+  }
+
+  private ensureDefaultThreadPanels(): void {
+    const defaultPanelId = this.extensionHost.getDefaultThreadPanelId();
+    if (!defaultPanelId) {
       return;
     }
 
     for (const thread of this.store.listThreads()) {
-      this.store.openThreadPreview(thread.id, defaultPageId);
+      this.store.openThreadPanel(thread.id, defaultPanelId);
     }
   }
 
-  private ensureDefaultThreadPreview(threadId: string): void {
-    const defaultPageId = this.extensionHost.getDefaultThreadPreviewPageId();
-    if (!defaultPageId) {
+  private ensureDefaultThreadPanel(threadId: string): void {
+    const defaultPanelId = this.extensionHost.getDefaultThreadPanelId();
+    if (!defaultPanelId) {
       return;
     }
 
-    this.store.openThreadPreview(threadId, defaultPageId);
+    this.store.openThreadPanel(threadId, defaultPanelId);
   }
 
   private async ensureRuntimeRunning(

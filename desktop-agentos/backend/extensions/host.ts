@@ -2,8 +2,9 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
-  DesktopPage,
+  DesktopPanel,
   DesktopPluginRecord,
+  DesktopView,
 } from "../../../desktop/shared/protocol";
 import {
   getHarnessAdapterForProvider,
@@ -158,8 +159,8 @@ function discoverExtensions(): DiscoveredCamelAIExtension[] {
   );
 }
 
-function getPageId(pluginId: string, pageId: string): string {
-  return `plugin:${pluginId}:${pageId}`;
+function getContributionId(pluginId: string, contributionId: string): string {
+  return `plugin:${pluginId}:${contributionId}`;
 }
 
 function resolveWebviewEntrypoint(
@@ -193,8 +194,8 @@ export class CamelAIExtensionHost {
       discovered,
       activated: false,
       activationError: null,
-      pages: new Map(),
-      previewPanes: new Map(),
+      views: new Map(),
+      panels: new Map(),
       commands: new Map(),
       tools: new Map(),
       handlers: new Map(),
@@ -267,11 +268,11 @@ export class CamelAIExtensionHost {
         handlers.push(handler);
         record.handlers.set(event, handlers);
       },
-      registerPage: (id, page) => {
-        record.pages.set(id, page);
+      registerView: (id, view) => {
+        record.views.set(id, view);
       },
-      registerPreviewPane: (id, preview) => {
-        record.previewPanes.set(id, preview);
+      registerPanel: (id, panel) => {
+        record.panels.set(id, panel);
       },
       registerCommand: (id, command) => {
         record.commands.set(id, command);
@@ -332,21 +333,21 @@ export class CamelAIExtensionHost {
         }),
       ),
       capabilities: {
-        pages: Array.from(record.pages.entries()).map(([id, page]) => ({
+        views: Array.from(record.views.entries()).map(([id, view]) => ({
           id,
-          title: page.title,
-          description: page.description ?? null,
-          icon: page.icon ?? null,
+          title: view.title,
+          description: view.description ?? null,
+          icon: view.icon ?? null,
+          scope: view.scope ?? "workspace",
+          default: view.default === true,
         })),
-        previewPanes: Array.from(record.previewPanes.entries()).map(
-          ([id, preview]) => ({
-            id,
-            title: preview.title,
-            description: preview.description ?? null,
-            icon: preview.icon ?? null,
-            autoOpen: preview.autoOpen ?? "never",
-          }),
-        ),
+        panels: Array.from(record.panels.entries()).map(([id, panel]) => ({
+          id,
+          title: panel.title,
+          description: panel.description ?? null,
+          icon: panel.icon ?? null,
+          autoOpen: panel.autoOpen ?? "never",
+        })),
         commands: Array.from(record.commands.entries()).map(([id, command]) => ({
           id,
           title: command.title,
@@ -364,20 +365,20 @@ export class CamelAIExtensionHost {
         activated: record.activated,
         activationError: record.activationError,
         subscribedEvents: Array.from(record.handlers.keys()),
-        registeredPageIds: Array.from(record.pages.keys()),
-        registeredPreviewPaneIds: Array.from(record.previewPanes.keys()),
+        registeredViewIds: Array.from(record.views.keys()),
+        registeredPanelIds: Array.from(record.panels.keys()),
         registeredCommandIds: Array.from(record.commands.keys()),
         registeredToolIds: Array.from(record.tools.keys()),
       },
     };
   }
 
-  private buildPages(
+  private buildViews(
     context: CamelAIActivationContext,
     plugins: DesktopPluginRecord[],
-  ): DesktopPage[] {
+  ): DesktopView[] {
     const pluginById = new Map(plugins.map((plugin) => [plugin.id, plugin]));
-    const pages: DesktopPage[] = [];
+    const views: DesktopView[] = [];
 
     for (const record of this.records.values()) {
       const plugin = pluginById.get(record.discovered.id);
@@ -385,15 +386,15 @@ export class CamelAIExtensionHost {
         continue;
       }
 
-      for (const [id, page] of record.pages.entries()) {
+      for (const [id, view] of record.views.entries()) {
         const render =
-          page.render.kind === "host"
-            ? { kind: "host" as const, component: page.render.component }
+          view.render.kind === "host"
+            ? { kind: "host" as const, component: view.render.component }
             : {
                 kind: "webview" as const,
                 entrypoint: resolveWebviewEntrypoint(
                   record.discovered,
-                  page.render.webviewId,
+                  view.render.webviewId,
                 ) ?? "",
               };
         const threadState = this.createThreadState(
@@ -401,35 +402,53 @@ export class CamelAIExtensionHost {
           context.activeThreadId,
           context,
         );
-        pages.push({
-          id: getPageId(record.discovered.id, id),
-          title: page.title,
-          description: page.description ?? null,
-          icon: page.icon ?? record.discovered.manifest.icon ?? null,
+        views.push({
+          id: getContributionId(record.discovered.id, id),
+          title: view.title,
+          description: view.description ?? null,
+          icon: view.icon ?? record.discovered.manifest.icon ?? null,
           pluginId: record.discovered.id,
-          surface: "page",
+          scope: view.scope ?? "workspace",
+          isDefault: view.default === true,
           render,
-          hostData: page.buildHostData
-            ? page.buildHostData({
+          hostData: view.buildHostData
+            ? view.buildHostData({
                 ...context,
                 pluginId: record.discovered.id,
-                pageId: id,
+                viewId: id,
                 threadState,
                 plugin,
               })
             : null,
         });
       }
+    }
 
-      for (const [id, preview] of record.previewPanes.entries()) {
+    return views;
+  }
+
+  private buildPanels(
+    context: CamelAIActivationContext,
+    plugins: DesktopPluginRecord[],
+  ): DesktopPanel[] {
+    const pluginById = new Map(plugins.map((plugin) => [plugin.id, plugin]));
+    const panels: DesktopPanel[] = [];
+
+    for (const record of this.records.values()) {
+      const plugin = pluginById.get(record.discovered.id);
+      if (!plugin) {
+        continue;
+      }
+
+      for (const [id, panel] of record.panels.entries()) {
         const render =
-          preview.render.kind === "host"
-            ? { kind: "host" as const, component: preview.render.component }
+          panel.render.kind === "host"
+            ? { kind: "host" as const, component: panel.render.component }
             : {
                 kind: "webview" as const,
                 entrypoint: resolveWebviewEntrypoint(
                   record.discovered,
-                  preview.render.webviewId,
+                  panel.render.webviewId,
                 ) ?? "",
               };
         const threadState = this.createThreadState(
@@ -437,19 +456,19 @@ export class CamelAIExtensionHost {
           context.activeThreadId,
           context,
         );
-        pages.push({
-          id: getPageId(record.discovered.id, id),
-          title: preview.title,
-          description: preview.description ?? null,
-          icon: preview.icon ?? record.discovered.manifest.icon ?? null,
+        panels.push({
+          id: getContributionId(record.discovered.id, id),
+          title: panel.title,
+          description: panel.description ?? null,
+          icon: panel.icon ?? record.discovered.manifest.icon ?? null,
           pluginId: record.discovered.id,
-          surface: "preview",
+          autoOpen: panel.autoOpen ?? "never",
           render,
-          hostData: preview.buildHostData
-            ? preview.buildHostData({
+          hostData: panel.buildHostData
+            ? panel.buildHostData({
                 ...context,
                 pluginId: record.discovered.id,
-                previewId: id,
+                panelId: id,
                 threadId: context.activeThreadId,
                 threadState,
                 plugin,
@@ -459,27 +478,65 @@ export class CamelAIExtensionHost {
       }
     }
 
-    return pages;
+    return panels;
   }
 
   getSnapshot(context: CamelAIActivationContext): {
-    pages: DesktopPage[];
+    views: DesktopView[];
+    panels: DesktopPanel[];
     plugins: DesktopPluginRecord[];
   } {
     const plugins = Array.from(this.records.values()).map((record) =>
       this.createPluginRecord(record),
     );
     return {
-      pages: this.buildPages(context, plugins),
+      views: this.buildViews(context, plugins),
+      panels: this.buildPanels(context, plugins),
       plugins,
     };
   }
 
-  getDefaultThreadPreviewPageId(): string | null {
+  getDefaultViewId(preferredScope?: "thread" | "workspace"): string | null {
+    const allViews: Array<{
+      pluginId: string;
+      viewId: string;
+      scope: "thread" | "workspace";
+      isDefault: boolean;
+    }> = [];
+
     for (const record of this.records.values()) {
-      for (const [id, preview] of record.previewPanes.entries()) {
-        if ((preview.autoOpen ?? "never") !== "never") {
-          return getPageId(record.discovered.id, id);
+      for (const [viewId, view] of record.views.entries()) {
+        allViews.push({
+          pluginId: record.discovered.id,
+          viewId,
+          scope: view.scope ?? "workspace",
+          isDefault: view.default === true,
+        });
+      }
+    }
+
+    const defaultMatch = allViews.find(
+      (view) =>
+        view.isDefault &&
+        (!preferredScope || view.scope === preferredScope),
+    );
+    if (defaultMatch) {
+      return getContributionId(defaultMatch.pluginId, defaultMatch.viewId);
+    }
+
+    const firstScopeMatch = allViews.find(
+      (view) => !preferredScope || view.scope === preferredScope,
+    );
+    return firstScopeMatch
+      ? getContributionId(firstScopeMatch.pluginId, firstScopeMatch.viewId)
+      : null;
+  }
+
+  getDefaultThreadPanelId(): string | null {
+    for (const record of this.records.values()) {
+      for (const [id, panel] of record.panels.entries()) {
+        if ((panel.autoOpen ?? "never") !== "never") {
+          return getContributionId(record.discovered.id, id);
         }
       }
     }

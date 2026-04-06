@@ -2,7 +2,7 @@ import type { CamelAIExtensionModule } from "../../../sdk";
 
 const extension: CamelAIExtensionModule = {
   activate(api) {
-    api.registerPreviewPane("random-site-preview.frame", {
+    api.registerPanel("random-site-preview.frame", {
       title: "Random Site Preview",
       description: "Shows a thread-specific random website.",
       icon: "Globe",
