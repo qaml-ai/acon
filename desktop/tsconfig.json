@@ -12,10 +12,9 @@
     "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
     "types": ["node", "vite/client", "bun-types"],
-    "baseUrl": "..",
     "paths": {
-      "@/*": ["src/*"],
-      "@desktop/*": ["desktop/renderer/src/*"]
+      "@/*": ["../src/*"],
+      "@desktop/*": ["./renderer/src/*"]
     }
   },
   "include": [

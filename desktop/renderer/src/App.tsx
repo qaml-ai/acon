@@ -569,137 +569,230 @@ function ChatThreadView({
   );
 }
 
-function capabilityLabel(
-  label: string,
-  count: number,
-): string {
-  if (count === 1) {
-    return `1 ${label}`;
-  }
-
-  return `${count} ${label}s`;
-}
-
 function ExtensionCatalogPane({
   snapshot,
   mode = "full",
 }: Pick<HostSurfaceComponentProps, "snapshot" | "mode">) {
+  const [isInstallingPlugin, setIsInstallingPlugin] = useState(false);
+  const [installFeedback, setInstallFeedback] = useState<{
+    tone: "success" | "error";
+    message: string;
+  } | null>(null);
+  const canInstallPlugins = Boolean(desktopShell?.installPlugin);
+  const canOpenPluginDirectory = Boolean(desktopShell?.openPluginDirectory);
+
+  const handleInstallPlugin = useCallback(async () => {
+    if (!desktopShell?.installPlugin || isInstallingPlugin) {
+      return;
+    }
+
+    setIsInstallingPlugin(true);
+    setInstallFeedback(null);
+
+    try {
+      const result = await desktopShell.installPlugin();
+      if (!result || result.status === "cancelled") {
+        return;
+      }
+
+      setInstallFeedback({
+        tone: "success",
+        message: `${result.replaced ? "Updated" : "Installed"} ${result.pluginName ?? result.pluginId ?? "plugin"}${result.pluginId ? ` (${result.pluginId})` : ""}${result.installPath ? ` in ${result.installPath}.` : "."}`,
+      });
+    } catch (error) {
+      setInstallFeedback({
+        tone: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setIsInstallingPlugin(false);
+    }
+  }, [isInstallingPlugin]);
+
+  const handleOpenPluginDirectory = useCallback(async () => {
+    if (!desktopShell?.openPluginDirectory) {
+      return;
+    }
+
+    try {
+      await desktopShell.openPluginDirectory();
+    } catch (error) {
+      setInstallFeedback({
+        tone: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, []);
+
   return (
-    <div className="flex flex-1 overflow-y-auto">
+    <div className="flex min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
       <div
-        className={`flex w-full flex-col gap-4 px-4 pb-8 pt-5 md:px-6 ${
+        className={`flex min-h-0 w-full flex-col gap-4 px-4 pb-8 pt-5 md:px-6 ${
           mode === "companion" ? "" : "mx-auto max-w-5xl"
         }`}
       >
-        <Card className="border-dashed">
-          <CardHeader>
-            <CardTitle>Extension Lab</CardTitle>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <h2 className="text-lg font-semibold">Extension Lab</h2>
+            <p className="max-w-3xl text-sm text-muted-foreground">
+              Install plugins and inspect the ones currently loaded by the
+              desktop app. Re-installing the same `camelai.id` updates that
+              plugin in place.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              onClick={() => {
+                void handleInstallPlugin();
+              }}
+              disabled={!canInstallPlugins || isInstallingPlugin}
+            >
+              {isInstallingPlugin ? (
+                <>
+                  <Loader2 className="size-4 animate-spin" />
+                  Installing...
+                </>
+              ) : (
+                "Install Plugin"
+              )}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                void handleOpenPluginDirectory();
+              }}
+              disabled={!canOpenPluginDirectory}
+            >
+              Open Plugins Folder
+            </Button>
+          </div>
+          {installFeedback ? (
+            <Alert
+              variant={
+                installFeedback.tone === "error" ? "destructive" : "default"
+              }
+            >
+              <AlertTitle>
+                {installFeedback.tone === "error"
+                  ? "Install failed"
+                  : "Plugin installed"}
+              </AlertTitle>
+              <AlertDescription>{installFeedback.message}</AlertDescription>
+            </Alert>
+          ) : null}
+        </div>
+
+        <Card size="sm">
+          <CardHeader className="gap-1">
+            <CardTitle className="text-base">Installed plugins</CardTitle>
             <CardDescription>
-              The desktop workbench is now assembled from extension-contributed
-              views, panels, commands, tools, and runtime hooks.
+              {snapshot.plugins.length === 1
+                ? "1 plugin loaded"
+                : `${snapshot.plugins.length} plugins loaded`}
             </CardDescription>
           </CardHeader>
+          {snapshot.plugins.length === 0 ? (
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                Builtin plugins and anything installed into the desktop data
+                `plugins/` directory will appear here.
+              </p>
+            </CardContent>
+          ) : (
+            <CardContent className="px-0">
+              <div className="divide-y divide-border/70">
+                {snapshot.plugins.map((plugin) => {
+                  const toolSummary =
+                    plugin.capabilities.tools.length > 0
+                      ? plugin.capabilities.tools.map((tool) => tool.id).join(", ")
+                      : null;
+                  const hookSummary =
+                    plugin.runtime.subscribedEvents.length > 0
+                      ? plugin.runtime.subscribedEvents.join(", ")
+                      : null;
+
+                  return (
+                    <div key={plugin.id} className="space-y-3 px-3 py-3 sm:px-4">
+                      <div className="flex flex-col gap-2 xl:flex-row xl:items-start xl:justify-between">
+                        <div className="min-w-0 space-y-1">
+                          <div className="flex min-w-0 flex-wrap items-center gap-2">
+                            <CardTitle className="text-base">{plugin.name}</CardTitle>
+                            <Badge variant="secondary">{plugin.source}</Badge>
+                            <Badge
+                              variant={
+                                plugin.runtime.activated ? "secondary" : "outline"
+                              }
+                            >
+                              {plugin.runtime.activated ? "activated" : "discovered"}
+                            </Badge>
+                            {plugin.runtime.activationError ? (
+                              <Badge variant="destructive">activation error</Badge>
+                            ) : null}
+                          </div>
+                          <CardDescription className="break-words">
+                            {plugin.description ?? "No plugin description yet."}
+                          </CardDescription>
+                        </div>
+                        <p className="shrink-0 text-xs text-muted-foreground">
+                          v{plugin.version}
+                        </p>
+                      </div>
+
+                      <div className="grid gap-3 text-sm xl:grid-cols-[minmax(0,1fr)_minmax(18rem,28rem)]">
+                        <div className="space-y-2">
+                          <p className="text-sm text-muted-foreground">
+                            {plugin.capabilities.views.length} views ·{" "}
+                            {plugin.capabilities.panels.length} panels ·{" "}
+                            {plugin.capabilities.commands.length} commands ·{" "}
+                            {plugin.capabilities.tools.length} tools
+                          </p>
+
+                          {toolSummary ? (
+                            <p className="text-sm leading-relaxed text-muted-foreground">
+                              Tools:{" "}
+                              <span className="break-words text-foreground">
+                                {toolSummary}
+                              </span>
+                            </p>
+                          ) : null}
+
+                          {hookSummary ? (
+                            <p className="text-sm leading-relaxed text-muted-foreground">
+                              Hooks:{" "}
+                              <span className="break-words text-foreground">
+                                {hookSummary}
+                              </span>
+                            </p>
+                          ) : null}
+                        </div>
+
+                        <div className="space-y-1 rounded-md border border-border/70 bg-muted/20 px-3 py-2">
+                          <p className="break-all font-mono text-[11px] leading-relaxed text-foreground">
+                            {plugin.id}
+                          </p>
+                          <p className="break-all font-mono text-[11px] leading-relaxed text-muted-foreground">
+                            {plugin.path}
+                          </p>
+                        </div>
+                      </div>
+
+                      {plugin.runtime.activationError ? (
+                        <Alert variant="destructive">
+                          <AlertTitle>Activation failed</AlertTitle>
+                          <AlertDescription className="break-words">
+                            {plugin.runtime.activationError}
+                          </AlertDescription>
+                        </Alert>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          )}
         </Card>
-
-        {snapshot.plugins.length === 0 ? (
-          <Card>
-            <CardHeader>
-              <CardTitle>No plugins installed</CardTitle>
-              <CardDescription>
-                Builtin plugins will appear here, and user-installed plugins
-                will be read from the desktop data directory.
-              </CardDescription>
-            </CardHeader>
-          </Card>
-        ) : (
-          <div
-            className={`grid gap-4 ${
-              mode === "companion" ? "grid-cols-1" : "md:grid-cols-2 xl:grid-cols-3"
-            }`}
-          >
-            {snapshot.plugins.map((plugin) => (
-              <Card key={plugin.id} className="h-full">
-                <CardHeader className="gap-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="secondary">{plugin.source}</Badge>
-                    <Badge variant={plugin.runtime.activated ? "secondary" : "outline"}>
-                      {plugin.runtime.activated ? "activated" : "discovered"}
-                    </Badge>
-                    {plugin.runtime.activationError ? (
-                      <Badge variant="destructive">activation error</Badge>
-                    ) : null}
-                  </div>
-                  <div>
-                    <CardTitle className="text-base">{plugin.name}</CardTitle>
-                    <CardDescription>
-                      {plugin.description ?? "No plugin description yet."}
-                    </CardDescription>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="flex flex-wrap gap-2 text-xs">
-                    <Badge variant="outline">
-                      {capabilityLabel("view", plugin.capabilities.views.length)}
-                    </Badge>
-                    <Badge variant="outline">
-                      {capabilityLabel("panel", plugin.capabilities.panels.length)}
-                    </Badge>
-                    <Badge variant="outline">
-                      {capabilityLabel("command", plugin.capabilities.commands.length)}
-                    </Badge>
-                    <Badge variant="outline">
-                      {capabilityLabel("tool", plugin.capabilities.tools.length)}
-                    </Badge>
-                  </div>
-
-                  <div className="space-y-2 text-sm text-muted-foreground">
-                    <p className="font-medium text-foreground">{plugin.id}</p>
-                    <p>{plugin.path}</p>
-                  </div>
-
-                  {plugin.capabilities.tools.length > 0 ? (
-                    <div className="space-y-2">
-                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                        Tools
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        {plugin.capabilities.tools.map((tool) => (
-                          <Badge key={tool.id} variant="secondary">
-                            {tool.id}
-                          </Badge>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {plugin.runtime.subscribedEvents.length > 0 ? (
-                    <div className="space-y-2">
-                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                        Hooks
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        {plugin.runtime.subscribedEvents.map((eventName) => (
-                          <Badge key={eventName} variant="outline">
-                            {eventName}
-                          </Badge>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {plugin.runtime.activationError ? (
-                    <Alert variant="destructive">
-                      <AlertTitle>Activation failed</AlertTitle>
-                      <AlertDescription>
-                        {plugin.runtime.activationError}
-                      </AlertDescription>
-                    </Alert>
-                  ) : null}
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        )}
       </div>
     </div>
   );
@@ -955,7 +1048,11 @@ function WorkbenchSurfacePane(props: HostSurfaceComponentProps) {
       ? HOST_SURFACE_COMPONENTS[surface.render.component]
       : null;
     if (HostComponent) {
-      return <HostComponent {...props} />;
+      return (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <HostComponent {...props} />
+        </div>
+      );
     }
 
     if (surface.hostData) {
@@ -1414,7 +1511,7 @@ export function App() {
               threads={snapshot?.threads ?? []}
               views={snapshot?.views ?? []}
             />
-            <SidebarInset className="overflow-hidden flex flex-col">
+            <SidebarInset className="h-full min-h-0 overflow-hidden flex flex-col">
               <PageHeader
                 breadcrumbs={
                   activeView

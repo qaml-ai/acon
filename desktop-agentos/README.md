@@ -12,6 +12,7 @@ Current scope:
 - per-thread Pi session state persisted under the AgentOS runtime home so old chats can resume after a desktop restart
 - V2 desktop extension host with lightweight `camelai` manifest discovery plus runtime-first activation
 - repo-shipped plugin discovery from `desktop-agentos/plugins/` plus user plugin discovery from the desktop data directory under `plugins/`
+- Extension Lab can install a user plugin by copying a selected folder into the desktop data `plugins/` directory and refreshing the runtime catalog
 - shared desktop sidebar can now open plugin-contributed panes beside chat
 
 Current limits:
@@ -84,7 +85,8 @@ export ANTHROPIC_API_KEY=...
 - `desktop-agentos/backend/extensions/host.ts` discovers V2 `camelai` plugin manifests from `desktop-agentos/plugins/builtin/` plus the user install directory, loads extension modules, exposes a runtime-first API (`on`, `registerView`, `registerPanel`, `registerCommand`, `registerTool`), and materializes workbench views plus per-thread companion panels into the shared snapshot model.
 - `desktop-agentos/backend/extensions/thread-state.ts` provides a persistent per-thread plugin state store backed by the shared `.pi` home so workbench views, companion panels, and runtime hooks can share thread-scoped JSON state.
 - `desktop-agentos/backend/extensions/harness-adapters.ts` is the abstraction layer between platform-native harnesses and the unified extension model; it currently includes `pi`, `codex`, `claude-code`, and `opencode` adapter identities and provider-to-harness mapping.
-- `desktop-agentos/plugins/` contains repo-shipped V2 plugins, with `plugins/builtin/` reserved for curated builtins. The current builtin set includes `chat-core`, `extension-lab`, `random-site-preview`, and `thread-journal`.
+- `desktop/electron/main.mjs` exposes the desktop-shell install flow for user plugins, including folder selection, copying into the user plugin directory, and triggering a live catalog refresh.
+- `desktop-agentos/plugins/` contains repo-shipped V2 plugins, with `plugins/builtin/` reserved for curated builtins. The current builtin set includes `chat-core`, `extension-lab`, and `thread-journal`.
 - `desktop-agentos/sdk/index.ts` contains the extension-facing V2 manifest and activation API types.
 - `desktop-agentos/electron/main.mjs` loads the AgentOS desktop service directly into the Electron main process via `tsx`.
 - The shared desktop renderer (`desktop/renderer/src/App.tsx`) now renders a plugin-contributed workbench. Chat itself is a builtin `chat-core` view instead of a renderer special case, companion panels remain thread-scoped, host-rendered surfaces are resolved from a trusted renderer registry, and plugin-owned webviews can render `http:`, `https:`, `data:`, and plugin-local HTML entrypoints in a sandboxed iframe via the desktop file/webview bridge.

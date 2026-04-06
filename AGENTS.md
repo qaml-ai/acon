@@ -25,4 +25,5 @@ Core areas:
 - Do not reintroduce the old monorepo web app, Workers, sandbox-host, or deployment code here.
 - Prefer `desktop-agentos/` for runtime and extension-host changes.
 - Prefer `desktop/renderer/` and `src/` for desktop UI changes.
+- User plugins are installed into the desktop data directory under `plugins/`, and the builtin Extension Lab view is the primary install/manage entrypoint for them.
 - Keep this file current when the standalone architecture changes.

@@ -213,20 +213,42 @@ export class CamelAIExtensionHost {
       return;
     }
 
-    this.initializePromise = (async () => {
-      const discovered = discoverExtensions();
-      for (const entry of discovered) {
-        const record = this.ensureRecord(entry);
-        await this.activateRecord(record, context);
-      }
-      this.initialized = true;
-    })();
+    this.initializePromise = this.loadRecords(context);
 
     try {
       await this.initializePromise;
     } finally {
       this.initializePromise = null;
     }
+  }
+
+  async refresh(context: CamelAIActivationContext): Promise<void> {
+    if (this.initializePromise) {
+      try {
+        await this.initializePromise;
+      } catch {
+        // Ignore the previous startup failure and retry from scratch below.
+      }
+    }
+
+    this.records.clear();
+    this.initialized = false;
+    this.initializePromise = this.loadRecords(context);
+
+    try {
+      await this.initializePromise;
+    } finally {
+      this.initializePromise = null;
+    }
+  }
+
+  private async loadRecords(context: CamelAIActivationContext): Promise<void> {
+    const discovered = discoverExtensions();
+    for (const entry of discovered) {
+      const record = this.ensureRecord(entry);
+      await this.activateRecord(record, context);
+    }
+    this.initialized = true;
   }
 
   private createThreadState(
