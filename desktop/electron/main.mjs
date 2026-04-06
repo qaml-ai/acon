@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, protocol, shell, net } from 'electron';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 protocol.registerSchemesAsPrivileged([
@@ -225,6 +225,10 @@ function readPluginManifestFromDirectory(pluginDirectory) {
     throw new Error('Selected folder is not a camelai plugin. Expected package.json camelai.id.');
   }
 
+  if (pluginId === '.' || pluginId === '..') {
+    throw new Error('Plugin id may not be a dot-segment path.');
+  }
+
   if (!/^[A-Za-z0-9._-]+$/.test(pluginId)) {
     throw new Error('Plugin id may only contain letters, numbers, dots, underscores, and hyphens.');
   }
@@ -251,7 +255,19 @@ function installPluginFromDirectory(sourceDirectory) {
   const manifest = readPluginManifestFromDirectory(sourcePath);
   const pluginDirectory = getDesktopPluginDirectory();
   const targetPath = resolve(pluginDirectory, manifest.id);
+  const targetRelativePath = relative(pluginDirectory, targetPath);
   const replacing = existsSync(targetPath);
+
+  if (
+    targetRelativePath === '' ||
+    targetRelativePath === '.' ||
+    targetRelativePath === '..' ||
+    targetRelativePath.startsWith('..\\') ||
+    targetRelativePath.startsWith('../') ||
+    isAbsolute(targetRelativePath)
+  ) {
+    throw new Error('Plugin install target must stay within the desktop plugins directory.');
+  }
 
   ensureDirectory(pluginDirectory);
 

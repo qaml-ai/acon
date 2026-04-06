@@ -181,6 +181,7 @@ export class CamelAIExtensionHost {
   private readonly records = new Map<string, CamelAIRuntimeRecord>();
   private initializePromise: Promise<void> | null = null;
   private initialized = false;
+  private loadGeneration = 0;
 
   private ensureRecord(
     discovered: DiscoveredCamelAIExtension,
@@ -233,6 +234,7 @@ export class CamelAIExtensionHost {
 
     this.records.clear();
     this.initialized = false;
+    this.loadGeneration += 1;
     this.initializePromise = this.loadRecords(context);
 
     try {
@@ -316,8 +318,10 @@ export class CamelAIExtensionHost {
     }
 
     try {
+      const moduleUrl = pathToFileURL(record.discovered.entryPath);
+      moduleUrl.searchParams.set("camelai-load", String(this.loadGeneration));
       const loadedModule = (await import(
-        pathToFileURL(record.discovered.entryPath).href
+        moduleUrl.href
       )) as CamelAIExtensionModule & {
         default?: CamelAIExtensionModule;
       };
