@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -180,6 +181,119 @@ function readAcpSessionModel(
 
   const parsed = JSON.parse(result.stdout.trim()) as { model?: unknown };
   return typeof parsed.model === "string" ? parsed.model : null;
+}
+
+async function callContainerHostRpc<TResult>(
+  userDataDir: string,
+  providerId: DesktopProvider,
+  method: string,
+  params: unknown,
+): Promise<TResult> {
+  const containerName = getProviderContainerName(userDataDir, providerId);
+  return await new Promise<TResult>((resolvePromise, rejectPromise) => {
+    const child = spawn(
+      CONTAINER_COMMAND,
+      [
+        "exec",
+        "--workdir",
+        "/workspace",
+        "--env",
+        "HOME=/data/home",
+        "--env",
+        "ACON_HOST_RPC_SOCKET=/data/host-rpc/bridge.sock",
+        containerName,
+        "acon-host-rpc",
+        method,
+        JSON.stringify(params),
+      ],
+      {
+        cwd: ROOT_DIR,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", rejectPromise);
+    child.on("exit", (code) => {
+      if (code !== 0) {
+        rejectPromise(
+          new Error(
+            stderr.trim() ||
+              stdout.trim() ||
+              `Failed to call acon-host-rpc ${method}.`,
+          ),
+        );
+        return;
+      }
+
+      try {
+        resolvePromise(JSON.parse(stdout.trim()) as TResult);
+      } catch (error) {
+        rejectPromise(
+          error instanceof Error
+            ? error
+            : new Error(`acon-host-rpc returned invalid JSON for ${method}.`),
+        );
+      }
+    });
+  });
+}
+
+async function withHostLocalRpcTestServer<T>(
+  run: (url: string) => Promise<T>,
+): Promise<T> {
+  const server = createServer((request, response) => {
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      body += chunk;
+    });
+    request.on("end", () => {
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          ok: true,
+          method: request.method,
+          url: request.url,
+          body,
+        }),
+      );
+    });
+  });
+
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    server.once("error", rejectPromise);
+    server.listen(0, "127.0.0.1", () => resolvePromise());
+  });
+
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Host RPC test server did not expose a TCP port.");
+    }
+
+    return await run(`http://127.0.0.1:${address.port}/bridge-test`);
+  } finally {
+    await new Promise<void>((resolvePromise, rejectPromise) => {
+      server.close((error) => {
+        if (error) {
+          rejectPromise(error);
+          return;
+        }
+        resolvePromise();
+      });
+    });
+  }
 }
 
 class DesktopBackendHarness {
@@ -453,6 +567,73 @@ integrationDescribe("desktop-container ACPX integration", () => {
       token: "CODEX_SESSION_TOKEN_5813",
     },
   ];
+
+  for (const providerCase of providerCases) {
+    it(
+      `bridges ${providerCase.label} container RPC calls to a host-only loopback HTTP service`,
+      { timeout: INTEGRATION_TIMEOUT_MS },
+      async () => {
+        const harness = new DesktopBackendHarness(providerCase.id);
+
+        try {
+          const threadId = await harness.waitForActiveThread();
+          harness.send({
+            type: "set_provider",
+            provider: providerCase.id,
+          });
+          await harness.waitForProvider(providerCase.id);
+          await harness.waitForRuntimeReady(providerCase.id);
+
+          const pingResult = await callContainerHostRpc<{
+            ok: boolean;
+            provider: string;
+            params?: {
+              threadId?: string;
+            };
+          }>(harness.userDataDir, providerCase.id, "ping", { threadId });
+          expect(pingResult.ok).toBe(true);
+          expect(pingResult.provider).toBe(providerCase.id);
+          expect(pingResult.params?.threadId).toBe(threadId);
+
+          await withHostLocalRpcTestServer(async (url) => {
+            const result = await callContainerHostRpc<{
+              ok: boolean;
+              status: number;
+              body: string;
+              url: string;
+              truncated: boolean;
+            }>(harness.userDataDir, providerCase.id, "fetch", {
+              url,
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+              },
+              body: JSON.stringify({
+                provider: providerCase.id,
+                token: providerCase.token,
+              }),
+              timeoutMs: 5000,
+            });
+
+            expect(result.ok).toBe(true);
+            expect(result.status).toBe(200);
+            expect(result.truncated).toBe(false);
+
+            const responseBody = JSON.parse(result.body) as {
+              method?: string;
+              url?: string;
+              body?: string;
+            };
+            expect(responseBody.method).toBe("POST");
+            expect(responseBody.url).toBe("/bridge-test");
+            expect(responseBody.body).toContain(providerCase.token);
+          });
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+  }
 
   for (const providerCase of providerCases) {
     const provider = requireDesktopProvider(providerCase.id);

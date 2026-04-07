@@ -9,8 +9,15 @@ RUN apt-get update \
 
 RUN npm install -g acpx@${ACPX_VERSION} @openai/codex@${CODEX_VERSION}
 
-COPY entrypoint.sh /usr/local/bin/desktop-entrypoint.sh
-RUN chmod +x /usr/local/bin/desktop-entrypoint.sh
+COPY acpx-codex/entrypoint.sh /usr/local/bin/desktop-entrypoint.sh
+COPY bridge/acon-host-bridge.mjs /usr/local/lib/acon/acon-host-bridge.mjs
+COPY bridge/acon-host-rpc.mjs /usr/local/lib/acon/acon-host-rpc.mjs
+RUN chmod +x \
+    /usr/local/bin/desktop-entrypoint.sh \
+    /usr/local/lib/acon/acon-host-bridge.mjs \
+    /usr/local/lib/acon/acon-host-rpc.mjs \
+  && ln -sf /usr/local/lib/acon/acon-host-bridge.mjs /usr/local/bin/acon-host-bridge \
+  && ln -sf /usr/local/lib/acon/acon-host-rpc.mjs /usr/local/bin/acon-host-rpc
 
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/desktop-entrypoint.sh"]

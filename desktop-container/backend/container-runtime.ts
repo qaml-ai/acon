@@ -1,6 +1,20 @@
 import { createHash } from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync } from "node:fs";
+import {
+  spawn,
+  spawnSync,
+  type ChildProcessWithoutNullStreams,
+} from "node:child_process";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import type { DesktopRuntimeStatus } from "../../desktop/shared/protocol";
@@ -13,6 +27,9 @@ const DEFAULT_CONTAINER_IMAGE_ROOT = resolve(
   process.cwd(),
   "desktop-container/container-images",
 );
+const CONTAINER_HOST_RPC_SOCKET_PATH = "/data/host-rpc/bridge.sock";
+const DEFAULT_HOST_RPC_FETCH_TIMEOUT_MS = 15_000;
+const DEFAULT_HOST_RPC_FETCH_MAX_BODY_BYTES = 256 * 1024;
 const HOST_CODEX_HOME = process.env.CODEX_HOME?.trim()
   ? resolve(process.env.CODEX_HOME)
   : resolve(homedir(), ".codex");
@@ -116,13 +133,44 @@ function resolveContainerImageRoot(): string {
 
 function getBuildContext(
   imageRoot: string,
+): string {
+  return imageRoot;
+}
+
+function getContainerfilePath(
+  imageRoot: string,
   provider: DesktopProviderDefinition,
 ): string {
-  return resolve(imageRoot, provider.id === "claude" ? "acpx-claude" : "acpx-codex");
+  return resolve(
+    imageRoot,
+    provider.id === "claude" ? "acpx-claude/Containerfile" : "acpx-codex/Containerfile",
+  );
 }
 
 function getClaudeJsonSeedDirectory(runtimeDirectory: string): string {
   return resolve(runtimeDirectory, "seed", "claude-json");
+}
+
+function collectFilesRecursively(rootDirectory: string): string[] {
+  if (!existsSync(rootDirectory)) {
+    return [];
+  }
+
+  const entries = readdirSync(rootDirectory)
+    .map((entry) => resolve(rootDirectory, entry))
+    .sort((left, right) => left.localeCompare(right));
+  const files: string[] = [];
+  for (const entry of entries) {
+    const stats = statSync(entry);
+    if (stats.isDirectory()) {
+      files.push(...collectFilesRecursively(entry));
+      continue;
+    }
+    if (stats.isFile()) {
+      files.push(entry);
+    }
+  }
+  return files;
 }
 
 function shellEscape(value: string): string {
@@ -133,6 +181,14 @@ interface ProviderContainerState {
   containerName: string;
   ensuredSessions: Map<string, string>;
   startupPromise: Promise<void> | null;
+  bridge: ProviderBridgeState | null;
+}
+
+interface ProviderBridgeState {
+  child: ChildProcessWithoutNullStreams;
+  readyPromise: Promise<void>;
+  stdoutBuffer: string;
+  stderrBuffer: string;
 }
 
 interface CapturedCommandResult {
@@ -140,6 +196,23 @@ interface CapturedCommandResult {
   signal: NodeJS.Signals | null;
   stdout: string;
   stderr: string;
+}
+
+interface HostRpcRequest {
+  id?: unknown;
+  method?: unknown;
+  params?: unknown;
+  type?: unknown;
+}
+
+interface HostRpcResponse {
+  type: "response";
+  id: string;
+  result?: unknown;
+  error?: {
+    code?: string;
+    message: string;
+  };
 }
 
 function isRecoverableContainerExecError(error: unknown): boolean {
@@ -198,6 +271,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
 
   dispose(): void {
     for (const state of this.providerContainers.values()) {
+      this.stopProviderBridge(state);
       spawnSync(this.containerCommand, ["stop", state.containerName], {
         encoding: "utf8",
       });
@@ -286,10 +360,16 @@ export class ContainerRuntimeManager implements RuntimeManager {
       return;
     }
 
+    const imageSignature = this.computeImageBuildSignature(provider);
+    const imageStampPath = this.getImageBuildStampPath(provider);
+    const storedImageSignature = existsSync(imageStampPath)
+      ? readFileSync(imageStampPath, "utf8").trim()
+      : null;
+
     const inspect = await this.runCapturedCommand(
       ["image", "inspect", imageName],
     );
-    if (inspect.code === 0) {
+    if (inspect.code === 0 && storedImageSignature === imageSignature) {
       this.checkedImages.add(imageName);
       return;
     }
@@ -304,13 +384,13 @@ export class ContainerRuntimeManager implements RuntimeManager {
     this.lastRuntimeStatus = buildingStatus;
     onStatus?.(buildingStatus);
 
-    const buildContext = getBuildContext(this.containerImageRoot, provider);
+    const buildContext = getBuildContext(this.containerImageRoot);
     const buildArgs = [
       "build",
       "--progress",
       "plain",
       "--file",
-      resolve(buildContext, "Containerfile"),
+      getContainerfilePath(this.containerImageRoot, provider),
       "--tag",
       imageName,
       buildContext,
@@ -352,10 +432,45 @@ export class ContainerRuntimeManager implements RuntimeManager {
     });
 
     this.checkedImages.add(imageName);
+    mkdirSync(resolve(this.runtimeDirectory, "image-stamps"), { recursive: true });
+    writeFileSync(imageStampPath, imageSignature, "utf8");
   }
 
   private getProviderDataDirectory(provider: DesktopProviderDefinition): string {
     return resolve(this.runtimeDirectory, "providers", provider.id);
+  }
+
+  private getImageBuildStampPath(provider: DesktopProviderDefinition): string {
+    return resolve(this.runtimeDirectory, "image-stamps", `${provider.id}.sha1`);
+  }
+
+  private computeImageBuildSignature(provider: DesktopProviderDefinition): string {
+    const providerDirectory = resolve(
+      this.containerImageRoot,
+      provider.id === "claude" ? "acpx-claude" : "acpx-codex",
+    );
+    const bridgeDirectory = resolve(this.containerImageRoot, "bridge");
+    const hash = createHash("sha1");
+
+    hash.update(provider.id);
+    hash.update(provider.getImageName());
+    hash.update(process.env.DESKTOP_ACPX_IMAGE_VERSION?.trim() || "");
+    if (provider.id === "codex") {
+      hash.update(process.env.DESKTOP_CODEX_IMAGE_VERSION?.trim() || "");
+    }
+    if (provider.id === "claude") {
+      hash.update(process.env.DESKTOP_CLAUDE_IMAGE_VERSION?.trim() || "");
+    }
+
+    for (const filePath of [
+      ...collectFilesRecursively(providerDirectory),
+      ...collectFilesRecursively(bridgeDirectory),
+    ]) {
+      hash.update(filePath);
+      hash.update(readFileSync(filePath));
+    }
+
+    return hash.digest("hex");
   }
 
   private getProviderContainerState(
@@ -374,6 +489,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
       containerName: `acon-${provider.id}-${hash}`,
       ensuredSessions: new Map<string, string>(),
       startupPromise: null,
+      bridge: null,
     };
     this.providerContainers.set(provider.id, created);
     return created;
@@ -450,6 +566,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
     await this.ensureContainerSystemStarted();
     state.ensuredSessions.clear();
     state.startupPromise = null;
+    this.stopProviderBridge(state);
     await this.runCapturedCommand(["stop", state.containerName]);
     await this.ensureProviderContainer(provider);
   }
@@ -460,6 +577,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
     const env: Record<string, string> = {
       DESKTOP_DATA_ROOT: "/data",
       HOME: "/data/home",
+      ACON_HOST_RPC_SOCKET: CONTAINER_HOST_RPC_SOCKET_PATH,
     };
 
     if (provider.id === "codex") {
@@ -521,6 +639,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
     await this.ensureContainerSystemStarted();
     const state = this.getProviderContainerState(provider);
     if ((await this.inspectContainerStatus(state.containerName)) === "running") {
+      await this.ensureProviderBridge(provider, state);
       return;
     }
 
@@ -610,6 +729,8 @@ export class ContainerRuntimeManager implements RuntimeManager {
           `Container ${state.containerName} failed to reach running state.`,
         );
       }
+
+      await this.ensureProviderBridge(provider, state);
     })();
 
     try {
@@ -617,6 +738,362 @@ export class ContainerRuntimeManager implements RuntimeManager {
     } finally {
       state.startupPromise = null;
     }
+  }
+
+  private stopProviderBridge(state: ProviderContainerState): void {
+    const bridge = state.bridge;
+    state.bridge = null;
+    if (!bridge) {
+      return;
+    }
+
+    bridge.child.stdin.end();
+    bridge.child.kill("SIGTERM");
+  }
+
+  private async ensureProviderBridge(
+    provider: DesktopProviderDefinition,
+    state = this.getProviderContainerState(provider),
+  ): Promise<void> {
+    if (state.bridge) {
+      await state.bridge.readyPromise;
+      return;
+    }
+
+    const args = this.buildExecArgs(
+      provider,
+      provider.getDefaultModel(),
+      state.containerName,
+      ["node", "/usr/local/lib/acon/acon-host-bridge.mjs"],
+      true,
+    );
+
+    const child = spawn(this.containerCommand, args, {
+      cwd: this.workspaceDirectory,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+
+    const bridge: ProviderBridgeState = {
+      child,
+      readyPromise: Promise.resolve(),
+      stdoutBuffer: "",
+      stderrBuffer: "",
+    };
+
+    const readyPromise = new Promise<void>((resolvePromise, rejectPromise) => {
+      let ready = false;
+      const fail = (error: unknown) => {
+        if (ready) {
+          logDesktop(
+            "desktop-runtime",
+            "provider_bridge:runtime_error",
+            {
+              provider: provider.id,
+              containerName: state.containerName,
+              error: formatError(error),
+            },
+            "warn",
+          );
+          return;
+        }
+        ready = true;
+        rejectPromise(error instanceof Error ? error : new Error(formatError(error)));
+      };
+
+      child.on("error", fail);
+      child.on("exit", (code, signal) => {
+        state.bridge = null;
+        const detail = `Bridge process exited (code=${code}, signal=${signal}).`;
+        fail(
+          new Error(
+            bridge.stderrBuffer.trim()
+              ? `${detail} ${bridge.stderrBuffer.trim()}`
+              : detail,
+          ),
+        );
+      });
+
+      child.stdout.on("data", (chunk: string) => {
+        if (state.bridge !== bridge) {
+          return;
+        }
+
+        bridge.stdoutBuffer += chunk;
+        while (true) {
+          const newlineIndex = bridge.stdoutBuffer.indexOf("\n");
+          if (newlineIndex === -1) {
+            break;
+          }
+
+          const line = bridge.stdoutBuffer.slice(0, newlineIndex).trim();
+          bridge.stdoutBuffer = bridge.stdoutBuffer.slice(newlineIndex + 1);
+          if (!line) {
+            continue;
+          }
+
+          let message: HostRpcRequest;
+          try {
+            message = JSON.parse(line) as HostRpcRequest;
+          } catch {
+            fail(new Error(`Bridge returned invalid JSON: ${line}`));
+            continue;
+          }
+
+          if (message.type === "ready") {
+            if (!ready) {
+              ready = true;
+              resolvePromise();
+            }
+            continue;
+          }
+
+          if (message.type !== "request") {
+            logDesktop(
+              "desktop-runtime",
+              "provider_bridge:unexpected_message",
+              {
+                provider: provider.id,
+                containerName: state.containerName,
+                message,
+              },
+              "warn",
+            );
+            continue;
+          }
+
+          void this.handleProviderBridgeRequest(provider, state, message);
+        }
+      });
+
+      child.stderr.on("data", (chunk: string) => {
+        if (state.bridge !== bridge) {
+          return;
+        }
+
+        bridge.stderrBuffer += chunk;
+        logDesktop(
+          "desktop-runtime",
+          "provider_bridge:stderr",
+          {
+            provider: provider.id,
+            containerName: state.containerName,
+            chunk: chunk.trim(),
+          },
+          "debug",
+        );
+      });
+    });
+
+    bridge.readyPromise = readyPromise;
+    state.bridge = bridge;
+
+    try {
+      await readyPromise;
+    } catch (error) {
+      this.stopProviderBridge(state);
+      throw error;
+    }
+  }
+
+  private async handleProviderBridgeRequest(
+    provider: DesktopProviderDefinition,
+    state: ProviderContainerState,
+    message: HostRpcRequest,
+  ): Promise<void> {
+    const id = typeof message.id === "string" ? message.id : null;
+    if (!id) {
+      logDesktop(
+        "desktop-runtime",
+        "provider_bridge:request_missing_id",
+        {
+          provider: provider.id,
+          containerName: state.containerName,
+          message,
+        },
+        "warn",
+      );
+      return;
+    }
+
+    let response: HostRpcResponse;
+    try {
+      const result = await this.executeProviderBridgeMethod(
+        provider,
+        state,
+        typeof message.method === "string" ? message.method : "",
+        message.params,
+      );
+      response = {
+        type: "response",
+        id,
+        result,
+      };
+    } catch (error) {
+      response = {
+        type: "response",
+        id,
+        error: {
+          code: "RPC_ERROR",
+          message: formatError(error),
+        },
+      };
+    }
+
+    const bridge = state.bridge;
+    if (!bridge || bridge.child.stdin.destroyed) {
+      return;
+    }
+
+    bridge.child.stdin.write(`${JSON.stringify(response)}\n`);
+  }
+
+  private async executeProviderBridgeMethod(
+    provider: DesktopProviderDefinition,
+    state: ProviderContainerState,
+    method: string,
+    params: unknown,
+  ): Promise<unknown> {
+    switch (method) {
+      case "ping":
+        return {
+          ok: true,
+          provider: provider.id,
+          containerName: state.containerName,
+          now: new Date().toISOString(),
+          pid: process.pid,
+          params: params ?? null,
+        };
+      case "fetch":
+        return await this.executeProviderBridgeFetch(params);
+      default:
+        throw new Error(`Unknown host RPC method: ${method || "<missing>"}.`);
+    }
+  }
+
+  private async executeProviderBridgeFetch(params: unknown): Promise<unknown> {
+    if (!params || typeof params !== "object") {
+      throw new Error("fetch params must be an object.");
+    }
+
+    const record = params as Record<string, unknown>;
+    const url = typeof record.url === "string" ? record.url.trim() : "";
+    if (!url) {
+      throw new Error("fetch params.url must be a non-empty string.");
+    }
+
+    const method =
+      typeof record.method === "string" && record.method.trim()
+        ? record.method.trim().toUpperCase()
+        : "GET";
+    const timeoutMs =
+      typeof record.timeoutMs === "number" && Number.isFinite(record.timeoutMs)
+        ? Math.max(1, Math.trunc(record.timeoutMs))
+        : DEFAULT_HOST_RPC_FETCH_TIMEOUT_MS;
+    const maxBodyBytes =
+      typeof record.maxBodyBytes === "number" && Number.isFinite(record.maxBodyBytes)
+        ? Math.max(1, Math.trunc(record.maxBodyBytes))
+        : DEFAULT_HOST_RPC_FETCH_MAX_BODY_BYTES;
+    const body = typeof record.body === "string" ? record.body : undefined;
+    const targetUrl = new URL(url);
+    if (targetUrl.protocol !== "http:" && targetUrl.protocol !== "https:") {
+      throw new Error(
+        `fetch only supports http/https URLs. Received ${targetUrl.protocol || "<missing>"}.`,
+      );
+    }
+
+    const headers: Record<string, string> = {};
+    if (record.headers && typeof record.headers === "object") {
+      for (const [key, value] of Object.entries(record.headers as Record<string, unknown>)) {
+        if (typeof value === "string") {
+          headers[key] = value;
+        }
+      }
+    }
+    if (body !== undefined && !Object.keys(headers).some((key) => key.toLowerCase() === "content-length")) {
+      headers["content-length"] = Buffer.byteLength(body).toString();
+    }
+
+    const response = await new Promise<{
+      ok: boolean;
+      status: number;
+      statusText: string;
+      url: string;
+      headers: Record<string, string>;
+      body: string;
+      truncated: boolean;
+    }>((resolvePromise, rejectPromise) => {
+      const requestFn = targetUrl.protocol === "https:" ? httpsRequest : httpRequest;
+      const request = requestFn(
+        targetUrl,
+        {
+          method,
+          headers,
+        },
+        (incomingResponse) => {
+          const chunks: Buffer[] = [];
+          let totalBytes = 0;
+          let truncated = false;
+
+          incomingResponse.on("data", (chunk: string | Buffer) => {
+            const chunkBuffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            if (totalBytes >= maxBodyBytes) {
+              truncated = true;
+              return;
+            }
+
+            if (totalBytes + chunkBuffer.length > maxBodyBytes) {
+              const remainingBytes = maxBodyBytes - totalBytes;
+              if (remainingBytes > 0) {
+                chunks.push(chunkBuffer.subarray(0, remainingBytes));
+                totalBytes += remainingBytes;
+              }
+              truncated = true;
+              return;
+            }
+
+            chunks.push(chunkBuffer);
+            totalBytes += chunkBuffer.length;
+          });
+
+          incomingResponse.on("end", () => {
+            resolvePromise({
+              ok:
+                typeof incomingResponse.statusCode === "number" &&
+                incomingResponse.statusCode >= 200 &&
+                incomingResponse.statusCode < 300,
+              status: incomingResponse.statusCode ?? 0,
+              statusText: incomingResponse.statusMessage ?? "",
+              url: targetUrl.toString(),
+              headers: Object.fromEntries(
+                Object.entries(incomingResponse.headers).flatMap(([key, value]) => {
+                  if (Array.isArray(value)) {
+                    return [[key, value.join(", ")]];
+                  }
+                  return typeof value === "string" ? [[key, value]] : [];
+                }),
+              ),
+              body: Buffer.concat(chunks).toString("utf8"),
+              truncated,
+            });
+          });
+
+          incomingResponse.on("error", rejectPromise);
+        },
+      );
+
+      request.setTimeout(timeoutMs, () => {
+        request.destroy(new Error(`Host RPC request timed out after ${timeoutMs}ms.`));
+      });
+      request.on("error", rejectPromise);
+      if (body !== undefined) {
+        request.write(body);
+      }
+      request.end();
+    });
+
+    return response;
   }
 
   private async ensurePromptSession(

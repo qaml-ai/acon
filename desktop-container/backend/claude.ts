@@ -8,7 +8,7 @@ import type { DesktopProviderDefinition } from "./provider-types";
 
 const DEFAULT_CLAUDE_IMAGE =
   process.env.DESKTOP_CONTAINER_CLAUDE_IMAGE?.trim() ||
-  "acon-desktop-claude:0.1";
+  "acon-desktop-claude:0.2";
 const DEFAULT_CLAUDE_MODEL = "sonnet";
 const CLAUDE_MODELS = [
   {

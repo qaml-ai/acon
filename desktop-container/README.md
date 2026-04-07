@@ -21,7 +21,7 @@ Current limits:
 - workspace is mounted directly from the host checkout into the VM at `/workspace`
 - auth is seeded from host `~/.codex`, host `~/.claude` / `~/.claude.json`, or `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`
 - the backend currently uses fixed default models per provider (`gpt-5.4` for Codex and `sonnet` for Claude)
-- ACPX sessions persist per thread inside a long-lived provider container, but host-to-container transport still uses `container exec` per turn
+- ACPX sessions persist per thread inside a long-lived provider container, and the backend now keeps a second long-lived `container exec --interactive` bridge process alive per provider container for guest-to-host RPC
 - release packaging still needs to vendor the Apple `container` binary at `desktop/bin/container`
 
 ## Commands
@@ -56,8 +56,8 @@ Optional:
 ```bash
 export DESKTOP_CONTAINER_WORKSPACE_DIR=/absolute/path/to/workspace
 export DESKTOP_CONTAINER_USER_DATA_DIR=/custom/path
-export DESKTOP_CONTAINER_CLAUDE_IMAGE=acon-desktop-claude:0.1
-export DESKTOP_CONTAINER_CODEX_IMAGE=acon-desktop-codex:0.1
+export DESKTOP_CONTAINER_CLAUDE_IMAGE=acon-desktop-claude:0.2
+export DESKTOP_CONTAINER_CODEX_IMAGE=acon-desktop-codex:0.2
 export DESKTOP_CONTAINER_BIN_PATH=/absolute/path/to/container
 ```
 
@@ -85,7 +85,7 @@ export ANTHROPIC_API_KEY=...
 - `desktop-container/backend/container-runtime.ts` owns Apple container image preparation, long-lived provider containers, and ACPX turn execution with per-thread session reuse.
 - The backend mounts the current workspace into the container at `/workspace`.
 - Provider-specific runtime data lives under the shared desktop runtime directory and is mounted into the container at `/data`.
-- `desktop-container/container-images/` contains the Apple-container image definitions for Codex and Claude.
+- `desktop-container/container-images/` contains the Apple-container image definitions for Codex and Claude, plus the shared `acon-host-bridge` daemon and `acon-host-rpc` CLI installed into both images so agents can call host RPC from inside the container.
 - Packaged builds should stage the Apple `container` CLI at `Contents/Resources/desktop/bin/container` and the image contexts at `Contents/Resources/desktop/container-images/`.
 - `desktop-container/backend/extensions/host.ts` discovers V2 `camelai` plugin manifests from `desktop-container/plugins/builtin/` plus the user install directory, loads extension modules, exposes a runtime-first API (`on`, `registerView`, `registerPanel`, `registerCommand`, `registerTool`), and materializes workbench views plus per-thread companion panels into the shared snapshot model.
 - `desktop-container/backend/extensions/thread-state.ts` provides a persistent per-thread plugin state store under the desktop runtime directory so workbench views, companion panels, and runtime hooks can share thread-scoped JSON state.

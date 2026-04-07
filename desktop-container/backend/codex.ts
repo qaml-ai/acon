@@ -8,7 +8,7 @@ import type { DesktopProviderDefinition } from "./provider-types";
 
 const DEFAULT_CODEX_IMAGE =
   process.env.DESKTOP_CONTAINER_CODEX_IMAGE?.trim() ||
-  "acon-desktop-codex:0.1";
+  "acon-desktop-codex:0.2";
 const DEFAULT_CODEX_MODEL = "gpt-5.4";
 
 function getAvailableCodexModels(): DesktopModelOption[] {
