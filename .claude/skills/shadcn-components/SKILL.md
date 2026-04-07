@@ -40,8 +40,21 @@ Buttons, inputs, dialogs, dropdowns, cards, forms, navigation, tables, tooltips,
 - `mcp__shadcn__get_item_examples_from_registries` - Get usage examples
 - `mcp__shadcn__get_add_command_for_items` - Get install command
 
-## Project Configuration
+## Project Configuration 
 
+### New Project Configuration
+- **Style:** radix-mira (compact/dense interface)
+- **Base color:** mist
+- **Theme:** mist
+- **Chart Color:** mist
+- **Heading:** Merriweather
+- **Font:** Figtree
+- **Radius:** Large
+- **Icons:** Lucide
+- **Components location:** `src/components/ui/`
+Preset code: --preset b4cwnZvlhI
+
+### Old Project Configuration
 - **Style:** radix-mira (compact/dense interface)
 - **Base color:** zinc
 - **Font:** Inter
