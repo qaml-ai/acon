@@ -46,7 +46,7 @@ Notes:
 - `build` only builds the renderer.
 - `build:bundle` assembles the packaged desktop resources, bundles the backend entrypoint, stages builtin plugin manifests for packaged discovery, and produces an unpacked macOS `.app` bundle in `dist/bundle/`.
 - `dev` is the main command. It starts the renderer plus Electron and picks a free localhost port automatically.
-- `dev` only runs container-asset preparation when `DESKTOP_PREPARE_CONTAINER_ASSETS=1`.
+- `dev` runs container-asset preparation by default. Set `DESKTOP_PREPARE_CONTAINER_ASSETS=0` to skip it.
 - `backend` is a smoke check for backend startup, not a long-lived backend server.
 - `probe` runs an end-to-end stdio turn against the desktop backend using the default provider.
 - `probe:claude` forces the Claude provider through the same end-to-end probe.
@@ -76,8 +76,7 @@ export DESKTOP_APPLE_CONTAINER_REPO_DIR=/absolute/path/to/apple-container
 export DESKTOP_CONTAINER_CLAUDE_IMAGE=acon-desktop-claude:0.1
 export DESKTOP_CONTAINER_CODEX_IMAGE=acon-desktop-codex:0.1
 export DESKTOP_CONTAINER_BIN_PATH=/absolute/path/to/container
-export DESKTOP_PREBUILD_CONTAINER_IMAGES=0
-export DESKTOP_PREPARE_CONTAINER_ASSETS=1
+export DESKTOP_PREPARE_CONTAINER_ASSETS=0
 ```
 
 Codex auth:

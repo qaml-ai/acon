@@ -17,9 +17,9 @@ import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
+const prepareScriptPath = resolve(import.meta.dirname, "prepare-container-assets.mjs");
 const scriptMode = getFlagValue("--mode") || "manual";
 const strictMode = process.env.DESKTOP_PREPARE_CONTAINER_ASSETS_STRICT === "1";
-const prepareImages = process.env.DESKTOP_PREBUILD_CONTAINER_IMAGES !== "0";
 const buildAppleContainer = process.env.DESKTOP_BUILD_APPLE_CONTAINER !== "0";
 const appleContainerRepoDir = process.env.DESKTOP_APPLE_CONTAINER_REPO_DIR?.trim()
   ? resolve(process.env.DESKTOP_APPLE_CONTAINER_REPO_DIR.trim())
@@ -58,10 +58,6 @@ const imageBuilds = [
     imageName:
       process.env.DESKTOP_CONTAINER_ACPX_IMAGE?.trim() || "acon-desktop-acpx:0.1",
     buildContext: resolve(repoRoot, "desktop-container/container-images"),
-    containerfilePath: resolve(
-      repoRoot,
-      "desktop-container/container-images/acpx-shared/Containerfile",
-    ),
   },
 ];
 
@@ -373,6 +369,7 @@ function prepareBuildContext(imageBuild) {
 
 function ensureImage(containerCommand, containerVersion, state, imageBuild) {
   const contextHash = sha1Directory(imageBuild.buildContext);
+  const prepareScriptHash = sha1File(prepareScriptPath);
   const desiredHash = createHash("sha1")
     .update(
       JSON.stringify({
@@ -380,6 +377,7 @@ function ensureImage(containerCommand, containerVersion, state, imageBuild) {
         contextHash,
         imageName: imageBuild.imageName,
         cliPackageSpecs,
+        prepareScriptHash,
       }),
     )
     .digest("hex");
@@ -428,11 +426,6 @@ function main() {
   const containerCommand = ensureBundledContainerInstall();
   const containerVersion = getContainerVersion(containerCommand);
   log(`using ${containerVersion}`);
-
-  if (!prepareImages) {
-    log("skipping image builds because DESKTOP_PREBUILD_CONTAINER_IMAGES=0");
-    return;
-  }
 
   const state = readStateFile();
   state.images ||= {};
