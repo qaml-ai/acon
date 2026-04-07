@@ -9,8 +9,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
-  statSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { request as httpRequest } from "node:http";
@@ -36,7 +35,6 @@ const CONTAINER_HOST_RPC_SOCKET_PATH = "/data/host-rpc/bridge.sock";
 const DEFAULT_HOST_RPC_FETCH_TIMEOUT_MS = 15_000;
 const DEFAULT_HOST_RPC_FETCH_MAX_BODY_BYTES = 256 * 1024;
 const DEFAULT_CONTAINER_COMMAND_TIMEOUT_MS = 60_000;
-const DEFAULT_CONTAINER_BUILD_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_CONTAINER_BRIDGE_READY_TIMEOUT_MS = 30_000;
 const HOST_CODEX_HOME = process.env.CODEX_HOME?.trim()
   ? resolve(process.env.CODEX_HOME)
@@ -154,38 +152,8 @@ function resolveContainerImageRoot(): string {
   return DEFAULT_CONTAINER_IMAGE_ROOT;
 }
 
-function getBuildContext(imageRoot: string): string {
-  return imageRoot;
-}
-
-function getContainerfilePath(imageRoot: string): string {
-  return resolve(imageRoot, "acpx-shared/Containerfile");
-}
-
 function getClaudeJsonSeedDirectory(runtimeDirectory: string): string {
   return resolve(runtimeDirectory, "seed", "claude-json");
-}
-
-function collectFilesRecursively(rootDirectory: string): string[] {
-  if (!existsSync(rootDirectory)) {
-    return [];
-  }
-
-  const entries = readdirSync(rootDirectory)
-    .map((entry) => resolve(rootDirectory, entry))
-    .sort((left, right) => left.localeCompare(right));
-  const files: string[] = [];
-  for (const entry of entries) {
-    const stats = statSync(entry);
-    if (stats.isDirectory()) {
-      files.push(...collectFilesRecursively(entry));
-      continue;
-    }
-    if (stats.isFile()) {
-      files.push(entry);
-    }
-  }
-  return files;
 }
 
 function shellEscape(value: string): string {
@@ -392,146 +360,32 @@ export class ContainerRuntimeManager implements RuntimeManager {
       return;
     }
 
-    const imageSignature = this.computeImageBuildSignature(provider);
-    const imageStampPath = this.getImageBuildStampPath(imageName);
-    const storedImageSignature = existsSync(imageStampPath)
-      ? readFileSync(imageStampPath, "utf8").trim()
-      : null;
-
     const inspect = await this.runCapturedCommand(
       ["image", "inspect", imageName],
       {
         commandLabel: `container image inspect ${imageName}`,
       },
     );
-    if (inspect.code === 0 && storedImageSignature === imageSignature) {
+    if (inspect.code === 0) {
       this.checkedImages.add(imageName);
       return;
     }
-
-    const buildingStatus: DesktopRuntimeStatus = {
-      state: "starting",
-      detail: `Building the ${provider.label} Apple container image.`,
+    const inspectOutput = inspect.stderr?.trim() || inspect.stdout?.trim();
+    const missingImageError = new Error(
+      `Missing Apple container image ${imageName}. Run \`bun run prepare:container\` before starting the desktop runtime.${
+        inspectOutput ? ` (${inspectOutput})` : ""
+      }`,
+    );
+    const failedStatus: DesktopRuntimeStatus = {
+      state: "error",
+      detail: missingImageError.message,
       helperPath: this.containerCommand,
       runtimeDirectory: this.runtimeDirectory,
       imageReference: imageName,
     };
-    this.lastRuntimeStatus = buildingStatus;
-    onStatus?.(buildingStatus);
-
-    const buildContext = getBuildContext(this.containerImageRoot);
-    const buildArgs = [
-      "build",
-      "--progress",
-      "plain",
-      "--file",
-      getContainerfilePath(this.containerImageRoot),
-      "--tag",
-      imageName,
-      buildContext,
-    ];
-
-    if (process.env.DESKTOP_CODEX_IMAGE_VERSION?.trim()) {
-      buildArgs.splice(4, 0, "--build-arg", `CODEX_VERSION=${process.env.DESKTOP_CODEX_IMAGE_VERSION.trim()}`);
-    }
-    if (process.env.DESKTOP_CLAUDE_IMAGE_VERSION?.trim()) {
-      buildArgs.splice(4, 0, "--build-arg", `CLAUDE_VERSION=${process.env.DESKTOP_CLAUDE_IMAGE_VERSION.trim()}`);
-    }
-    if (process.env.DESKTOP_ACPX_IMAGE_VERSION?.trim()) {
-      buildArgs.splice(4, 0, "--build-arg", `ACPX_VERSION=${process.env.DESKTOP_ACPX_IMAGE_VERSION.trim()}`);
-    }
-
-    await new Promise<void>((resolvePromise, rejectPromise) => {
-      const child = spawn(this.containerCommand, buildArgs, {
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      let stderr = "";
-      let settled = false;
-      const timeoutMs = parseTimeoutMs(
-        process.env.DESKTOP_CONTAINER_BUILD_TIMEOUT_MS,
-        DEFAULT_CONTAINER_BUILD_TIMEOUT_MS,
-      );
-      const timeout = setTimeout(() => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        child.kill("SIGTERM");
-        setTimeout(() => {
-          if (child.exitCode === null) {
-            child.kill("SIGKILL");
-          }
-        }, 1_000).unref();
-        rejectPromise(
-          formatTimeoutError(
-            `container build for ${imageName}`,
-            timeoutMs,
-          ),
-        );
-      }, timeoutMs);
-
-      child.stdout.on("data", (chunk) => {
-        process.stderr.write(chunk);
-      });
-      child.stderr.on("data", (chunk) => {
-        stderr += chunk.toString("utf8");
-        process.stderr.write(chunk);
-      });
-      child.on("error", (error) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timeout);
-        rejectPromise(error);
-      });
-      child.on("exit", (code) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timeout);
-        if (code === 0) {
-          resolvePromise();
-          return;
-        }
-        rejectPromise(
-          new Error(stderr.trim() || `Failed to build ${imageName}.`),
-        );
-      });
-    });
-
-    this.checkedImages.add(imageName);
-    mkdirSync(resolve(this.runtimeDirectory, "image-stamps"), { recursive: true });
-    writeFileSync(imageStampPath, imageSignature, "utf8");
-  }
-
-  private getImageBuildStampPath(imageName: string): string {
-    const imageHash = createHash("sha1").update(imageName).digest("hex").slice(0, 12);
-    return resolve(this.runtimeDirectory, "image-stamps", `${imageHash}.sha1`);
-  }
-
-  private computeImageBuildSignature(provider: DesktopProviderDefinition): string {
-    const sharedImageDirectory = resolve(this.containerImageRoot, "acpx-shared");
-    const bridgeDirectory = resolve(this.containerImageRoot, "bridge");
-    const claudeEntrypointDirectory = resolve(this.containerImageRoot, "acpx-claude");
-    const hash = createHash("sha1");
-
-    hash.update(provider.getImageName());
-    hash.update(process.env.DESKTOP_ACPX_IMAGE_VERSION?.trim() || "");
-    hash.update(process.env.DESKTOP_CODEX_IMAGE_VERSION?.trim() || "");
-    hash.update(process.env.DESKTOP_CLAUDE_IMAGE_VERSION?.trim() || "");
-
-    for (const filePath of [
-      ...collectFilesRecursively(sharedImageDirectory),
-      ...collectFilesRecursively(bridgeDirectory),
-      ...collectFilesRecursively(claudeEntrypointDirectory),
-    ]) {
-      hash.update(filePath);
-      hash.update(readFileSync(filePath));
-    }
-
-    return hash.digest("hex");
+    this.lastRuntimeStatus = failedStatus;
+    onStatus?.(failedStatus);
+    throw missingImageError;
   }
 
   private getSharedContainerState(): ProviderContainerState {

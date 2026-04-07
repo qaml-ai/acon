@@ -42,7 +42,7 @@ bun run start
 
 Notes:
 
-- `prepare:container` copies a usable Apple `container` install into `desktop-container/vendor/apple-container/` and prebuilds the shared ACPX/Codex/Claude image when Apple container tooling is available.
+- `prepare:container` copies a usable Apple `container` install into `desktop-container/vendor/apple-container/` and prebuilds the shared ACPX/Codex/Claude image before runtime.
 - `build` only builds the renderer.
 - `build:bundle` assembles the packaged desktop resources, bundles the backend entrypoint, stages builtin plugin manifests for packaged discovery, and produces an unpacked macOS `.app` bundle in `dist/bundle/`.
 - `dev` is the main command. It starts the renderer plus Electron and picks a free localhost port automatically.
@@ -101,7 +101,7 @@ export ANTHROPIC_API_KEY=...
 
 ## Architecture
 
-- `desktop-container/backend/container-runtime.ts` owns Apple container image preparation, the long-lived shared agent container, and ACPX turn execution with per-thread session reuse.
+- `desktop-container/backend/container-runtime.ts` verifies that the prebuilt Apple container image is available, starts the long-lived shared agent container, and drives ACPX turn execution with per-thread session reuse.
 - The backend mounts the current workspace into the container at `/workspace`.
 - Provider-specific runtime data lives under the shared desktop runtime directory and is mounted into the container under `/data/providers/<provider>`.
 - `desktop-container/container-images/` contains the shared Apple-container image definition that installs ACPX, Codex, and Claude Code together, plus the internal `acon-host-bridge` daemon and the `acon-mcp` stdio proxy so agents can reach host MCP servers from inside the container.
