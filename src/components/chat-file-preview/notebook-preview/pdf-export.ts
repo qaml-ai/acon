@@ -109,21 +109,21 @@ function registerPdfFonts(font: typeof import('@react-pdf/renderer').Font): void
   font.register({
     family: 'Figtree',
     fonts: [
-      { src: resolvePdfFontSrc('/fonts/Figtree-Regular.ttf'), fontWeight: 400, fontStyle: 'normal' },
-      { src: resolvePdfFontSrc('/fonts/Figtree-Regular.ttf'), fontWeight: 400, fontStyle: 'italic' },
-      { src: resolvePdfFontSrc('/fonts/Figtree-Bold.ttf'), fontWeight: 700, fontStyle: 'normal' },
-      { src: resolvePdfFontSrc('/fonts/Figtree-Bold.ttf'), fontWeight: 700, fontStyle: 'italic' },
+      { src: resolvePdfFontSrc('/fonts/Figtree-Regular.woff2'), fontWeight: 400, fontStyle: 'normal' },
+      { src: resolvePdfFontSrc('/fonts/Figtree-Italic.woff2'), fontWeight: 400, fontStyle: 'italic' },
+      { src: resolvePdfFontSrc('/fonts/Figtree-Bold.woff2'), fontWeight: 700, fontStyle: 'normal' },
+      { src: resolvePdfFontSrc('/fonts/Figtree-BoldItalic.woff2'), fontWeight: 700, fontStyle: 'italic' },
     ],
   });
   font.register({
     family: 'Source Serif 4',
-    fonts: [{ src: resolvePdfFontSrc('/fonts/SourceSerif4-Regular.ttf'), fontWeight: 400 }],
+    fonts: [{ src: resolvePdfFontSrc('/fonts/SourceSerif4-Regular.woff2'), fontWeight: 400 }],
   });
   font.register({
     family: 'Geist Mono',
     fonts: [
-      { src: resolvePdfFontSrc('/fonts/GeistMono-Regular.ttf'), fontWeight: 400 },
-      { src: resolvePdfFontSrc('/fonts/GeistMono-Bold.ttf'), fontWeight: 700 },
+      { src: resolvePdfFontSrc('/fonts/GeistMono-Regular.woff2'), fontWeight: 400 },
+      { src: resolvePdfFontSrc('/fonts/GeistMono-Bold.woff2'), fontWeight: 700 },
     ],
   });
 

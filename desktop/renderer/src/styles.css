@@ -13,14 +13,16 @@ body,
 }
 
 body {
-  background: hsl(var(--background));
+  background: var(--background);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
 }
 
 .desktop-shell {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: hsl(var(--background));
+  background: var(--background);
 }
 
 .desktop-shell-body {
@@ -43,17 +45,17 @@ body {
   position: relative;
   z-index: 40;
   height: 3rem;
-  border-bottom: 1px solid color-mix(in oklab, hsl(var(--border)) 78%, transparent);
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
   background:
     linear-gradient(
       180deg,
-      color-mix(in oklab, hsl(var(--background)) 82%, white 18%) 0%,
-      color-mix(in oklab, hsl(var(--background)) 89%, hsl(var(--muted)) 11%) 52%,
-      color-mix(in oklab, hsl(var(--background)) 94%, hsl(var(--muted)) 6%) 100%
+      color-mix(in oklab, var(--background) 82%, white 18%) 0%,
+      color-mix(in oklab, var(--background) 89%, var(--muted) 11%) 52%,
+      color-mix(in oklab, var(--background) 94%, var(--muted) 6%) 100%
     );
   backdrop-filter: blur(18px);
   box-shadow:
-    inset 0 -1px 0 color-mix(in oklab, hsl(var(--foreground)) 4%, transparent),
+    inset 0 -1px 0 color-mix(in oklab, var(--foreground) 4%, transparent),
     inset 0 1px 0 color-mix(in oklab, white 48%, transparent);
 }
 
@@ -61,12 +63,12 @@ body {
   background:
     linear-gradient(
       180deg,
-      color-mix(in oklab, hsl(var(--background)) 72%, hsl(var(--muted)) 28%) 0%,
-      color-mix(in oklab, hsl(var(--background)) 80%, black 20%) 52%,
-      color-mix(in oklab, hsl(var(--background)) 86%, black 14%) 100%
+      color-mix(in oklab, var(--background) 72%, var(--muted) 28%) 0%,
+      color-mix(in oklab, var(--background) 80%, black 20%) 52%,
+      color-mix(in oklab, var(--background) 86%, black 14%) 100%
     );
   box-shadow:
-    inset 0 -1px 0 color-mix(in oklab, hsl(var(--foreground)) 8%, transparent),
+    inset 0 -1px 0 color-mix(in oklab, var(--foreground) 8%, transparent),
     inset 0 1px 0 color-mix(in oklab, white 8%, transparent);
 }
 
@@ -97,7 +99,7 @@ body {
   display: inline-flex;
   align-items: center;
   min-height: 100%;
-  color: hsl(var(--muted-foreground));
+  color: var(--muted-foreground);
   font-size: 0.7rem;
   font-weight: 700;
   letter-spacing: 0.24em;
@@ -114,34 +116,34 @@ body {
 }
 
 .desktop-toolbar-control {
-  border-color: color-mix(in oklab, hsl(var(--border)) 78%, transparent);
-  background: color-mix(in oklab, hsl(var(--background)) 92%, white 8%);
+  border-color: color-mix(in oklab, var(--border) 78%, transparent);
+  background: color-mix(in oklab, var(--background) 92%, white 8%);
   box-shadow: inset 0 1px 0 color-mix(in oklab, white 60%, transparent);
 }
 
 .dark .desktop-toolbar-control {
-  background: color-mix(in oklab, hsl(var(--background)) 88%, white 12%);
+  background: color-mix(in oklab, var(--background) 88%, white 12%);
   box-shadow: inset 0 1px 0 color-mix(in oklab, white 10%, transparent);
 }
 
 .desktop-toolbar-badge {
-  border: 1px solid color-mix(in oklab, hsl(var(--border)) 70%, transparent);
-  background: color-mix(in oklab, hsl(var(--background)) 90%, white 10%);
-  color: hsl(var(--foreground));
+  border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+  background: color-mix(in oklab, var(--background) 90%, white 10%);
+  color: var(--foreground);
 }
 
 .dark .desktop-toolbar-badge {
-  background: color-mix(in oklab, hsl(var(--background)) 84%, white 16%);
+  background: color-mix(in oklab, var(--background) 84%, white 16%);
 }
 
 .desktop-new-thread-button {
-  border-color: color-mix(in oklab, hsl(var(--border)) 74%, transparent);
-  background: color-mix(in oklab, hsl(var(--background)) 95%, white 5%);
+  border-color: color-mix(in oklab, var(--border) 74%, transparent);
+  background: color-mix(in oklab, var(--background) 95%, white 5%);
   box-shadow: inset 0 1px 0 color-mix(in oklab, white 56%, transparent);
 }
 
 .dark .desktop-new-thread-button {
-  background: color-mix(in oklab, hsl(var(--background)) 88%, white 12%);
+  background: color-mix(in oklab, var(--background) 88%, white 12%);
 }
 
 .desktop-shell [data-slot='sidebar-wrapper'] {
@@ -193,10 +195,10 @@ body {
   background:
     linear-gradient(
       180deg,
-      color-mix(in oklab, hsl(var(--muted)) 18%, hsl(var(--background)) 82%) 0%,
-      color-mix(in oklab, hsl(var(--muted)) 30%, hsl(var(--background)) 70%) 100%
+      color-mix(in oklab, var(--muted) 18%, var(--background) 82%) 0%,
+      color-mix(in oklab, var(--muted) 30%, var(--background) 70%) 100%
     );
-  color: hsl(var(--muted-foreground));
+  color: var(--muted-foreground);
   transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
 }
 
@@ -204,8 +206,8 @@ body {
   background:
     linear-gradient(
       180deg,
-      color-mix(in oklab, hsl(var(--muted)) 48%, hsl(var(--background)) 52%) 0%,
-      color-mix(in oklab, hsl(var(--muted)) 58%, hsl(var(--background)) 42%) 100%
+      color-mix(in oklab, var(--muted) 48%, var(--background) 52%) 0%,
+      color-mix(in oklab, var(--muted) 58%, var(--background) 42%) 100%
     );
 }
 
@@ -216,7 +218,7 @@ body {
   top: 0.42rem;
   bottom: 0.32rem;
   width: 1px;
-  background: color-mix(in oklab, hsl(var(--border)) 76%, transparent);
+  background: color-mix(in oklab, var(--border) 76%, transparent);
 }
 
 .desktop-workbench-tab:first-child::before,
@@ -229,31 +231,31 @@ body {
   background:
     linear-gradient(
       180deg,
-      color-mix(in oklab, hsl(var(--muted)) 26%, hsl(var(--background)) 74%) 0%,
-      color-mix(in oklab, hsl(var(--muted)) 36%, hsl(var(--background)) 64%) 100%
+      color-mix(in oklab, var(--muted) 26%, var(--background) 74%) 0%,
+      color-mix(in oklab, var(--muted) 36%, var(--background) 64%) 100%
     );
-  color: hsl(var(--foreground));
+  color: var(--foreground);
 }
 
 .dark .desktop-workbench-tab:hover {
   background:
     linear-gradient(
       180deg,
-      color-mix(in oklab, hsl(var(--muted)) 58%, hsl(var(--background)) 42%) 0%,
-      color-mix(in oklab, hsl(var(--muted)) 68%, hsl(var(--background)) 32%) 100%
+      color-mix(in oklab, var(--muted) 58%, var(--background) 42%) 0%,
+      color-mix(in oklab, var(--muted) 68%, var(--background) 32%) 100%
     );
 }
 
 .desktop-workbench-tab.is-active {
-  background: hsl(var(--background));
-  color: hsl(var(--foreground));
+  background: var(--background);
+  color: var(--foreground);
   box-shadow:
-    0 0 0 1px color-mix(in oklab, hsl(var(--border)) 78%, transparent),
-    0 1px 0 hsl(var(--background));
+    0 0 0 1px color-mix(in oklab, var(--border) 78%, transparent),
+    0 1px 0 var(--background);
 }
 
 .dark .desktop-workbench-tab.is-active {
-  background: color-mix(in oklab, hsl(var(--background)) 96%, white 4%);
+  background: color-mix(in oklab, var(--background) 96%, white 4%);
 }
 
 .desktop-workbench-tab.is-active::after {
@@ -261,7 +263,7 @@ body {
   position: absolute;
   inset: auto 0 -1px 0;
   height: 2px;
-  background: hsl(var(--background));
+  background: var(--background);
 }
 
 .desktop-workbench-tab-button {
@@ -278,18 +280,18 @@ body {
 
 .desktop-workbench-tab-button:focus-visible {
   border-radius: 0.5rem;
-  box-shadow: inset 0 0 0 1px hsl(var(--ring));
+  box-shadow: inset 0 0 0 1px var(--ring);
 }
 
 .desktop-workbench-tab-icon {
   width: 0.875rem;
   height: 0.875rem;
   flex-shrink: 0;
-  color: hsl(var(--muted-foreground));
+  color: var(--muted-foreground);
 }
 
 .desktop-workbench-tab.is-active .desktop-workbench-tab-icon {
-  color: hsl(var(--foreground));
+  color: var(--foreground);
 }
 
 .desktop-workbench-tab-title {
@@ -309,7 +311,7 @@ body {
   white-space: nowrap;
   font-size: 0.6875rem;
   line-height: 1;
-  color: hsl(var(--muted-foreground));
+  color: var(--muted-foreground);
 }
 
 .desktop-workbench-tab-close {
@@ -321,7 +323,7 @@ body {
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  color: hsl(var(--muted-foreground));
+  color: var(--muted-foreground);
   opacity: 0;
   transition: opacity 120ms ease, background-color 120ms ease, color 120ms ease;
 }
@@ -334,19 +336,19 @@ body {
 
 .desktop-workbench-tab-close:hover,
 .desktop-workbench-tab-close:focus-visible {
-  background: color-mix(in oklab, hsl(var(--foreground)) 12%, transparent);
-  color: hsl(var(--foreground));
+  background: color-mix(in oklab, var(--foreground) 12%, transparent);
+  color: var(--foreground);
   outline: none;
 }
 
 .desktop-chat-model-switcher {
-  border-color: color-mix(in oklab, hsl(var(--border)) 72%, transparent);
-  background: color-mix(in oklab, hsl(var(--background)) 92%, white 8%);
+  border-color: color-mix(in oklab, var(--border) 72%, transparent);
+  background: color-mix(in oklab, var(--background) 92%, white 8%);
   box-shadow: inset 0 1px 0 color-mix(in oklab, white 55%, transparent);
 }
 
 .dark .desktop-chat-model-switcher {
-  background: color-mix(in oklab, hsl(var(--background)) 86%, white 14%);
+  background: color-mix(in oklab, var(--background) 86%, white 14%);
   box-shadow: inset 0 1px 0 color-mix(in oklab, white 10%, transparent);
 }
 

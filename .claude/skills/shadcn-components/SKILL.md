@@ -42,25 +42,16 @@ Buttons, inputs, dialogs, dropdowns, cards, forms, navigation, tables, tooltips,
 
 ## Project Configuration 
 
-### New Project Configuration
 - **Style:** radix-mira (compact/dense interface)
 - **Base color:** mist
 - **Theme:** mist
 - **Chart Color:** mist
-- **Heading:** Merriweather
+- **Heading:** Source Serif 4
 - **Font:** Figtree
-- **Radius:** Large
+- **Radius:** Large (0.875rem)
 - **Icons:** Lucide
 - **Components location:** `src/components/ui/`
-Preset code: --preset b4cwnZvlhI
-
-### Old Project Configuration
-- **Style:** radix-mira (compact/dense interface)
-- **Base color:** zinc
-- **Font:** Inter
-- **Radius:** 0.5rem (medium)
-- **Icons:** Lucide
-- **Components location:** `src/components/ui/`
+- **Preset code:** --preset b4cwnZvlhI
 
 ## Styling
 

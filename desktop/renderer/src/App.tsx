@@ -54,6 +54,7 @@ import {
   mergeSnapshotMessages,
 } from "../../shared/message-state";
 import { DesktopSidebar } from "./desktop-sidebar";
+import { AppearanceDialog } from "./appearance-dialog";
 import { getDesktopIcon } from "./desktop-icons";
 
 const desktopShell = window.desktopShell;
@@ -1143,6 +1144,7 @@ export function App() {
   const [connectionState, setConnectionState] = useState<
     "connecting" | "open" | "closed"
   >("connecting");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const composerDraftsRef = useRef<Record<string, string>>({});
   const fallbackSocketRef = useRef<WebSocket | null>(null);
   const streamingMessageIdsRef = useRef<Record<string, string | null>>({});
@@ -1607,6 +1609,7 @@ export function App() {
               activeViewId={activeViewId}
               connectionState={connectionState}
               onCreateThread={handleCreateThread}
+              onOpenSettings={() => setSettingsOpen(true)}
               onSelectThread={handleSelectThread}
               onSelectView={handleSelectView}
               snapshot={snapshot}
@@ -1643,6 +1646,7 @@ export function App() {
           </SidebarProvider>
         </div>
       </div>
+      <AppearanceDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </TooltipProvider>
   );
 }

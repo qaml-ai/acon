@@ -1,6 +1,7 @@
 import {
   CircleHelp,
   Plus,
+  Settings,
   TerminalSquare,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -33,6 +34,7 @@ interface DesktopSidebarProps {
   activeViewId: string | null;
   connectionState: "connecting" | "open" | "closed";
   onCreateThread: () => void;
+  onOpenSettings: () => void;
   onSelectThread: (threadId: string) => void;
   onSelectView: (viewId: string) => void;
   snapshot: DesktopSnapshot | null;
@@ -64,6 +66,7 @@ export function DesktopSidebar({
   activeViewId,
   connectionState,
   onCreateThread,
+  onOpenSettings,
   onSelectThread,
   onSelectView,
   snapshot,
@@ -176,6 +179,12 @@ export function DesktopSidebar({
 
       <SidebarFooter>
         <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton tooltip="Settings" onClick={onOpenSettings}>
+              <Settings />
+              <span>Settings</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton tooltip="Get Help" disabled>
               <CircleHelp />

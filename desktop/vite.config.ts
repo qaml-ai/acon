@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   root: resolve(__dirname, 'renderer'),
+  publicDir: resolve(__dirname, '../public'),
   plugins: [react()],
   resolve: {
     alias: {

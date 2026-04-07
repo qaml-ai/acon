@@ -453,17 +453,22 @@ export const HEADING_FONTS: FontOption[] = [
 ]
 
 // ── Built-in color schemes ─────────────────────────────────────────
-// Values generated from shadcn presets. See generation instructions below.
+// Fetch oklch values from the shadcn registry API:
+//   curl -sL https://ui.shadcn.com/r/colors/{name}.json
+// Use the `inlineColors.light` and `inlineColors.dark` objects (oklch for Tailwind v4).
+// Exception: "slate" uses named colors in inlineColors — use `cssVarsV4` for slate instead.
+// Available base colors: neutral, zinc, stone, mauve, olive, mist, taupe, slate
 
 export const BUILTIN_SCHEMES: ColorScheme[] = [
-  {
-    id: "mist",
-    name: "Mist",
-    builtin: true,
-    light: { "--background": "oklch(...)", "--foreground": "oklch(...)", /* ... all vars */ },
-    dark:  { "--background": "oklch(...)", "--foreground": "oklch(...)", /* ... all vars */ },
-  },
-  // zinc, slate, stone, neutral — same structure
+  // Populate each scheme by fetching from the registry API above.
+  // Each scheme's light/dark objects map CSS variable names to oklch values.
+  // Example for mist (fetch from https://ui.shadcn.com/r/colors/mist.json):
+  // {
+  //   id: "mist", name: "Mist", builtin: true,
+  //   light: { "--background": "oklch(1 0 0)", "--foreground": "oklch(0.148 0.004 228.8)", ... },
+  //   dark:  { "--background": "oklch(0.148 0.004 228.8)", "--foreground": "oklch(0.987 0.002 197.1)", ... },
+  // },
+  // Repeat for zinc, slate, stone, neutral
 ]
 
 // ── Application logic ──────────────────────────────────────────────
@@ -529,7 +534,7 @@ export function applyAppearance(prefs: AppearancePrefs, resolvedTheme: "light" |
 
 **Why framework-agnostic:** The `applyAppearance` function can be called from both the React provider AND a tiny inline FOUC-prevention script, without importing React.
 
-**Generating built-in scheme values:** For each scheme (mist, zinc, slate, stone, neutral), run `npx shadcn@latest init` with the appropriate base color in a temporary directory and extract the `:root` / `.dark` CSS variable blocks. Convert them into the `light` / `dark` objects in `BUILTIN_SCHEMES`. These are static, committed to source.
+**Generating built-in scheme values:** Fetch from the shadcn registry API: `curl -sL https://ui.shadcn.com/r/colors/{name}.json` for each scheme (mist, zinc, slate, stone, neutral). Use the `inlineColors.light` and `inlineColors.dark` objects from the JSON response — these contain oklch values for Tailwind v4. **Exception:** `slate` uses named Tailwind colors in `inlineColors`; use `cssVarsV4.light`/`cssVarsV4.dark` for slate instead. Convert these into the `light` / `dark` objects in `BUILTIN_SCHEMES`. These are static, committed to source.
 
 ### Step 2.4: Create the Appearance Context Provider
 
@@ -780,6 +785,6 @@ No architectural changes needed — just new UI on top of the existing data laye
 - **Component reinstall** (Step 1.7): The `--overwrite` flag replaces component files. Review the git diff for any custom modifications to standard shadcn components before committing.
 - **Preset fidelity**: The mist theme values MUST come from the preset (`--preset b4cwnZvlhI`). If the preset code expires, regenerate from the shadcn theme builder with the same settings.
 - **Font bundle size**: 9 font families × 8 variants = 72 .woff2 files totaling ~1.9MB on disk. Only the active fonts are loaded at runtime (3 families × 8 variants = ~676K for the defaults). Acceptable for a desktop app.
-- **Color scheme generation**: Each built-in scheme's CSS variable set must be generated from shadcn's official presets/init command. Do not hand-author oklch values.
+- **Color scheme generation**: Each built-in scheme's CSS variable set must come from the shadcn registry API (`https://ui.shadcn.com/r/colors/{name}.json`). Use `inlineColors` for oklch values (use `cssVarsV4` for slate). Do not hand-author oklch values.
 - **PDF export**: If `@react-pdf/renderer` is used and references font files, it may not support .woff2. Check and keep .ttf copies for PDF if needed.
 - **Web app cleanup interaction**: This plan avoids modifying web-only files (`src/routes/`, `src/root.tsx`). The other developer's cleanup should not conflict, but coordinate on `src/styles/globals.css` and `src/components/` changes.

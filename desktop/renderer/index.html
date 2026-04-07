@@ -4,6 +4,23 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>acon</title>
+    <script>
+      (function() {
+        try {
+          var raw = localStorage.getItem("appearance-prefs");
+          if (!raw) return;
+          var prefs = JSON.parse(raw);
+          if (prefs.bodyFont) {
+            document.documentElement.style.setProperty("--font-sans",
+              '"' + prefs.bodyFont + '", ui-sans-serif, system-ui, sans-serif');
+          }
+          if (prefs.headingFont) {
+            document.documentElement.style.setProperty("--font-display",
+              '"' + prefs.headingFont + '", ui-serif, Georgia, "Times New Roman", serif');
+          }
+        } catch(e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
