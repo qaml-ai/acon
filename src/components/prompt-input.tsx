@@ -380,7 +380,6 @@ export function PromptInput({
                           <SelectItem
                             key={option.value}
                             value={option.value}
-                            description={option.description}
                           >
                             {option.label}
                           </SelectItem>
