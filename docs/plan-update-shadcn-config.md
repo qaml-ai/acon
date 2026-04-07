@@ -54,14 +54,49 @@ Apply this find-and-replace across the entire file. The `color-mix()` calls cont
 
 ### Step 1.1: Generate the New Theme CSS Variables
 
-Use the shadcn preset to generate the exact mist theme values:
+Use the shadcn preset to generate the exact mist theme values. The shadcn CLI requires a real framework project, so generate in a temporary directory:
 
 ```bash
-# In a temporary directory, run:
-npx shadcn@latest init --preset b4cwnZvlhI
+# 1. Create a minimal Vite project scaffold
+cd /tmp && rm -rf mist-theme-gen && mkdir -p mist-theme-gen/src && cd mist-theme-gen
+
+cat > package.json << 'EOF'
+{"name":"mist-gen","private":true,"type":"module","dependencies":{"react":"^19","react-dom":"^19"},"devDependencies":{"vite":"^6","@vitejs/plugin-react":"^4","tailwindcss":"^4","typescript":"^5"}}
+EOF
+
+cat > vite.config.ts << 'EOF'
+import { defineConfig } from "vite"
+import react from "@vitejs/plugin-react"
+export default defineConfig({ plugins: [react()] })
+EOF
+
+cat > tsconfig.json << 'EOF'
+{"compilerOptions":{"target":"ES2020","module":"ESNext","moduleResolution":"bundler","jsx":"react-jsx","baseUrl":".","paths":{"@/*":["./src/*"]}}}
+EOF
+
+echo '@import "tailwindcss";' > src/index.css
+echo 'import React from "react"' > src/main.tsx
+
+# 2. Install deps (required for CLI framework detection)
+npm install
+
+# 3. Run the preset
+npx shadcn@latest init --preset b4cwnZvlhI --yes --force
+
+# 4. The generated theme is in src/index.css — extract :root and .dark blocks
+cat src/index.css
 ```
 
-This will generate a `globals.css` with the complete mist theme (light + dark mode CSS custom properties, chart colors, sidebar colors). Extract the `:root` and `.dark` blocks from the generated output — these are the replacement values for Step 1.3.
+This will generate a `src/index.css` with the complete mist theme (light + dark mode CSS custom properties, chart colors, sidebar colors). Extract the `:root` and `.dark` blocks from the generated output — these are the replacement values for Step 1.3.
+
+**Important differences from what the preset generates vs. what this project needs:**
+
+1. **New imports the preset adds**: `@import "shadcn/tailwind.css"`, `@import "@fontsource-variable/figtree"`, `@import "@fontsource-variable/merriweather"`. The project should use the `shadcn/tailwind.css` import but NOT the `@fontsource-variable` imports (we self-host fonts via `@font-face`).
+2. **Font variable name**: Preset uses `--font-heading` — the project uses `--font-display`. Keep `--font-display`.
+3. **Radius calc style**: Preset uses multiplier-based (`calc(var(--radius) * 0.6)`) vs project's additive (`calc(var(--radius) - 4px)`). Update to the multiplier style in the `@theme inline` block.
+4. **Preset sets `--radius: 0.875rem`** (not `0.75rem` as originally planned). Use the preset's value.
+5. **Custom variant syntax**: Preset generates `@custom-variant dark (&:is(.dark *))` — the project currently uses `(&:where(.dark, .dark *))`. The `:where` version has lower specificity; keep it unless there's a reason to change.
+6. **`components.json` new fields**: Preset adds `menuColor: "default"`, `menuAccent: "subtle"`, `rtl: false`.
 
 **Important:** The preset generates the authoritative color values. Do NOT hand-write oklch values — use only what the preset produces.
 
