@@ -35,6 +35,9 @@ const DEFAULT_CONTAINER_IMAGE_ROOT = resolve(
 const CONTAINER_HOST_RPC_SOCKET_PATH = "/data/host-rpc/bridge.sock";
 const DEFAULT_HOST_RPC_FETCH_TIMEOUT_MS = 15_000;
 const DEFAULT_HOST_RPC_FETCH_MAX_BODY_BYTES = 256 * 1024;
+const DEFAULT_CONTAINER_COMMAND_TIMEOUT_MS = 60_000;
+const DEFAULT_CONTAINER_BUILD_TIMEOUT_MS = 10 * 60_000;
+const DEFAULT_CONTAINER_BRIDGE_READY_TIMEOUT_MS = 30_000;
 const HOST_CODEX_HOME = process.env.CODEX_HOME?.trim()
   ? resolve(process.env.CODEX_HOME)
   : resolve(homedir(), ".codex");
@@ -80,6 +83,23 @@ function formatError(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+function parseTimeoutMs(
+  value: string | undefined,
+  fallback: number,
+): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function formatTimeoutError(commandLabel: string, timeoutMs: number): Error {
+  return new Error(
+    `${commandLabel} timed out after ${timeoutMs}ms. Apple container may be stuck; try \`container system stop\` then \`container system start\`.`,
+  );
 }
 
 function extractAcpChunkText(update: unknown): string {
@@ -263,7 +283,13 @@ export class ContainerRuntimeManager implements RuntimeManager {
   }
 
   private async ensureContainerSystemStarted(): Promise<void> {
-    const result = await this.runCapturedCommand(["system", "start"]);
+    const result = await this.runCapturedCommand(["system", "start"], {
+      timeoutMs: parseTimeoutMs(
+        process.env.DESKTOP_CONTAINER_SYSTEM_TIMEOUT_MS,
+        DEFAULT_CONTAINER_COMMAND_TIMEOUT_MS,
+      ),
+      commandLabel: "container system start",
+    });
     if (result.code !== 0) {
       throw new Error(
         result.stderr.trim() ||
@@ -374,6 +400,9 @@ export class ContainerRuntimeManager implements RuntimeManager {
 
     const inspect = await this.runCapturedCommand(
       ["image", "inspect", imageName],
+      {
+        commandLabel: `container image inspect ${imageName}`,
+      },
     );
     if (inspect.code === 0 && storedImageSignature === imageSignature) {
       this.checkedImages.add(imageName);
@@ -417,6 +446,29 @@ export class ContainerRuntimeManager implements RuntimeManager {
         stdio: ["ignore", "pipe", "pipe"],
       });
       let stderr = "";
+      let settled = false;
+      const timeoutMs = parseTimeoutMs(
+        process.env.DESKTOP_CONTAINER_BUILD_TIMEOUT_MS,
+        DEFAULT_CONTAINER_BUILD_TIMEOUT_MS,
+      );
+      const timeout = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        child.kill("SIGTERM");
+        setTimeout(() => {
+          if (child.exitCode === null) {
+            child.kill("SIGKILL");
+          }
+        }, 1_000).unref();
+        rejectPromise(
+          formatTimeoutError(
+            `container build for ${imageName}`,
+            timeoutMs,
+          ),
+        );
+      }, timeoutMs);
 
       child.stdout.on("data", (chunk) => {
         process.stderr.write(chunk);
@@ -425,8 +477,20 @@ export class ContainerRuntimeManager implements RuntimeManager {
         stderr += chunk.toString("utf8");
         process.stderr.write(chunk);
       });
-      child.on("error", rejectPromise);
+      child.on("error", (error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        rejectPromise(error);
+      });
       child.on("exit", (code) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
         if (code === 0) {
           resolvePromise();
           return;
@@ -489,7 +553,9 @@ export class ContainerRuntimeManager implements RuntimeManager {
   }
 
   private async inspectContainerStatus(containerName: string): Promise<string | null> {
-    const inspect = await this.runCapturedCommand(["inspect", containerName]);
+    const inspect = await this.runCapturedCommand(["inspect", containerName], {
+      commandLabel: `container inspect ${containerName}`,
+    });
     if (inspect.code !== 0) {
       return null;
     }
@@ -508,6 +574,8 @@ export class ContainerRuntimeManager implements RuntimeManager {
     options: {
       cwd?: string;
       stdin?: string;
+      timeoutMs?: number;
+      commandLabel?: string;
     } = {},
   ): Promise<CapturedCommandResult> {
     return await new Promise<CapturedCommandResult>((resolvePromise, rejectPromise) => {
@@ -518,6 +586,24 @@ export class ContainerRuntimeManager implements RuntimeManager {
 
       let stdout = "";
       let stderr = "";
+      let settled = false;
+      const timeoutMs = options.timeoutMs ?? DEFAULT_CONTAINER_COMMAND_TIMEOUT_MS;
+      const commandLabel =
+        options.commandLabel ??
+        `${this.containerCommand} ${args.join(" ")}`.trim();
+      const timeout = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        child.kill("SIGTERM");
+        setTimeout(() => {
+          if (child.exitCode === null) {
+            child.kill("SIGKILL");
+          }
+        }, 1_000).unref();
+        rejectPromise(formatTimeoutError(commandLabel, timeoutMs));
+      }, timeoutMs);
 
       child.stdout.on("data", (chunk) => {
         stdout += chunk.toString("utf8");
@@ -525,8 +611,20 @@ export class ContainerRuntimeManager implements RuntimeManager {
       child.stderr.on("data", (chunk) => {
         stderr += chunk.toString("utf8");
       });
-      child.on("error", rejectPromise);
+      child.on("error", (error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        rejectPromise(error);
+      });
       child.on("exit", (code, signal) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
         resolvePromise({
           code,
           signal,
@@ -560,7 +658,9 @@ export class ContainerRuntimeManager implements RuntimeManager {
     state.ensuredSessions.clear();
     state.startupPromise = null;
     this.stopProviderBridge(state);
-    await this.runCapturedCommand(["stop", state.containerName]);
+    await this.runCapturedCommand(["stop", state.containerName], {
+      commandLabel: `container stop ${state.containerName}`,
+    });
     await this.ensureProviderContainer(provider);
   }
 
@@ -714,7 +814,13 @@ export class ContainerRuntimeManager implements RuntimeManager {
         "while true; do sleep 3600; done",
       );
 
-      const start = await this.runCapturedCommand(args);
+      const start = await this.runCapturedCommand(args, {
+        timeoutMs: parseTimeoutMs(
+          process.env.DESKTOP_CONTAINER_RUN_TIMEOUT_MS,
+          DEFAULT_CONTAINER_COMMAND_TIMEOUT_MS,
+        ),
+        commandLabel: `container run ${state.containerName}`,
+      });
       if (start.code !== 0) {
         throw new Error(
           start.stderr?.trim() ||
@@ -792,6 +898,22 @@ export class ContainerRuntimeManager implements RuntimeManager {
 
     const readyPromise = new Promise<void>((resolvePromise, rejectPromise) => {
       let ready = false;
+      const timeoutMs = parseTimeoutMs(
+        process.env.DESKTOP_CONTAINER_BRIDGE_READY_TIMEOUT_MS,
+        DEFAULT_CONTAINER_BRIDGE_READY_TIMEOUT_MS,
+      );
+      const readyTimeout = setTimeout(() => {
+        if (ready) {
+          return;
+        }
+        ready = true;
+        rejectPromise(
+          formatTimeoutError(
+            `container bridge startup for ${state.containerName}`,
+            timeoutMs,
+          ),
+        );
+      }, timeoutMs);
       const fail = (error: unknown) => {
         if (ready) {
           logDesktop(
@@ -807,6 +929,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
           return;
         }
         ready = true;
+        clearTimeout(readyTimeout);
         rejectPromise(error instanceof Error ? error : new Error(formatError(error)));
       };
 
@@ -852,6 +975,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
           if (message.type === "ready") {
             if (!ready) {
               ready = true;
+              clearTimeout(readyTimeout);
               resolvePromise();
             }
             continue;
@@ -1195,6 +1319,11 @@ export class ContainerRuntimeManager implements RuntimeManager {
 
     const ensureResult = await this.runCapturedCommand(args, {
       cwd: this.workspaceDirectory,
+      timeoutMs: parseTimeoutMs(
+        process.env.DESKTOP_CONTAINER_EXEC_TIMEOUT_MS,
+        120_000,
+      ),
+      commandLabel: `acpx sessions ensure ${sessionName}`,
     });
     if (ensureResult.code !== 0) {
       throw new Error(
@@ -1251,6 +1380,11 @@ export class ContainerRuntimeManager implements RuntimeManager {
 
     const setModelResult = await this.runCapturedCommand(setModelArgs, {
       cwd: this.workspaceDirectory,
+      timeoutMs: parseTimeoutMs(
+        process.env.DESKTOP_CONTAINER_EXEC_TIMEOUT_MS,
+        120_000,
+      ),
+      commandLabel: `acpx set model ${sessionName}`,
     });
     if (setModelResult.code !== 0) {
       throw new Error(
