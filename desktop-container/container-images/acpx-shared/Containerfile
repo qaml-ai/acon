@@ -15,13 +15,13 @@ RUN npm install -g \
 
 COPY acpx-shared/entrypoint.sh /usr/local/bin/desktop-entrypoint.sh
 COPY bridge/acon-host-bridge.mjs /usr/local/lib/acon/acon-host-bridge.mjs
-COPY bridge/acon-host-rpc.mjs /usr/local/lib/acon/acon-host-rpc.mjs
+COPY bridge/acon-mcp.mjs /usr/local/lib/acon/acon-mcp.mjs
 RUN chmod +x \
     /usr/local/bin/desktop-entrypoint.sh \
     /usr/local/lib/acon/acon-host-bridge.mjs \
-    /usr/local/lib/acon/acon-host-rpc.mjs \
+    /usr/local/lib/acon/acon-mcp.mjs \
   && ln -sf /usr/local/lib/acon/acon-host-bridge.mjs /usr/local/bin/acon-host-bridge \
-  && ln -sf /usr/local/lib/acon/acon-host-rpc.mjs /usr/local/bin/acon-host-rpc
+  && ln -sf /usr/local/lib/acon/acon-mcp.mjs /usr/local/bin/acon-mcp
 
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/desktop-entrypoint.sh"]

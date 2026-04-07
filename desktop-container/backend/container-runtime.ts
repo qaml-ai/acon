@@ -20,6 +20,11 @@ import { isAbsolute, resolve } from "node:path";
 import type { DesktopRuntimeStatus } from "../../desktop/shared/protocol";
 import { logDesktop } from "../../desktop/backend/log";
 import type { DesktopProviderDefinition } from "./provider-types";
+import {
+  HostMcpRegistry,
+  type HostMcpBridgeRequest,
+  type HostMcpServerRegistration,
+} from "./host-mcp";
 
 const DEFAULT_RUNTIME_DIRECTORY = resolve(process.cwd(), "desktop-container/.local/runtime");
 const DEFAULT_WORKSPACE_DIRECTORY = resolve(process.cwd());
@@ -43,6 +48,8 @@ export interface RuntimeManager {
   getRuntimeDirectory(): string;
   getThreadStateDirectory(threadId: string): string;
   getCachedStatus(): DesktopRuntimeStatus;
+  registerHostMcpServer(registration: HostMcpServerRegistration): void;
+  unregisterHostMcpServer(serverId: string): void;
   dispose(): void;
   ensureRuntime(
     provider: DesktopProviderDefinition,
@@ -221,6 +228,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
   private readonly containerCommand = resolveContainerCommand();
   private readonly containerImageRoot = resolveContainerImageRoot();
   private readonly checkedImages = new Set<string>();
+  private readonly hostMcpRegistry = new HostMcpRegistry();
   private sharedContainerState: ProviderContainerState | null = null;
 
   getWorkspaceDirectory(): string {
@@ -246,6 +254,14 @@ export class ContainerRuntimeManager implements RuntimeManager {
     );
   }
 
+  registerHostMcpServer(registration: HostMcpServerRegistration): void {
+    this.hostMcpRegistry.registerServer(registration);
+  }
+
+  unregisterHostMcpServer(serverId: string): void {
+    this.hostMcpRegistry.unregisterServer(serverId);
+  }
+
   private async ensureContainerSystemStarted(): Promise<void> {
     const result = await this.runCapturedCommand(["system", "start"]);
     if (result.code !== 0) {
@@ -258,6 +274,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
   }
 
   dispose(): void {
+    this.hostMcpRegistry.dispose();
     if (this.sharedContainerState) {
       const state = this.sharedContainerState;
       this.stopProviderBridge(state);
@@ -958,9 +975,49 @@ export class ContainerRuntimeManager implements RuntimeManager {
         };
       case "fetch":
         return await this.executeProviderBridgeFetch(params);
+      case "mcp.request":
+        return await this.executeProviderBridgeMcpRequest(params);
+      case "mcp.close":
+        return await this.executeProviderBridgeMcpClose(params);
+      case "mcp.list_servers":
+        return this.hostMcpRegistry.listServers();
       default:
         throw new Error(`Unknown host RPC method: ${method || "<missing>"}.`);
     }
+  }
+
+  private async executeProviderBridgeMcpRequest(
+    params: unknown,
+  ): Promise<unknown> {
+    if (!params || typeof params !== "object") {
+      throw new Error("mcp.request params must be an object.");
+    }
+
+    const record = params as Record<string, unknown>;
+    if (!record.message || typeof record.message !== "object") {
+      throw new Error("mcp.request params.message must be an object.");
+    }
+
+    return await this.hostMcpRegistry.dispatchRequest({
+      serverId:
+        typeof record.serverId === "string" ? record.serverId : "",
+      sessionId:
+        typeof record.sessionId === "string" ? record.sessionId : "",
+      message: record.message as HostMcpBridgeRequest["message"],
+    });
+  }
+
+  private async executeProviderBridgeMcpClose(params: unknown): Promise<unknown> {
+    if (!params || typeof params !== "object") {
+      throw new Error("mcp.close params must be an object.");
+    }
+
+    const record = params as Record<string, unknown>;
+    await this.hostMcpRegistry.closeSession(
+      typeof record.serverId === "string" ? record.serverId : "",
+      typeof record.sessionId === "string" ? record.sessionId : "",
+    );
+    return { ok: true };
   }
 
   private async executeProviderBridgeFetch(params: unknown): Promise<unknown> {

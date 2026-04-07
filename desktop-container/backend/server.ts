@@ -1,4 +1,6 @@
 import type { ServerWebSocket } from "bun";
+import { pathToFileURL } from "node:url";
+import { resolve } from "node:path";
 import { DesktopService } from "./service";
 import { logDesktop } from "../../desktop/backend/log";
 import type {
@@ -10,6 +12,34 @@ const BACKEND_PORT = Number(process.env.DESKTOP_BACKEND_PORT || 4315);
 const USE_STDIO_TRANSPORT = process.env.DESKTOP_BACKEND_TRANSPORT === "stdio";
 
 const service = new DesktopService();
+
+async function configureHostMcpFromModule(): Promise<void> {
+  const modulePath = process.env.DESKTOP_HOST_MCP_MODULE?.trim();
+  if (!modulePath) {
+    return;
+  }
+
+  const importedModule = (await import(
+    pathToFileURL(resolve(modulePath)).href
+  )) as {
+    default?: unknown;
+    configureHostMcp?: unknown;
+  };
+  const configureHostMcp =
+    typeof importedModule.configureHostMcp === "function"
+      ? importedModule.configureHostMcp
+      : typeof importedModule.default === "function"
+        ? importedModule.default
+        : null;
+
+  if (!configureHostMcp) {
+    throw new Error(
+      `Host MCP module ${modulePath} must export a default function or configureHostMcp().`,
+    );
+  }
+
+  await configureHostMcp(service);
+}
 
 function disposeService(): void {
   service.dispose();
@@ -26,6 +56,7 @@ function json(body: unknown, init: ResponseInit = {}): Response {
 
 function startStdioTransport(): void {
   let stdioBuffer = "";
+  let shutdown = false;
   const unsubscribe = service.subscribe((event) => {
     logDesktop(
       "desktop-server",
@@ -38,6 +69,15 @@ function startStdioTransport(): void {
     );
     process.stdout.write(`${JSON.stringify(event)}\n`);
   });
+
+  const shutdownService = (): void => {
+    if (shutdown) {
+      return;
+    }
+    shutdown = true;
+    unsubscribe();
+    disposeService();
+  };
 
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk: string) => {
@@ -72,12 +112,14 @@ function startStdioTransport(): void {
   });
 
   process.on("exit", () => {
-    unsubscribe();
-    disposeService();
+    shutdownService();
   });
   process.on("SIGTERM", () => {
-    unsubscribe();
-    disposeService();
+    shutdownService();
+    process.exit(0);
+  });
+  process.on("SIGINT", () => {
+    shutdownService();
     process.exit(0);
   });
   service.emitSnapshot();
@@ -85,12 +127,22 @@ function startStdioTransport(): void {
 
 function startHttpTransport(): void {
   const connections = new Set<ServerWebSocket<unknown>>();
+  let shutdown = false;
   const unsubscribe = service.subscribe((event) => {
     const payload = JSON.stringify(event);
     for (const socket of connections) {
       socket.send(payload);
     }
   });
+
+  const shutdownService = (): void => {
+    if (shutdown) {
+      return;
+    }
+    shutdown = true;
+    unsubscribe();
+    disposeService();
+  };
 
   const server = Bun.serve({
     port: BACKEND_PORT,
@@ -163,16 +215,20 @@ function startHttpTransport(): void {
   });
 
   process.on("exit", () => {
-    unsubscribe();
-    disposeService();
+    shutdownService();
   });
   process.on("SIGTERM", () => {
-    unsubscribe();
-    disposeService();
+    shutdownService();
+    process.exit(0);
+  });
+  process.on("SIGINT", () => {
+    shutdownService();
     process.exit(0);
   });
   console.log(`[desktop-backend] listening on http://127.0.0.1:${server.port}`);
 }
+
+await configureHostMcpFromModule();
 
 if (USE_STDIO_TRANSPORT) {
   startStdioTransport();
