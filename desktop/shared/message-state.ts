@@ -276,6 +276,7 @@ type AgentOsSessionUpdate = {
   rawInput?: unknown;
   rawOutput?: unknown;
   status?: unknown;
+  entries?: unknown;
 };
 
 type CodexThreadItem = {
@@ -904,6 +905,36 @@ function applyAgentOsRuntimeEvent(
       threadId,
       streamingMessageIds,
       (blocks) => upsertToolUseBlock(blocks, toolCallId, title, rawInput, 'agentos')
+    );
+  }
+
+  if (sessionUpdate === 'plan') {
+    const entries = Array.isArray(update.entries) ? update.entries : [];
+    const todos: CodexTodoItem[] = entries.map((entry) => {
+      const record =
+        entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : {};
+      const content =
+        typeof record.content === 'string' && record.content.trim()
+          ? record.content
+          : 'Untitled task';
+      return {
+        content,
+        status: normalizeCodexTodoStatus(record.status),
+        activeForm: content,
+      };
+    });
+    return updateStreamingAssistantMessage(
+      currentMessages,
+      threadId,
+      streamingMessageIds,
+      (blocks) =>
+        upsertToolUseBlock(
+          blocks,
+          'acp:plan',
+          'TodoWrite',
+          { todos },
+          'agentos:plan',
+        ),
     );
   }
 
