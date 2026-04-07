@@ -117,7 +117,7 @@ export function AppCard({
   const workspaceBadge = showWorkspaceBadge && workspace ? (
     <Badge
       variant="secondary"
-      className="gap-1 pl-1 pr-2 text-[10px] text-muted-foreground max-w-[140px] min-w-0 shrink justify-start"
+      className="gap-1 pl-1 pr-2 text-muted-foreground max-w-[140px] min-w-0 shrink justify-start"
     >
       <Avatar size="xs">
         <AvatarFallback

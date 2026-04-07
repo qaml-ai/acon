@@ -73,7 +73,7 @@ export function SearchDetails({ tool, result, mode }: SearchDetailsProps) {
       {count !== null ? <DetailRow label="Count:" value={String(count)} /> : null}
       {parsedLines.length > 0 ? (
         <div className="mt-2">
-          <div className="flex items-center justify-between text-[0.7rem] text-muted-foreground/60 mb-1 group/filelist">
+          <div className="flex items-center justify-between text-xs text-muted-foreground/60 mb-1 group/filelist">
             <span>{mode === 'glob' ? 'Files' : 'Matches'}</span>
             <CopyButton
               value={copyValue}

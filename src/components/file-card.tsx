@@ -76,7 +76,7 @@ export function FileCard({
       >
         {/* Top zone: extension badge + category icon */}
         <div className="flex items-start justify-between">
-          <span className="rounded-sm bg-foreground/8 px-1.5 py-0.5 text-[10px] font-bold leading-none text-foreground">
+          <span className="rounded-sm bg-foreground/8 px-1.5 py-0.5 text-xs font-bold leading-none text-foreground">
             {ext}
           </span>
           {isError ? (
@@ -90,13 +90,13 @@ export function FileCard({
         <div className="min-w-0">
           <p
             className={cn(
-              'truncate text-[11px] font-semibold leading-tight text-foreground',
+              'truncate text-xs font-semibold leading-tight text-foreground',
               isUploading && 'opacity-60'
             )}
           >
             {filename}
           </p>
-          <p className="text-[10px] leading-tight text-muted-foreground tabular-nums">
+          <p className="text-xs leading-tight text-muted-foreground tabular-nums">
             {isError ? (
               <span className="text-destructive">Error</span>
             ) : isUploading ? (

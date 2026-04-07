@@ -158,7 +158,7 @@ export function OutputBlock({ value, label, copyValue, className }: OutputBlockP
   return (
     <div className={cn("mt-2", className)}>
       {(label || cleanCopyValue) && (
-        <div className="flex items-center justify-between text-[0.7rem] text-muted-foreground/60 mb-1 group/output">
+        <div className="flex items-center justify-between text-xs text-muted-foreground/60 mb-1 group/output">
           <span>{label}</span>
           {cleanCopyValue ? (
             <CopyButton

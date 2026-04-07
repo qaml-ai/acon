@@ -100,7 +100,7 @@ body {
   align-items: center;
   min-height: 100%;
   color: var(--muted-foreground);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 700;
   letter-spacing: 0.24em;
   text-transform: uppercase;
@@ -299,7 +299,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.78rem;
+  font-size: 0.75rem;
   font-weight: 500;
   line-height: 1;
 }
@@ -309,7 +309,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   line-height: 1;
   color: var(--muted-foreground);
 }

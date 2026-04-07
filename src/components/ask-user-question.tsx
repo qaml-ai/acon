@@ -741,7 +741,7 @@ export function AskUserQuestion({
           <div className="flex items-center justify-between gap-3 px-4 pb-3 pt-2">
             <span
               id={keyboardHintId}
-              className="text-[10px] text-muted-foreground/30"
+              className="text-xs text-muted-foreground/30"
             >
               {keyboardHint}
             </span>

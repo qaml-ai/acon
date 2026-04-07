@@ -127,7 +127,7 @@ export default function OnboardingWelcomeRoute() {
     <OnboardingLayout>
       <div className="space-y-6 text-center">
         <div className="space-y-3">
-          <h1 className="text-3xl font-semibold tracking-tight">
+          <h1 className="text-3xl font-semibold tracking-tight font-heading">
             {isTeamWelcome ? `Welcome to ${orgName}` : "Welcome to camelAI"}
           </h1>
           {!isTeamWelcome ? (

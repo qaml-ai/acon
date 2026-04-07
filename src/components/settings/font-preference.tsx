@@ -26,7 +26,7 @@ function FontChip({
       >
         Aa
       </span>
-      <span className="text-[10px] text-muted-foreground">{font.label}</span>
+      <span className="text-xs text-muted-foreground">{font.label}</span>
     </button>
   );
 }

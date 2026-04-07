@@ -594,7 +594,7 @@ function ShareStatusButton({
           >
             <div className="flex flex-col gap-0.5">
               <span className="font-medium">Private</span>
-              <span className="text-muted-foreground text-[10px]">
+              <span className="text-muted-foreground text-xs">
                 Only workspace members can view
               </span>
             </div>
@@ -606,7 +606,7 @@ function ShareStatusButton({
           >
             <div className="flex flex-col gap-0.5">
               <span className="font-medium">Public</span>
-              <span className="text-muted-foreground text-[10px]">
+              <span className="text-muted-foreground text-xs">
                 Anyone with the link can view
               </span>
             </div>

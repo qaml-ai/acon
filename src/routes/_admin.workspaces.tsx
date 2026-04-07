@@ -71,7 +71,7 @@ export default function AdminWorkspacesPage() {
         <div className="max-w-6xl mx-auto w-full px-4 md:px-6 py-6">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-6">
             <div>
-              <h1 className="text-lg font-semibold tracking-tight">Workspaces</h1>
+              <h1 className="text-lg font-semibold tracking-tight font-heading">Workspaces</h1>
               <p className="text-sm text-muted-foreground">
                 {total} total workspaces
               </p>

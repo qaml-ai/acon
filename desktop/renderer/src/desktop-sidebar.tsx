@@ -109,7 +109,7 @@ export function DesktopSidebar({
         >
           <Badge
             variant="secondary"
-            className="text-[10px] tracking-wider font-semibold uppercase"
+            className="tracking-wider font-semibold uppercase"
           >
             Beta
           </Badge>
@@ -159,7 +159,7 @@ export function DesktopSidebar({
                     onClick={() => onSelectThread(thread.id)}
                     className="h-auto min-h-12"
                   >
-                    <span className="flex size-4 items-center justify-center rounded-full bg-sidebar-accent text-[10px] font-semibold text-sidebar-accent-foreground">
+                    <span className="flex size-4 items-center justify-center rounded-full bg-sidebar-accent text-xs font-semibold text-sidebar-accent-foreground">
                       {thread.title.slice(0, 1).toUpperCase()}
                     </span>
                     <div className="grid flex-1 min-w-0 text-left text-sm leading-tight">

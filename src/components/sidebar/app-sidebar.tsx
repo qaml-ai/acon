@@ -45,7 +45,7 @@ export function AppSidebar(props: AppSidebarProps) {
         <div className="flex px-2 transition-[justify-content] duration-200 ease-in-out" style={{ justifyContent: state === "expanded" ? "flex-start" : "center" }}>
           <Badge
             variant="secondary"
-            className="text-[10px] tracking-wider font-semibold uppercase"
+            className="tracking-wider font-semibold uppercase"
           >
             Beta
           </Badge>

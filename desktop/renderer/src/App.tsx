@@ -576,7 +576,7 @@ function ExtensionCatalogPane({
       >
         <div className="space-y-3">
           <div className="space-y-1">
-            <h2 className="text-lg font-semibold">Extension Lab</h2>
+            <h2 className="text-lg font-semibold font-heading">Extension Lab</h2>
             <p className="max-w-3xl text-sm text-muted-foreground">
               Install plugins and inspect the ones currently loaded by the
               desktop app. Re-installing the same `camelai.id` updates that
@@ -629,7 +629,7 @@ function ExtensionCatalogPane({
 
         <Card size="sm">
           <CardHeader className="gap-1">
-            <CardTitle className="text-base">Installed plugins</CardTitle>
+            <CardTitle>Installed plugins</CardTitle>
             <CardDescription>
               {snapshot.plugins.length === 1
                 ? "1 plugin loaded"
@@ -661,7 +661,7 @@ function ExtensionCatalogPane({
                       <div className="flex flex-col gap-2 xl:flex-row xl:items-start xl:justify-between">
                         <div className="min-w-0 space-y-1">
                           <div className="flex min-w-0 flex-wrap items-center gap-2">
-                            <CardTitle className="text-base">{plugin.name}</CardTitle>
+                            <CardTitle>{plugin.name}</CardTitle>
                             <Badge variant="secondary">{plugin.source}</Badge>
                             <Badge
                               variant={
@@ -712,10 +712,10 @@ function ExtensionCatalogPane({
                         </div>
 
                         <div className="space-y-1 rounded-md border border-border/70 bg-muted/20 px-3 py-2">
-                          <p className="break-all font-mono text-[11px] leading-relaxed text-foreground">
+                          <p className="break-all font-mono text-xs leading-relaxed text-foreground">
                             {plugin.id}
                           </p>
-                          <p className="break-all font-mono text-[11px] leading-relaxed text-muted-foreground">
+                          <p className="break-all font-mono text-xs leading-relaxed text-muted-foreground">
                             {plugin.path}
                           </p>
                         </div>
@@ -784,7 +784,7 @@ function GenericHostDataPane({
         {surface.hostData?.sections.map((section) => (
           <Card key={section.id}>
             <CardHeader>
-              <CardTitle className="text-base">{section.title}</CardTitle>
+              <CardTitle>{section.title}</CardTitle>
               <CardDescription>
                 {section.description ?? "Plugin-provided section"}
               </CardDescription>
@@ -799,7 +799,7 @@ function GenericHostDataPane({
                   key={`${section.id}:${item.label}`}
                   className="rounded-lg border border-border/60 bg-background/70 px-3 py-3"
                 >
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                     {item.label}
                   </p>
                   <p className="mt-2 break-all text-sm text-foreground">

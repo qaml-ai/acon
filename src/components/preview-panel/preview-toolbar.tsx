@@ -119,7 +119,7 @@ function ClickToCopyUrlBar({
             {copied ? 'Copied!' : displayHost}
           </span>
           {!copied ? (
-            <span className="shrink-0 text-[10px] text-muted-foreground/60 opacity-0 transition-opacity group-hover/url:opacity-100">
+            <span className="shrink-0 text-xs text-muted-foreground/60 opacity-0 transition-opacity group-hover/url:opacity-100">
               Copy
             </span>
           ) : null}

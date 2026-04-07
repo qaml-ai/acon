@@ -68,7 +68,7 @@ export const ContextIndicator = memo(function ContextIndicator({
       </TooltipTrigger>
       <TooltipContent side="top">
         <p className="text-xs">{pct}% of context used before auto-compaction</p>
-        <p className="text-[11px] text-muted-foreground">Click to compact</p>
+        <p className="text-xs text-muted-foreground">Click to compact</p>
       </TooltipContent>
     </Tooltip>
   );

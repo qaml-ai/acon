@@ -13,7 +13,7 @@ export function SettingsHeader({
 }: SettingsHeaderProps) {
   return (
     <div className={cn("space-y-1", className)}>
-      <h1 className="text-2xl font-semibold">{title}</h1>
+      <h1 className="text-2xl font-semibold font-heading">{title}</h1>
       {description ? (
         <p className="text-sm text-muted-foreground">{description}</p>
       ) : null}

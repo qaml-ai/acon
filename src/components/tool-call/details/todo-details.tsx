@@ -33,7 +33,7 @@ export function TodoDetails({ tool, result }: TodoDetailsProps) {
                 <div key={`${status}-${index}`} className="flex items-start gap-2 text-xs text-muted-foreground/80">
                   <span className="font-mono text-muted-foreground/60">{marker}</span>
                   <span className="flex-1">{todo.content || todo.activeForm || 'Untitled task'}</span>
-                  <span className="text-[0.65rem] uppercase text-muted-foreground/50">{status}</span>
+                  <span className="text-xs uppercase text-muted-foreground/50">{status}</span>
                 </div>
               );
             })}

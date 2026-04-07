@@ -1989,7 +1989,7 @@ export default function ComputerPageContent({
                               }
                             >
                               {!dragEnabled && dragBlockedPath === node.path && (
-                                <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded-md border border-border bg-background/90 px-2 py-0.5 text-[10px] font-medium text-foreground">
+                                <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded-md border border-border bg-background/90 px-2 py-0.5 text-xs font-medium text-foreground">
                                   {readOnly
                                     ? 'Admin read-only mode'
                                     : BETA_FILE_EDIT_DISABLED_MESSAGE}
@@ -2152,12 +2152,12 @@ export default function ComputerPageContent({
               </Breadcrumb>
               <div className="flex flex-wrap items-center gap-3">
                 {!canMutate && (
-                  <Badge variant="secondary" className="text-[11px]">
+                  <Badge variant="secondary">
                     Read-only
                   </Badge>
                 )}
                 {isSavingActive && (
-                  <Badge variant="outline" className="text-[11px]">
+                  <Badge variant="outline">
                     Saving...
                   </Badge>
                 )}

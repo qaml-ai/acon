@@ -213,7 +213,7 @@ export default function AdminLogsPage({ loaderData }: Route.ComponentProps) {
         <div className="max-w-7xl mx-auto w-full px-4 md:px-6 py-6 space-y-6">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h1 className="text-lg font-semibold tracking-tight">App Logs</h1>
+              <h1 className="text-lg font-semibold tracking-tight font-heading">App Logs</h1>
               <p className="text-sm text-muted-foreground">
                 Pick an app to inspect the latest {logLimit} tail-captured entries.
               </p>

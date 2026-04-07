@@ -87,7 +87,7 @@ export function OnboardingLoadingModal({ open, onDismiss }: OnboardingLoadingMod
         className={cn(
           'sm:max-w-md',
           'bg-white text-zinc-600 ring-zinc-200 dark:bg-zinc-950 dark:text-zinc-300 dark:ring-zinc-800',
-          'font-mono text-[13px] leading-relaxed',
+          'font-mono text-sm leading-relaxed',
           'p-6',
         )}
       >
@@ -118,7 +118,7 @@ export function OnboardingLoadingModal({ open, onDismiss }: OnboardingLoadingMod
                   <div>
                     <span className="text-zinc-600 dark:text-zinc-300">{line.text}</span>
                     {'subtitle' in line && line.subtitle && (
-                      <p className="text-[11px] text-zinc-400 dark:text-zinc-600 mt-0.5">
+                      <p className="text-xs text-zinc-400 dark:text-zinc-600 mt-0.5">
                         {line.subtitle}
                       </p>
                     )}
@@ -149,7 +149,7 @@ export function OnboardingLoadingModal({ open, onDismiss }: OnboardingLoadingMod
           </div>
 
           {/* Footer */}
-          <div className="flex items-center justify-between mt-6 text-[11px] text-zinc-400 dark:text-zinc-700">
+          <div className="flex items-center justify-between mt-6 text-xs text-zinc-400 dark:text-zinc-700">
             <span>camelAI</span>
             <span>one-time setup</span>
           </div>

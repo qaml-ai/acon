@@ -82,7 +82,7 @@ export function AdminDashboard({ overview, threadCount = 0, appCount = 0 }: Admi
         <div className="max-w-6xl mx-auto w-full px-4 md:px-6 py-6">
           <div className="mb-6 flex items-start justify-between gap-3">
             <div>
-              <h1 className="text-lg font-semibold tracking-tight">QAML Backdoor</h1>
+              <h1 className="text-lg font-semibold tracking-tight font-heading">QAML Backdoor</h1>
               <p className="text-sm text-muted-foreground">
                 Superuser-only admin surface for camelAI.
               </p>
