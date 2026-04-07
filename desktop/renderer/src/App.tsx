@@ -54,7 +54,7 @@ import {
   mergeSnapshotMessages,
 } from "../../shared/message-state";
 import { DesktopSidebar } from "./desktop-sidebar";
-import { AppearanceDialog } from "./appearance-dialog";
+import { SettingsPage } from "./settings-page";
 import { getDesktopIcon } from "./desktop-icons";
 
 const desktopShell = window.desktopShell;
@@ -1144,7 +1144,7 @@ export function App() {
   const [connectionState, setConnectionState] = useState<
     "connecting" | "open" | "closed"
   >("connecting");
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const composerDraftsRef = useRef<Record<string, string>>({});
   const fallbackSocketRef = useRef<WebSocket | null>(null);
   const streamingMessageIdsRef = useRef<Record<string, string | null>>({});
@@ -1609,16 +1609,19 @@ export function App() {
               activeViewId={activeViewId}
               connectionState={connectionState}
               onCreateThread={handleCreateThread}
-              onOpenSettings={() => setSettingsOpen(true)}
-              onSelectThread={handleSelectThread}
-              onSelectView={handleSelectView}
+              onOpenSettings={() => setShowSettings(true)}
+              onSelectThread={(threadId) => { setShowSettings(false); handleSelectThread(threadId); }}
+              onSelectView={(viewId) => { setShowSettings(false); handleSelectView(viewId); }}
+              showSettings={showSettings}
               snapshot={snapshot}
               threads={snapshot?.threads ?? []}
               views={snapshot?.views ?? []}
             />
             <SidebarInset className="overflow-hidden flex flex-col">
               <div className="flex flex-1 min-h-0 flex-col">
-                {activeSurfaceProps ? (
+                {showSettings ? (
+                  <SettingsPage />
+                ) : activeSurfaceProps ? (
                   <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
                     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                       <WorkbenchSurfacePane {...activeSurfaceProps} />
@@ -1646,7 +1649,6 @@ export function App() {
           </SidebarProvider>
         </div>
       </div>
-      <AppearanceDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </TooltipProvider>
   );
 }

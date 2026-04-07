@@ -115,6 +115,51 @@ export function FontPreference() {
 }
 ```
 
+### Visual layout
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                                                             │
+│  Body Font                                                  │
+│                                                             │
+│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐       │
+│  │         │  │         │  │         │  │         │       │
+│  │   Aa    │  │   Aa    │  │   Aa    │  │   Aa    │       │
+│  │         │  │         │  │         │  │         │       │
+│  │ Figtree │  │  Inter  │  │  Lora   │  │IBM Plex │       │
+│  │ (ring)  │  │         │  │         │  │  Mono   │       │
+│  └─────────┘  └─────────┘  └─────────┘  └─────────┘       │
+│   ▲ active     Each "Aa" is rendered in that font's         │
+│                own typeface so you can see the style         │
+│                                                             │
+│  Heading Font                                               │
+│                                                             │
+│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐       │
+│  │         │  │         │  │         │  │         │       │
+│  │   Aa    │  │   Aa    │  │   Aa    │  │   Aa    │       │
+│  │         │  │         │  │         │  │         │       │
+│  │ Source  │  │Fraunces │  │ Plus    │  │IBM Plex │       │
+│  │ Serif 4 │  │         │  │ Jakarta │  │  Mono   │       │
+│  │ (ring)  │  │         │  │  Sans   │  │         │       │
+│  └─────────┘  └─────────┘  └─────────┘  └─────────┘       │
+│                                                             │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │                                                     │    │
+│  │  The quick brown fox jumps over       ← heading     │    │
+│  │  the lazy dog                           font        │    │
+│  │                                                     │    │
+│  │  Pack my box with five dozen liquor   ← body        │    │
+│  │  jugs. How vexingly quick daft          font        │    │
+│  │  zebras jump.                                       │    │
+│  │                                                     │    │
+│  └─────────────────────────────────────────────────────┘    │
+│   ▲ shared preview — updates live when either               │
+│     selection changes. Heading is lg/semibold,              │
+│     body is sm/normal. Bordered card.                       │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
 ### Key design decisions
 - **Font chips** are compact — just "Aa" in the font's typeface + the name below. Laid out horizontally in a `flex` row, not a 2-col grid
 - **One shared preview** at the bottom shows both the heading and body font together, so the user sees how they pair. The heading is styled larger/bolder, the body is regular
@@ -123,73 +168,240 @@ export function FontPreference() {
 
 ---
 
-## 2. Settings as a Full Page (Not a Dialog)
+## 2. Settings as a Full Page with Left Nav (Not a Dialog)
 
 ### Problem
 
-Settings is currently an `AppearanceDialog` (shadcn Dialog overlay). As settings grow beyond appearance (e.g., keyboard shortcuts, AI provider config, workspace settings), a dialog will feel cramped and doesn't scale. The user wants settings to be a full page with tabs.
+Settings is currently an `AppearanceDialog` (shadcn Dialog overlay). As settings grow, a dialog won't scale. The user wants settings to be a full page matching the web app's design — a left-side nav listing all settings categories, with the selected category's content on the right.
 
 ### Architectural approach
 
-The desktop app uses a **view/surface system** — the sidebar lists workbench views, and clicking one renders a surface in the main content area. Settings should be another surface in this system, not a dialog overlay.
+Settings becomes a **built-in view** that renders in the main content area (same as chat threads, extension lab, etc.). The content area is split into a **left nav** and a **right content pane** — matching the web app's existing settings pattern (see screenshot reference: grouped nav with USER / WORKSPACE sections, active item highlighted, page title + description + form content on the right).
 
-The cleanest approach: make Settings a **built-in workbench view** that renders directly in the main content area (same as chat threads, extension lab, etc.), with tabs for different settings categories.
+**Appearance gets its own nav item** (not nested under General) because:
+- It already has 3 substantial sections (theme, fonts, colors) — enough to own a page
+- "General" typically means functional prefs (language, notifications, default model) — mixing visual customization there makes both harder to find
+- Industry standard: VS Code, Slack, Discord, Figma all separate Appearance from General
+
+### Visual layout
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────────┐
+│  [tab] [tab] [tab]                                              (titlebar)          │
+├──────────┬───────────────────────────────────────────────────────────────────────────┤
+│          │                                                                          │
+│ SIDEBAR  │  ┌──────────────┬────────────────────────────────────────────────────┐   │
+│          │  │              │                                                    │   │
+│ Workbench│  │  USER        │  Appearance                                       │   │
+│  Chat    │  │              │  Customize how the app looks and feels.            │   │
+│  Ext Lab │  │  General     │                                                    │   │
+│          │  │  Appearance  │  ─────────────────────────────────────────         │   │
+│──────────│  │   (active)   │                                                    │   │
+│ Recent   │  │              │  Appearance                                        │   │
+│  Thread 1│  │              │  ┌──────────┐ ┌──────────┐ ┌──────────┐           │   │
+│  Thread 2│  │  WORKSPACE   │  │ ○ System │ │ ☀ Light  │ │ ◑ Dark   │           │   │
+│  Thread 3│  │              │  └──────────┘ └──────────┘ └──────────┘           │   │
+│          │  │  General     │                                                    │   │
+│          │  │  AI Provider │  ─────────────────────────────────────────         │   │
+│          │  │              │                                                    │   │
+│          │  │              │  Body Font                                         │   │
+│          │  │              │  ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐          │   │
+│          │  │              │  │  Aa   │ │  Aa   │ │  Aa   │ │  Aa   │          │   │
+│          │  │              │  │Figtree│ │ Inter │ │ Lora  │ │IBM Plx│          │   │
+│          │  │              │  └───────┘ └───────┘ └───────┘ └───────┘          │   │
+│          │  │              │                                                    │   │
+│          │  │              │  Heading Font                                      │   │
+│          │  │              │  ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐          │   │
+│          │  │              │  │  Aa   │ │  Aa   │ │  Aa   │ │  Aa   │          │   │
+│          │  │              │  │Src Srf│ │Fraunce│ │Jkrta S│ │IBM Plx│          │   │
+│          │  │              │  └───────┘ └───────┘ └───────┘ └───────┘          │   │
+│          │  │              │                                                    │   │
+│          │  │              │  ┌──────────────────────────────────────┐          │   │
+│          │  │              │  │ The quick brown fox jumps  ← heading│          │   │
+│          │  │              │  │ over the lazy dog                   │          │   │
+│          │  │              │  │                                     │          │   │
+│          │  │              │  │ Pack my box with five     ← body   │          │   │
+│          │  │              │  │ dozen liquor jugs.                  │          │   │
+│          │  │              │  └──────────────────────────────────────┘          │   │
+│          │  │              │                                                    │   │
+│          │  │              │  ─────────────────────────────────────────         │   │
+│          │  │              │                                                    │   │
+│          │  │              │  Color Scheme                                      │   │
+│          │  │              │  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐         │   │
+│          │  │              │  │ ███ │ │ ███ │ │ ███ │ │ ███ │ │ ███ │         │   │
+│          │  │              │  │Mist │ │Zinc │ │Slate│ │Stone│ │Neutr│         │   │
+│          │  │              │  └─────┘ └─────┘ └─────┘ └─────┘ └─────┘         │   │
+│          │  │              │                                                    │   │
+│──────────│  └──────────────┴────────────────────────────────────────────────────┘   │
+│ Settings │                                                                          │
+│ (active) │  (right pane scrolls independently)                                      │
+│ Get Help │                                                                          │
+└──────────┴──────────────────────────────────────────────────────────────────────────┘
+```
+
+### Settings left nav structure
+
+| Group | Nav Item | Content | Status |
+|---|---|---|---|
+| **USER** | General | Display name, notifications, language | Placeholder for now |
+| | Appearance | Theme mode, fonts, color scheme | **Building now** |
+| **WORKSPACE** | General | Workspace name, default model | Placeholder for now |
+| | AI Provider | LLM provider selection, API keys | Placeholder for now |
+
+Only Appearance has content right now. The other items should exist in the nav but show a simple placeholder ("Coming soon" or an empty state) when clicked. This establishes the structure from day one so it scales naturally.
 
 ### Implementation
 
-#### 2a. Create a Settings page component
+#### 2a. Create the Settings left nav component
+
+**New file:** `desktop/renderer/src/settings-nav.tsx`
+
+A left nav matching the web app's `SettingsNav` pattern. Takes the active page ID and an `onNavigate` callback.
+
+```tsx
+import { cn } from "@/lib/utils";
+
+interface SettingsNavItem {
+  id: string;
+  label: string;
+}
+
+interface SettingsNavGroup {
+  label: string;
+  items: SettingsNavItem[];
+}
+
+const SETTINGS_NAV: SettingsNavGroup[] = [
+  {
+    label: "User",
+    items: [
+      { id: "general", label: "General" },
+      { id: "appearance", label: "Appearance" },
+    ],
+  },
+  {
+    label: "Workspace",
+    items: [
+      { id: "workspace-general", label: "General" },
+      { id: "workspace-ai", label: "AI Provider" },
+    ],
+  },
+];
+
+export function SettingsNav({
+  activeId,
+  onNavigate,
+}: {
+  activeId: string;
+  onNavigate: (id: string) => void;
+}) {
+  return (
+    <nav className="w-48 shrink-0 space-y-4 py-4 pl-4 pr-2">
+      {SETTINGS_NAV.map((group) => (
+        <div key={group.label} className="space-y-1">
+          <p className="px-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            {group.label}
+          </p>
+          {group.items.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => onNavigate(item.id)}
+              className={cn(
+                "w-full rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+                activeId === item.id
+                  ? "bg-accent text-accent-foreground font-medium"
+                  : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+              )}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      ))}
+    </nav>
+  );
+}
+```
+
+#### 2b. Create the Settings page component
 
 **New file:** `desktop/renderer/src/settings-page.tsx`
 
-A full-page settings component with a tabbed layout:
+A full-page layout with the left nav and a content area. Uses local state for the active settings panel.
 
 ```tsx
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useState } from "react";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
 import { ThemePreference } from "@/components/settings/theme-preference";
 import { FontPreference } from "@/components/settings/font-preference";
 import { ColorSchemePreference } from "@/components/settings/color-scheme-preference";
-import { Separator } from "@/components/ui/separator";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { SettingsNav } from "./settings-nav";
+
+function SettingsHeader({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="space-y-1">
+      <h1 className="text-xl font-semibold">{title}</h1>
+      <p className="text-sm text-muted-foreground">{description}</p>
+    </div>
+  );
+}
+
+function AppearanceContent() {
+  return (
+    <div className="max-w-lg space-y-6">
+      <SettingsHeader
+        title="Appearance"
+        description="Customize how the app looks and feels."
+      />
+      <Separator />
+      <ThemePreference />
+      <Separator />
+      <FontPreference />
+      <Separator />
+      <ColorSchemePreference />
+    </div>
+  );
+}
+
+function PlaceholderContent({ title }: { title: string }) {
+  return (
+    <div className="max-w-lg space-y-6">
+      <SettingsHeader title={title} description="Coming soon." />
+      <Separator />
+      <p className="text-sm text-muted-foreground">
+        This settings page is not yet available.
+      </p>
+    </div>
+  );
+}
+
+const SETTINGS_PANELS: Record<string, { title: string; component: React.ComponentType }> = {
+  general:             { title: "General",     component: () => <PlaceholderContent title="General" /> },
+  appearance:          { title: "Appearance",  component: AppearanceContent },
+  "workspace-general": { title: "General",     component: () => <PlaceholderContent title="Workspace General" /> },
+  "workspace-ai":      { title: "AI Provider", component: () => <PlaceholderContent title="AI Provider" /> },
+};
 
 export function SettingsPage() {
+  const [activePanel, setActivePanel] = useState("appearance");
+  const panel = SETTINGS_PANELS[activePanel] ?? SETTINGS_PANELS.appearance;
+  const PanelComponent = panel.component;
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="px-6 pt-5 pb-0">
-        <h1 className="text-xl font-semibold">Settings</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Customize your workspace preferences.
-        </p>
-      </div>
-      <Tabs defaultValue="appearance" className="flex min-h-0 flex-1 flex-col">
-        <div className="px-6 pt-4">
-          <TabsList>
-            <TabsTrigger value="appearance">Appearance</TabsTrigger>
-            {/* Future tabs: */}
-            {/* <TabsTrigger value="general">General</TabsTrigger> */}
-            {/* <TabsTrigger value="shortcuts">Shortcuts</TabsTrigger> */}
-            {/* <TabsTrigger value="ai">AI Provider</TabsTrigger> */}
-          </TabsList>
+    <div className="flex min-h-0 flex-1">
+      <SettingsNav activeId={activePanel} onNavigate={setActivePanel} />
+      <ScrollArea className="flex-1">
+        <div className="px-6 py-5">
+          <PanelComponent />
         </div>
-        <ScrollArea className="flex-1">
-          <TabsContent value="appearance" className="mt-0 px-6 py-4">
-            <div className="max-w-lg space-y-6">
-              <ThemePreference />
-              <Separator />
-              <FontPreference />
-              <Separator />
-              <ColorSchemePreference />
-            </div>
-          </TabsContent>
-        </ScrollArea>
-      </Tabs>
+      </ScrollArea>
     </div>
   );
 }
 ```
 
-#### 2b. Wire Settings as a local view in App.tsx
-
-The app already has a pattern for rendering different content based on the active view. Settings should follow this same pattern but as a **local UI view** (not a plugin-contributed view).
+#### 2c. Wire Settings as a local view in App.tsx
 
 In `App.tsx`:
 
@@ -218,13 +430,13 @@ onSelectThread={(threadId) => { setShowSettings(false); handleSelectThread(threa
 )}
 ```
 
-#### 2c. Delete the dialog
+#### 2d. Delete the dialog
 
 Remove `desktop/renderer/src/appearance-dialog.tsx` — it's replaced by the full-page `SettingsPage`. Also remove the `AppearanceDialog` import and render from `App.tsx`.
 
-#### 2d. Optional: Highlight Settings in sidebar
+#### 2e. Highlight Settings in sidebar
 
-To show the user they're "on" the settings page, you could add an `isActive` state to the Settings sidebar button when `showSettings` is true. Pass `showSettings` as a prop to `DesktopSidebar`:
+Pass `showSettings` as a prop to `DesktopSidebar` so the Settings button shows an active state:
 
 ```tsx
 // In DesktopSidebar:
@@ -247,7 +459,8 @@ Add `showSettings: boolean` to `DesktopSidebarProps`.
 | File | Change |
 |---|---|
 | `src/components/settings/font-preference.tsx` | Rewrite: compact "Aa" chips + shared preview area |
-| `desktop/renderer/src/settings-page.tsx` | **New:** Full-page settings with tabs |
-| `desktop/renderer/src/App.tsx` | Replace dialog with full-page settings view; add `showSettings` state |
-| `desktop/renderer/src/desktop-sidebar.tsx` | Add `showSettings` prop for active state on Settings button; clear settings on view/thread select |
+| `desktop/renderer/src/settings-page.tsx` | **New:** Full-page settings with left nav + content pane |
+| `desktop/renderer/src/settings-nav.tsx` | **New:** Left nav component with grouped sections (USER / WORKSPACE) |
+| `desktop/renderer/src/App.tsx` | Replace dialog with full-page settings view; add `showSettings` state; clear on view/thread select |
+| `desktop/renderer/src/desktop-sidebar.tsx` | Add `showSettings` prop for active state on Settings button |
 | `desktop/renderer/src/appearance-dialog.tsx` | **Delete** — replaced by settings page |

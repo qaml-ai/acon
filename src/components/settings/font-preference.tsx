@@ -3,7 +3,7 @@ import { useAppearance } from "@/components/appearance-provider";
 import { BODY_FONTS, HEADING_FONTS, type FontOption } from "@/lib/appearance";
 import { cn } from "@/lib/utils";
 
-function FontCard({
+function FontChip({
   font,
   isActive,
   onClick,
@@ -16,26 +16,17 @@ function FontCard({
     <button
       onClick={onClick}
       className={cn(
-        "flex flex-col gap-2 rounded-lg border-2 p-3 text-left transition-colors",
-        isActive ? "border-ring" : "border-transparent hover:border-border",
+        "flex flex-col items-center gap-1 rounded-lg border-2 px-3 py-2 transition-colors",
+        isActive ? "border-ring bg-accent" : "border-transparent hover:border-border",
       )}
     >
       <span
-        className="text-3xl leading-none text-foreground"
+        className="text-2xl leading-none text-foreground"
         style={{ fontFamily: `"${font.family}", ${font.fallback}` }}
       >
         Aa
       </span>
-      <p
-        className="line-clamp-2 text-sm text-muted-foreground"
-        style={{ fontFamily: `"${font.family}", ${font.fallback}` }}
-      >
-        The quick brown fox jumps over the lazy dog
-      </p>
-      <div>
-        <p className="text-xs font-medium">{font.label}</p>
-        <p className="text-xs text-muted-foreground">{font.description}</p>
-      </div>
+      <span className="text-[10px] text-muted-foreground">{font.label}</span>
     </button>
   );
 }
@@ -43,13 +34,16 @@ function FontCard({
 export function FontPreference() {
   const { prefs, updatePrefs } = useAppearance();
 
+  const activeBody = BODY_FONTS.find((f) => f.family === prefs.bodyFont) ?? BODY_FONTS[0];
+  const activeHeading = HEADING_FONTS.find((f) => f.family === prefs.headingFont) ?? HEADING_FONTS[0];
+
   return (
     <div className="space-y-4">
       <div className="space-y-2">
         <Label>Body Font</Label>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="flex gap-2">
           {BODY_FONTS.map((font) => (
-            <FontCard
+            <FontChip
               key={font.family}
               font={font}
               isActive={prefs.bodyFont === font.family}
@@ -61,9 +55,9 @@ export function FontPreference() {
 
       <div className="space-y-2">
         <Label>Heading Font</Label>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="flex gap-2">
           {HEADING_FONTS.map((font) => (
-            <FontCard
+            <FontChip
               key={font.family}
               font={font}
               isActive={prefs.headingFont === font.family}
@@ -71,6 +65,21 @@ export function FontPreference() {
             />
           ))}
         </div>
+      </div>
+
+      <div className="space-y-1 rounded-lg border bg-card p-4">
+        <h3
+          className="text-lg font-semibold text-foreground"
+          style={{ fontFamily: `"${activeHeading.family}", ${activeHeading.fallback}` }}
+        >
+          The quick brown fox jumps over the lazy dog
+        </h3>
+        <p
+          className="text-sm text-muted-foreground"
+          style={{ fontFamily: `"${activeBody.family}", ${activeBody.fallback}` }}
+        >
+          Pack my box with five dozen liquor jugs. How vexingly quick daft zebras jump.
+        </p>
       </div>
     </div>
   );

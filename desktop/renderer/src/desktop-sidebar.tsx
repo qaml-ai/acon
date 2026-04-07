@@ -37,6 +37,7 @@ interface DesktopSidebarProps {
   onOpenSettings: () => void;
   onSelectThread: (threadId: string) => void;
   onSelectView: (viewId: string) => void;
+  showSettings: boolean;
   snapshot: DesktopSnapshot | null;
   threads: DesktopThread[];
   views: DesktopView[];
@@ -69,6 +70,7 @@ export function DesktopSidebar({
   onOpenSettings,
   onSelectThread,
   onSelectView,
+  showSettings,
   snapshot,
   threads,
   views,
@@ -180,7 +182,7 @@ export function DesktopSidebar({
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton tooltip="Settings" onClick={onOpenSettings}>
+            <SidebarMenuButton tooltip="Settings" isActive={showSettings} onClick={onOpenSettings}>
               <Settings />
               <span>Settings</span>
             </SidebarMenuButton>
