@@ -263,6 +263,21 @@ async function listTools(serverId) {
         message.id === 2 &&
         "result" in message,
     );
+    const errorMessage = messages.find(
+      (message) =>
+        message &&
+        typeof message === "object" &&
+        "id" in message &&
+        message.id === 2 &&
+        "error" in message,
+    );
+    if (errorMessage?.error) {
+      throw new Error(
+        typeof errorMessage.error.message === "string"
+          ? errorMessage.error.message
+          : `Host MCP tools/list failed for ${serverId}.`,
+      );
+    }
     const tools = Array.isArray(resultMessage?.result?.tools)
       ? resultMessage.result.tools
       : [];

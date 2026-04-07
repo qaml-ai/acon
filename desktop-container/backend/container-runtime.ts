@@ -1051,6 +1051,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
       truncated: boolean;
     }>((resolvePromise, rejectPromise) => {
       const requestFn = targetUrl.protocol === "https:" ? httpsRequest : httpRequest;
+      let abortedForTruncation = false;
       const request = requestFn(
         targetUrl,
         {
@@ -1061,11 +1062,48 @@ export class ContainerRuntimeManager implements RuntimeManager {
           const chunks: Buffer[] = [];
           let totalBytes = 0;
           let truncated = false;
+          let settled = false;
+
+          const buildResponse = () => ({
+            ok:
+              typeof incomingResponse.statusCode === "number" &&
+              incomingResponse.statusCode >= 200 &&
+              incomingResponse.statusCode < 300,
+            status: incomingResponse.statusCode ?? 0,
+            statusText: incomingResponse.statusMessage ?? "",
+            url: targetUrl.toString(),
+            headers: Object.fromEntries(
+              Object.entries(incomingResponse.headers).flatMap(([key, value]) => {
+                if (Array.isArray(value)) {
+                  return [[key, value.join(", ")]];
+                }
+                return typeof value === "string" ? [[key, value]] : [];
+              }),
+            ),
+            body: Buffer.concat(chunks).toString("utf8"),
+            truncated,
+          });
+
+          const finish = (error?: Error | null) => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            if (error) {
+              rejectPromise(error);
+              return;
+            }
+            resolvePromise(buildResponse());
+          };
 
           incomingResponse.on("data", (chunk: string | Buffer) => {
             const chunkBuffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
             if (totalBytes >= maxBodyBytes) {
               truncated = true;
+              abortedForTruncation = true;
+              incomingResponse.destroy();
+              request.destroy();
+              finish(null);
               return;
             }
 
@@ -1076,6 +1114,10 @@ export class ContainerRuntimeManager implements RuntimeManager {
                 totalBytes += remainingBytes;
               }
               truncated = true;
+              abortedForTruncation = true;
+              incomingResponse.destroy();
+              request.destroy();
+              finish(null);
               return;
             }
 
@@ -1084,35 +1126,27 @@ export class ContainerRuntimeManager implements RuntimeManager {
           });
 
           incomingResponse.on("end", () => {
-            resolvePromise({
-              ok:
-                typeof incomingResponse.statusCode === "number" &&
-                incomingResponse.statusCode >= 200 &&
-                incomingResponse.statusCode < 300,
-              status: incomingResponse.statusCode ?? 0,
-              statusText: incomingResponse.statusMessage ?? "",
-              url: targetUrl.toString(),
-              headers: Object.fromEntries(
-                Object.entries(incomingResponse.headers).flatMap(([key, value]) => {
-                  if (Array.isArray(value)) {
-                    return [[key, value.join(", ")]];
-                  }
-                  return typeof value === "string" ? [[key, value]] : [];
-                }),
-              ),
-              body: Buffer.concat(chunks).toString("utf8"),
-              truncated,
-            });
+            finish(null);
           });
 
-          incomingResponse.on("error", rejectPromise);
+          incomingResponse.on("error", (error) => {
+            if (truncated) {
+              return;
+            }
+            finish(error instanceof Error ? error : new Error(String(error)));
+          });
         },
       );
 
       request.setTimeout(timeoutMs, () => {
         request.destroy(new Error(`Host RPC request timed out after ${timeoutMs}ms.`));
       });
-      request.on("error", rejectPromise);
+      request.on("error", (error) => {
+        if (abortedForTruncation) {
+          return;
+        }
+        rejectPromise(error instanceof Error ? error : new Error(String(error)));
+      });
       if (body !== undefined) {
         request.write(body);
       }

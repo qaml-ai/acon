@@ -47,6 +47,11 @@ const HOST_MCP_STDIO_TEST_MODULE_PATH = resolve(
   "tests/fixtures/host-mcp-stdio-test-module.ts",
 );
 const HOST_MCP_STDIO_TEST_SERVER_ID = "integration-stdio-host-tools";
+const HOST_MCP_ERROR_TEST_MODULE_PATH = resolve(
+  ROOT_DIR,
+  "tests/fixtures/host-mcp-error-test-module.ts",
+);
+const HOST_MCP_ERROR_TEST_SERVER_ID = "integration-host-tools-error";
 const CONTAINER_BRIDGE_CALL_SCRIPT = [
   'const { randomUUID } = require("node:crypto");',
   'const { createConnection } = require("node:net");',
@@ -357,11 +362,12 @@ async function callContainerBridgeMethod<TResult>(
 }
 
 type ContainerCommandResult = {
+  code: number;
   stdout: string;
   stderr: string;
 };
 
-async function runContainerCommand(
+async function runContainerCommandRaw(
   userDataDir: string,
   providerId: DesktopProvider,
   command: string[],
@@ -406,23 +412,33 @@ async function runContainerCommand(
     });
     child.on("error", rejectPromise);
     child.on("exit", (code) => {
-      if (code !== 0) {
-        rejectPromise(
-          new Error(
-            stderr.trim() ||
-              stdout.trim() ||
-              `Container command failed: ${command.join(" ")}`,
-          ),
-        );
-        return;
-      }
-
       resolvePromise({
+        code: code ?? 0,
         stdout,
         stderr,
       });
     });
   });
+}
+
+async function runContainerCommand(
+  userDataDir: string,
+  providerId: DesktopProvider,
+  command: string[],
+): Promise<Omit<ContainerCommandResult, "code">> {
+  const result = await runContainerCommandRaw(userDataDir, providerId, command);
+  if (result.code !== 0) {
+    throw new Error(
+      result.stderr.trim() ||
+        result.stdout.trim() ||
+        `Container command failed: ${command.join(" ")}`,
+    );
+  }
+
+  return {
+    stdout: result.stdout,
+    stderr: result.stderr,
+  };
 }
 
 async function withContainerHostMcpClient<T>(
@@ -518,6 +534,47 @@ async function withHostLocalRpcTestServer<T>(
     }
 
     return await run(`http://127.0.0.1:${address.port}/bridge-test`);
+  } finally {
+    await new Promise<void>((resolvePromise, rejectPromise) => {
+      server.close((error) => {
+        if (error) {
+          rejectPromise(error);
+          return;
+        }
+        resolvePromise();
+      });
+    });
+  }
+}
+
+async function withHostStreamingRpcTestServer<T>(
+  run: (url: string) => Promise<T>,
+): Promise<T> {
+  const server = createServer((_request, response) => {
+    response.setHeader("content-type", "text/plain");
+    response.write("x".repeat(4096));
+
+    const interval = setInterval(() => {
+      response.write("y".repeat(4096));
+    }, 50);
+
+    response.on("close", () => {
+      clearInterval(interval);
+    });
+  });
+
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    server.once("error", rejectPromise);
+    server.listen(0, "127.0.0.1", () => resolvePromise());
+  });
+
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Host RPC streaming test server did not expose a TCP port.");
+    }
+
+    return await run(`http://127.0.0.1:${address.port}/bridge-stream`);
   } finally {
     await new Promise<void>((resolvePromise, rejectPromise) => {
       server.close((error) => {
@@ -913,6 +970,40 @@ integrationDescribe("desktop-container ACPX integration", () => {
 
   for (const providerCase of providerCases) {
     it(
+      `reports ${providerCase.label} host MCP tools/list failures instead of treating them as empty`,
+      { timeout: INTEGRATION_TIMEOUT_MS },
+      async () => {
+        const harness = new DesktopBackendHarness(providerCase.id, {
+          hostMcpModulePath: HOST_MCP_ERROR_TEST_MODULE_PATH,
+        });
+
+        try {
+          harness.send({
+            type: "set_provider",
+            provider: providerCase.id,
+          });
+          await harness.waitForProvider(providerCase.id);
+          await harness.waitForRuntimeReady(providerCase.id);
+
+          const toolsResult = await runContainerCommandRaw(
+            harness.userDataDir,
+            providerCase.id,
+            ["acon-mcp", "tools", HOST_MCP_ERROR_TEST_SERVER_ID],
+          );
+          expect(toolsResult.code).not.toBe(0);
+          expect(toolsResult.stdout).not.toContain("No tools are registered");
+          expect(toolsResult.stderr).toContain(
+            "Host MCP tools/list failed intentionally for integration testing.",
+          );
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+  }
+
+  for (const providerCase of providerCases) {
+    it(
       `bridges ${providerCase.label} container RPC calls to a host-only loopback HTTP service`,
       { timeout: INTEGRATION_TIMEOUT_MS },
       async () => {
@@ -970,6 +1061,49 @@ integrationDescribe("desktop-container ACPX integration", () => {
             expect(responseBody.method).toBe("POST");
             expect(responseBody.url).toBe("/bridge-test");
             expect(responseBody.body).toContain(providerCase.token);
+          });
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+  }
+
+  for (const providerCase of providerCases) {
+    it(
+      `returns truncated ${providerCase.label} host fetch results without waiting for a streaming response to end`,
+      { timeout: INTEGRATION_TIMEOUT_MS },
+      async () => {
+        const harness = new DesktopBackendHarness(providerCase.id);
+
+        try {
+          harness.send({
+            type: "set_provider",
+            provider: providerCase.id,
+          });
+          await harness.waitForProvider(providerCase.id);
+          await harness.waitForRuntimeReady(providerCase.id);
+
+          await withHostStreamingRpcTestServer(async (url) => {
+            const startedAt = Date.now();
+            const result = await callContainerBridgeMethod<{
+              ok: boolean;
+              status: number;
+              body: string;
+              url: string;
+              truncated: boolean;
+            }>(harness.userDataDir, providerCase.id, "fetch", {
+              url,
+              timeoutMs: 5000,
+              maxBodyBytes: 1024,
+            });
+            const elapsedMs = Date.now() - startedAt;
+
+            expect(result.ok).toBe(true);
+            expect(result.status).toBe(200);
+            expect(result.truncated).toBe(true);
+            expect(Buffer.byteLength(result.body, "utf8")).toBe(1024);
+            expect(elapsedMs).toBeLessThan(4500);
           });
         } finally {
           await harness.dispose();
