@@ -1,0 +1,33 @@
+{
+  "appId": "ai.camel.acon",
+  "productName": "acon",
+  "asar": true,
+  "directories": {
+    "output": "dist/bundle"
+  },
+  "files": [
+    "package.json",
+    "desktop/electron/**/*",
+    "desktop-container/electron/**/*"
+  ],
+  "extraResources": [
+    {
+      "from": "desktop-container/.local/bundle/resources/desktop",
+      "to": "desktop",
+      "filter": [
+        "**/*"
+      ]
+    }
+  ],
+  "mac": {
+    "category": "public.app-category.developer-tools",
+    "target": [
+      {
+        "target": "dir",
+        "arch": [
+          "arm64"
+        ]
+      }
+    ]
+  }
+}

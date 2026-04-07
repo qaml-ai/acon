@@ -7,8 +7,10 @@ import { codexProvider as legacyCodexProvider } from "../../desktop/backend/code
 import type { DesktopProviderDefinition } from "./provider-types";
 
 const DEFAULT_CODEX_IMAGE =
+  process.env.DESKTOP_CONTAINER_ACPX_IMAGE?.trim() ||
   process.env.DESKTOP_CONTAINER_CODEX_IMAGE?.trim() ||
-  "acon-desktop-codex:0.2";
+  process.env.DESKTOP_CONTAINER_CLAUDE_IMAGE?.trim() ||
+  "acon-desktop-acpx:0.1";
 const DEFAULT_CODEX_MODEL = "gpt-5.4";
 
 function getAvailableCodexModels(): DesktopModelOption[] {

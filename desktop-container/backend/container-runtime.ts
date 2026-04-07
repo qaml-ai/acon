@@ -68,10 +68,6 @@ export interface StreamContainerPromptResult {
   sessionId: string;
 }
 
-function sanitizeContainerNamePart(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_.-]+/g, "-").slice(0, 48) || "thread";
-}
-
 function formatError(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -131,20 +127,12 @@ function resolveContainerImageRoot(): string {
   return DEFAULT_CONTAINER_IMAGE_ROOT;
 }
 
-function getBuildContext(
-  imageRoot: string,
-): string {
+function getBuildContext(imageRoot: string): string {
   return imageRoot;
 }
 
-function getContainerfilePath(
-  imageRoot: string,
-  provider: DesktopProviderDefinition,
-): string {
-  return resolve(
-    imageRoot,
-    provider.id === "claude" ? "acpx-claude/Containerfile" : "acpx-codex/Containerfile",
-  );
+function getContainerfilePath(imageRoot: string): string {
+  return resolve(imageRoot, "acpx-shared/Containerfile");
 }
 
 function getClaudeJsonSeedDirectory(runtimeDirectory: string): string {
@@ -233,7 +221,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
   private readonly containerCommand = resolveContainerCommand();
   private readonly containerImageRoot = resolveContainerImageRoot();
   private readonly checkedImages = new Set<string>();
-  private readonly providerContainers = new Map<string, ProviderContainerState>();
+  private sharedContainerState: ProviderContainerState | null = null;
 
   getWorkspaceDirectory(): string {
     return this.workspaceDirectory;
@@ -270,7 +258,8 @@ export class ContainerRuntimeManager implements RuntimeManager {
   }
 
   dispose(): void {
-    for (const state of this.providerContainers.values()) {
+    if (this.sharedContainerState) {
+      const state = this.sharedContainerState;
       this.stopProviderBridge(state);
       spawnSync(this.containerCommand, ["stop", state.containerName], {
         encoding: "utf8",
@@ -361,7 +350,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
     }
 
     const imageSignature = this.computeImageBuildSignature(provider);
-    const imageStampPath = this.getImageBuildStampPath(provider);
+    const imageStampPath = this.getImageBuildStampPath(imageName);
     const storedImageSignature = existsSync(imageStampPath)
       ? readFileSync(imageStampPath, "utf8").trim()
       : null;
@@ -390,16 +379,16 @@ export class ContainerRuntimeManager implements RuntimeManager {
       "--progress",
       "plain",
       "--file",
-      getContainerfilePath(this.containerImageRoot, provider),
+      getContainerfilePath(this.containerImageRoot),
       "--tag",
       imageName,
       buildContext,
     ];
 
-    if (provider.id === "codex" && process.env.DESKTOP_CODEX_IMAGE_VERSION?.trim()) {
+    if (process.env.DESKTOP_CODEX_IMAGE_VERSION?.trim()) {
       buildArgs.splice(4, 0, "--build-arg", `CODEX_VERSION=${process.env.DESKTOP_CODEX_IMAGE_VERSION.trim()}`);
     }
-    if (provider.id === "claude" && process.env.DESKTOP_CLAUDE_IMAGE_VERSION?.trim()) {
+    if (process.env.DESKTOP_CLAUDE_IMAGE_VERSION?.trim()) {
       buildArgs.splice(4, 0, "--build-arg", `CLAUDE_VERSION=${process.env.DESKTOP_CLAUDE_IMAGE_VERSION.trim()}`);
     }
     if (process.env.DESKTOP_ACPX_IMAGE_VERSION?.trim()) {
@@ -436,35 +425,26 @@ export class ContainerRuntimeManager implements RuntimeManager {
     writeFileSync(imageStampPath, imageSignature, "utf8");
   }
 
-  private getProviderDataDirectory(provider: DesktopProviderDefinition): string {
-    return resolve(this.runtimeDirectory, "providers", provider.id);
-  }
-
-  private getImageBuildStampPath(provider: DesktopProviderDefinition): string {
-    return resolve(this.runtimeDirectory, "image-stamps", `${provider.id}.sha1`);
+  private getImageBuildStampPath(imageName: string): string {
+    const imageHash = createHash("sha1").update(imageName).digest("hex").slice(0, 12);
+    return resolve(this.runtimeDirectory, "image-stamps", `${imageHash}.sha1`);
   }
 
   private computeImageBuildSignature(provider: DesktopProviderDefinition): string {
-    const providerDirectory = resolve(
-      this.containerImageRoot,
-      provider.id === "claude" ? "acpx-claude" : "acpx-codex",
-    );
+    const sharedImageDirectory = resolve(this.containerImageRoot, "acpx-shared");
     const bridgeDirectory = resolve(this.containerImageRoot, "bridge");
+    const claudeEntrypointDirectory = resolve(this.containerImageRoot, "acpx-claude");
     const hash = createHash("sha1");
 
-    hash.update(provider.id);
     hash.update(provider.getImageName());
     hash.update(process.env.DESKTOP_ACPX_IMAGE_VERSION?.trim() || "");
-    if (provider.id === "codex") {
-      hash.update(process.env.DESKTOP_CODEX_IMAGE_VERSION?.trim() || "");
-    }
-    if (provider.id === "claude") {
-      hash.update(process.env.DESKTOP_CLAUDE_IMAGE_VERSION?.trim() || "");
-    }
+    hash.update(process.env.DESKTOP_CODEX_IMAGE_VERSION?.trim() || "");
+    hash.update(process.env.DESKTOP_CLAUDE_IMAGE_VERSION?.trim() || "");
 
     for (const filePath of [
-      ...collectFilesRecursively(providerDirectory),
+      ...collectFilesRecursively(sharedImageDirectory),
       ...collectFilesRecursively(bridgeDirectory),
+      ...collectFilesRecursively(claudeEntrypointDirectory),
     ]) {
       hash.update(filePath);
       hash.update(readFileSync(filePath));
@@ -473,26 +453,22 @@ export class ContainerRuntimeManager implements RuntimeManager {
     return hash.digest("hex");
   }
 
-  private getProviderContainerState(
-    provider: DesktopProviderDefinition,
-  ): ProviderContainerState {
-    const existing = this.providerContainers.get(provider.id);
-    if (existing) {
-      return existing;
+  private getSharedContainerState(): ProviderContainerState {
+    if (this.sharedContainerState) {
+      return this.sharedContainerState;
     }
 
     const hash = createHash("sha1")
-      .update(`${this.runtimeDirectory}:${this.workspaceDirectory}:${provider.id}`)
+      .update(`${this.runtimeDirectory}:${this.workspaceDirectory}:shared`)
       .digest("hex")
       .slice(0, 12);
-    const created: ProviderContainerState = {
-      containerName: `acon-${provider.id}-${hash}`,
+    this.sharedContainerState = {
+      containerName: `acon-acpx-${hash}`,
       ensuredSessions: new Map<string, string>(),
       startupPromise: null,
       bridge: null,
     };
-    this.providerContainers.set(provider.id, created);
-    return created;
+    return this.sharedContainerState;
   }
 
   private async inspectContainerStatus(containerName: string): Promise<string | null> {
@@ -553,7 +529,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
   private async restartProviderContainer(
     provider: DesktopProviderDefinition,
   ): Promise<void> {
-    const state = this.getProviderContainerState(provider);
+    const state = this.getSharedContainerState();
     logDesktop(
       "desktop-runtime",
       "provider_container:restart",
@@ -574,22 +550,24 @@ export class ContainerRuntimeManager implements RuntimeManager {
   private buildProviderHomeEnv(
     provider: DesktopProviderDefinition,
   ): Record<string, string> {
+    const providerDataRoot = `/data/providers/${provider.id}`;
+    const providerHome = `${providerDataRoot}/home`;
     const env: Record<string, string> = {
-      DESKTOP_DATA_ROOT: "/data",
-      HOME: "/data/home",
+      DESKTOP_DATA_ROOT: providerDataRoot,
+      HOME: providerHome,
       ACON_HOST_RPC_SOCKET: CONTAINER_HOST_RPC_SOCKET_PATH,
     };
 
     if (provider.id === "codex") {
       return {
         ...env,
-        CODEX_HOME: "/data/home/.codex",
+        CODEX_HOME: `${providerHome}/.codex`,
       };
     }
 
     return {
       ...env,
-      CLAUDE_CONFIG_DIR: "/data/home/.claude",
+      CLAUDE_CONFIG_DIR: `${providerHome}/.claude`,
     };
   }
 
@@ -637,9 +615,13 @@ export class ContainerRuntimeManager implements RuntimeManager {
     onStatus?: (status: DesktopRuntimeStatus) => void,
   ): Promise<void> {
     await this.ensureContainerSystemStarted();
-    const state = this.getProviderContainerState(provider);
+    const state = this.getSharedContainerState();
     if ((await this.inspectContainerStatus(state.containerName)) === "running") {
       await this.ensureProviderBridge(provider, state);
+      logDesktop("desktop-runtime", "shared_container:reuse", {
+        provider: provider.id,
+        containerName: state.containerName,
+      });
       return;
     }
 
@@ -650,12 +632,19 @@ export class ContainerRuntimeManager implements RuntimeManager {
 
     state.startupPromise = (async () => {
       state.ensuredSessions.clear();
-      const runtimeDataDirectory = this.getProviderDataDirectory(provider);
-      mkdirSync(runtimeDataDirectory, { recursive: true });
+      const providersDataDirectory = resolve(this.runtimeDirectory, "providers");
+      mkdirSync(providersDataDirectory, { recursive: true });
+      logDesktop("desktop-runtime", "shared_container:start_requested", {
+        provider: provider.id,
+        containerName: state.containerName,
+        workspaceDirectory: this.workspaceDirectory,
+        providersDataDirectory,
+        imageName: provider.getImageName(),
+      });
 
       const startingStatus: DesktopRuntimeStatus = {
         state: "starting",
-        detail: `Starting the ${provider.label} session container.`,
+        detail: "Starting the shared agent container.",
         helperPath: this.containerCommand,
         runtimeDirectory: this.runtimeDirectory,
         imageReference: provider.getImageName(),
@@ -673,38 +662,32 @@ export class ContainerRuntimeManager implements RuntimeManager {
         "--workdir",
         "/workspace",
         "--volume",
-        `${runtimeDataDirectory}:/data`,
+        `${providersDataDirectory}:/data/providers`,
         "--volume",
         `${this.workspaceDirectory}:/workspace`,
       ];
 
-      for (const [key, value] of Object.entries(this.buildProviderHomeEnv(provider))) {
-        if (value.trim()) {
-          args.push("--env", `${key}=${value}`);
-        }
-      }
-
-      if (provider.id === "codex" && existsSync(HOST_CODEX_HOME)) {
+      if (existsSync(HOST_CODEX_HOME)) {
         args.push(
           "--mount",
           `type=bind,source=${HOST_CODEX_HOME},target=/seed-codex,readonly`,
         );
       }
 
-      if (provider.id === "claude") {
-        if (existsSync(HOST_CLAUDE_CONFIG_DIR)) {
-          args.push(
-            "--mount",
-            `type=bind,source=${HOST_CLAUDE_CONFIG_DIR},target=/seed-claude,readonly`,
-          );
-        }
-        const seedDirectory = this.prepareClaudeSeed(runtimeDataDirectory);
-        if (seedDirectory) {
-          args.push(
-            "--mount",
-            `type=bind,source=${seedDirectory},target=/seed-claude-json,readonly`,
-          );
-        }
+      if (existsSync(HOST_CLAUDE_CONFIG_DIR)) {
+        args.push(
+          "--mount",
+          `type=bind,source=${HOST_CLAUDE_CONFIG_DIR},target=/seed-claude,readonly`,
+        );
+      }
+      const seedDirectory = this.prepareClaudeSeed(
+        resolve(this.runtimeDirectory, "providers", "claude"),
+      );
+      if (seedDirectory) {
+        args.push(
+          "--mount",
+          `type=bind,source=${seedDirectory},target=/seed-claude-json,readonly`,
+        );
       }
 
       args.push(
@@ -731,6 +714,14 @@ export class ContainerRuntimeManager implements RuntimeManager {
       }
 
       await this.ensureProviderBridge(provider, state);
+      logDesktop("desktop-runtime", "shared_container:started", {
+        provider: provider.id,
+        containerName: state.containerName,
+        workspaceDirectory: this.workspaceDirectory,
+        providersDataDirectory,
+        imageName: provider.getImageName(),
+        status: runningStatus,
+      });
     })();
 
     try {
@@ -753,7 +744,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
 
   private async ensureProviderBridge(
     provider: DesktopProviderDefinition,
-    state = this.getProviderContainerState(provider),
+    state = this.getSharedContainerState(),
   ): Promise<void> {
     if (state.bridge) {
       await state.bridge.readyPromise;
@@ -1119,8 +1110,8 @@ export class ContainerRuntimeManager implements RuntimeManager {
     model: string,
   ): Promise<void> {
     await this.ensureContainerSystemStarted();
-    const state = this.getProviderContainerState(provider);
-    const sessionName = threadId;
+    const state = this.getSharedContainerState();
+    const sessionName = `${provider.id}-${threadId}`;
     if (state.ensuredSessions.get(sessionName) === model) {
       return;
     }
@@ -1284,7 +1275,8 @@ export class ContainerRuntimeManager implements RuntimeManager {
   }: StreamContainerPromptOptions): Promise<StreamContainerPromptResult> {
     await this.ensureContainerSystemStarted();
     mkdirSync(this.getThreadStateDirectory(threadId), { recursive: true });
-    const state = this.getProviderContainerState(provider);
+    const state = this.getSharedContainerState();
+    const sessionName = `${provider.id}-${threadId}`;
     const args = this.buildExecArgs(
       provider,
       model,
@@ -1304,7 +1296,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
         provider.id,
         "prompt",
         "--session",
-        threadId,
+        sessionName,
         "--file",
         "-",
       ],
