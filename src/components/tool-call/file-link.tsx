@@ -3,7 +3,7 @@
 import { ExternalLink } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useState } from 'react';
-import { useAuthData } from '@/hooks/use-auth-data';
+import { useCurrentWorkspaceId } from '@/hooks/use-current-workspace-id';
 import { cn } from '@/lib/utils';
 import { FilePreviewPopover } from '@/components/chat-file-preview';
 import { useChatPreviewContext } from '@/components/chat-preview/preview-context';
@@ -70,13 +70,13 @@ export function FileLink({
   className,
   mono = false,
 }: FileLinkProps) {
-  const { currentWorkspace } = useAuthData();
+  const workspaceId = useCurrentWorkspaceId();
   const [previewOpen, setPreviewOpen] = useState(false);
   const previewContext = useChatPreviewContext();
   const tempInfo = getTempFileInfo(path);
   const normalizedPath = normalizeWorkspacePath(path);
 
-  if (!normalizedPath || !currentWorkspace?.id) {
+  if (!normalizedPath || !workspaceId) {
     return (
       <span className={cn(mono && "font-mono", className)}>
         {children ?? path}
@@ -85,12 +85,12 @@ export function FileLink({
   }
 
   if (tempInfo) {
-    const previewUrl = `/api/workspaces/${currentWorkspace.id}/${tempInfo.urlSegment}/${encodePathSegments(tempInfo.relativePath)}`;
+    const previewUrl = `/api/workspaces/${workspaceId}/${tempInfo.urlSegment}/${encodePathSegments(tempInfo.relativePath)}`;
     const displayName = tempInfo.relativePath.split('/').pop() || tempInfo.relativePath;
     const previewTarget: PreviewTarget = {
       kind: 'file',
       source: tempInfo.type,
-      workspaceId: currentWorkspace.id,
+      workspaceId,
       path: tempInfo.relativePath,
       filename: displayName,
     };
@@ -158,12 +158,12 @@ export function FileLink({
     );
   }
 
-  const href = `/computer/${currentWorkspace.id}?file=${encodeURIComponent(normalizedPath)}`;
+  const href = `/computer/${workspaceId}?file=${encodeURIComponent(normalizedPath)}`;
   if (previewContext) {
     const previewTarget: PreviewTarget = {
       kind: 'file',
       source: 'workspace',
-      workspaceId: currentWorkspace.id,
+      workspaceId,
       path: normalizedPath,
       filename: getBasename(normalizedPath),
     };
