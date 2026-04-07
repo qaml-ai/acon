@@ -10,8 +10,17 @@ This repo keeps the local Electron shell and shared desktop renderer, and runs c
 bun install
 bun run dev
 bun run check
+bun run probe
 bun run test:renderer
+bun run test:integration
 ```
+
+Useful variants:
+
+- `bun run start` launches Electron against an already-running renderer.
+- `bun run check:backend` checks only the Apple `container` backend.
+- `bun run check:renderer` checks only the shared renderer.
+- `bun run probe:claude` and `bun run probe:codex` run provider-specific end-to-end turn probes.
 
 ## Structure
 
