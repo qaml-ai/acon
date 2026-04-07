@@ -261,14 +261,14 @@ type CodexNotification = {
   params?: Record<string, unknown>;
 };
 
-type AgentOsNotification = {
+type AcpNotification = {
   jsonrpc?: string;
   method?: string;
   params?: Record<string, unknown>;
   type?: string;
 };
 
-type AgentOsSessionUpdate = {
+type AcpSessionUpdate = {
   sessionUpdate?: unknown;
   content?: unknown;
   toolCallId?: unknown;
@@ -301,21 +301,28 @@ function isClaudeSdkEvent(event: unknown): event is SDKEvent {
 }
 
 function isCodexRuntimeEvent(event: unknown): event is CodexNotification {
+  if (!event || typeof event !== 'object') {
+    return false;
+  }
+
+  const method = (event as { method?: unknown }).method;
   return Boolean(
-    event &&
-      typeof event === 'object' &&
-      typeof (event as { method?: unknown }).method === 'string'
+    typeof method === 'string' &&
+      method !== 'initialize' &&
+      !method.startsWith('session/')
   );
 }
 
-function isAgentOsRuntimeEvent(event: unknown): event is AgentOsNotification {
+function isAcpRuntimeEvent(event: unknown): event is AcpNotification {
+  if (!event || typeof event !== 'object') {
+    return false;
+  }
+
+  const method = (event as { method?: unknown }).method;
   return Boolean(
-    event &&
-      typeof event === 'object' &&
-      (
-        typeof (event as { method?: unknown }).method === 'string' ||
-        (event as { type?: unknown }).type === 'permission_request'
-      )
+    (typeof method === 'string' &&
+      (method === 'initialize' || method.startsWith('session/'))) ||
+      (event as { type?: unknown }).type === 'permission_request'
   );
 }
 
@@ -791,7 +798,7 @@ function stringifyCodexValue(value: unknown): string {
   }
 }
 
-function getAgentOsSessionUpdate(event: AgentOsNotification): AgentOsSessionUpdate | null {
+function getAcpSessionUpdate(event: AcpNotification): AcpSessionUpdate | null {
   if (event.type === 'permission_request') {
     return null;
   }
@@ -807,17 +814,17 @@ function getAgentOsSessionUpdate(event: AgentOsNotification): AgentOsSessionUpda
 
   const update = params.update;
   return update && typeof update === 'object'
-    ? (update as AgentOsSessionUpdate)
+    ? (update as AcpSessionUpdate)
     : null;
 }
 
-function extractAgentOsTextContent(value: unknown): string {
+function extractAcpTextContent(value: unknown): string {
   if (typeof value === 'string') {
     return value;
   }
 
   if (Array.isArray(value)) {
-    return value.map((entry) => extractAgentOsTextContent(entry)).filter(Boolean).join('');
+    return value.map((entry) => extractAcpTextContent(entry)).filter(Boolean).join('');
   }
 
   if (!value || typeof value !== 'object') {
@@ -829,25 +836,26 @@ function extractAgentOsTextContent(value: unknown): string {
     return record.text;
   }
   if (record.type === 'content') {
-    return extractAgentOsTextContent(record.content);
+    return extractAcpTextContent(record.content);
   }
   if (record.type === 'diff') {
     const path = typeof record.path === 'string' ? record.path : 'file';
     return `Updated ${path}`;
   }
   if ('content' in record) {
-    return extractAgentOsTextContent(record.content);
+    return extractAcpTextContent(record.content);
   }
   return '';
 }
 
-function applyAgentOsRuntimeEvent(
+function applyAcpRuntimeEvent(
   currentMessages: Message[],
   threadId: string,
-  event: AgentOsNotification,
+  provider: DesktopProvider,
+  event: AcpNotification,
   streamingMessageIds: Record<string, string | null>
 ): Message[] {
-  const update = getAgentOsSessionUpdate(event);
+  const update = getAcpSessionUpdate(event);
   if (!update) {
     return currentMessages;
   }
@@ -857,7 +865,7 @@ function applyAgentOsRuntimeEvent(
     : null;
 
   if (sessionUpdate === 'agent_message_chunk') {
-    const text = extractAgentOsTextContent(update.content);
+    const text = extractAcpTextContent(update.content);
     if (!text) return currentMessages;
     return updateStreamingAssistantMessage(
       currentMessages,
@@ -866,14 +874,14 @@ function applyAgentOsRuntimeEvent(
       (blocks) => appendContiguousTextBlock(
         blocks,
         text,
-        'agentos',
-        'agentos:message'
+        provider,
+        `${provider}:message`
       )
     );
   }
 
   if (sessionUpdate === 'agent_thought_chunk') {
-    const text = extractAgentOsTextContent(update.content);
+    const text = extractAcpTextContent(update.content);
     if (!text) return currentMessages;
     return updateStreamingAssistantMessage(
       currentMessages,
@@ -883,8 +891,8 @@ function applyAgentOsRuntimeEvent(
         blocks,
         text,
         'Thinking',
-        'agentos',
-        'agentos:thinking'
+        provider,
+        `${provider}:thinking`
       )
     );
   }
@@ -903,12 +911,12 @@ function applyAgentOsRuntimeEvent(
       currentMessages,
       threadId,
       streamingMessageIds,
-      (blocks) => upsertToolUseBlock(blocks, toolCallId, title, rawInput, 'agentos')
+      (blocks) => upsertToolUseBlock(blocks, toolCallId, title, rawInput, provider)
     );
   }
 
   if (sessionUpdate === 'tool_call_update' && toolCallId) {
-    const text = extractAgentOsTextContent(update.content) || extractAgentOsTextContent(update.rawOutput);
+    const text = extractAcpTextContent(update.content) || extractAcpTextContent(update.rawOutput);
     const status = typeof update.status === 'string' ? update.status : '';
     const rawInput =
       update.rawInput && typeof update.rawInput === 'object'
@@ -930,7 +938,7 @@ function applyAgentOsRuntimeEvent(
             toolCallId,
             title ?? 'tool',
             rawInput ?? {},
-            'agentos'
+            provider
           );
         } else if (rawInput || title) {
           nextBlocks = upsertToolUseBlock(
@@ -938,14 +946,14 @@ function applyAgentOsRuntimeEvent(
             toolCallId,
             title ?? existingToolUse.name,
             rawInput ?? existingToolUse.input,
-            'agentos'
+            provider
           );
         }
         if (text) {
-          return appendToolResultText(nextBlocks, toolCallId, text, 'agentos');
+          return appendToolResultText(nextBlocks, toolCallId, text, provider);
         }
         if (status === 'failed') {
-          return upsertToolResultBlock(nextBlocks, toolCallId, 'Tool failed.', 'agentos');
+          return upsertToolResultBlock(nextBlocks, toolCallId, 'Tool failed.', provider);
         }
         return nextBlocks;
       }
@@ -1565,10 +1573,11 @@ export function applyRuntimeEventToMessages(
     );
   }
 
-  if (provider === 'agentos' && isAgentOsRuntimeEvent(event)) {
-    return applyAgentOsRuntimeEvent(
+  if (isAcpRuntimeEvent(event)) {
+    return applyAcpRuntimeEvent(
       currentMessages,
       threadId,
+      provider,
       event,
       streamingMessageIds,
     );

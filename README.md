@@ -1,22 +1,22 @@
 # acon
 
-Standalone repository for the AgentOS-backed camelAI desktop app.
+Standalone repository for the Apple `container` backed camelAI desktop app.
 
-This repo keeps the local Electron shell and shared desktop renderer, but runs chats against an embedded [AgentOS](https://rivet.dev/docs/agent-os/overview/) VM instead of the older containerized desktop runtime.
+This repo keeps the local Electron shell and shared desktop renderer, and runs chats inside Apple `container` VMs through ACPX-backed Codex and Claude providers.
 
 ## Commands
 
 ```bash
 bun install
-bun run desktop-agentos:dev
-bun run desktop-agentos:check
+bun run desktop-container:dev
+bun run desktop-container:check
 bun run desktop:check
-bun run test:desktop-agentos-renderer
+bun run test:desktop-container-renderer
 ```
 
 ## Structure
 
-- `desktop-agentos/` AgentOS backend, scripts, SDK, and builtin plugins
+- `desktop-container/` container backend, scripts, SDK, and builtin plugins
 - `desktop/renderer/` shared desktop renderer
 - `desktop/electron/` shared Electron shell
 - `desktop/shared/` backend/renderer protocol

@@ -170,13 +170,36 @@ function getDesktopRuntimeEnv() {
   const stagedKernelPath = resolve(resourcesDir, 'kernel/vmlinux');
   const devKernelPath = resolve(__dirname, '../runtime-helper/assets/vmlinux');
   const runtimeKernelPath = existsSync(stagedKernelPath) ? stagedKernelPath : devKernelPath;
+  const stagedContainerBinPath = resolve(resourcesDir, 'bin/container');
+  const devBundledContainerBinPath = resolve(
+    repoRoot,
+    'desktop-container/vendor/apple-container/bin/container',
+  );
+  const stagedContainerImageRoot = resolve(resourcesDir, 'container-images');
+  const devContainerImageRoot = resolve(repoRoot, 'desktop-container/container-images');
+  const containerBinPath = app.isPackaged
+    ? stagedContainerBinPath
+    : existsSync(devBundledContainerBinPath)
+      ? devBundledContainerBinPath
+      : null;
+  const containerImageRoot = app.isPackaged
+    ? stagedContainerImageRoot
+    : devContainerImageRoot;
 
-  return {
+  const runtimeEnv = {
     DESKTOP_DATA_DIR: dataDirectory,
     DESKTOP_RUNTIME_DIR: runtimeDirectory,
     DESKTOP_RUNTIME_HELPER_PATH: runtimeHelperPath,
     DESKTOP_RUNTIME_KERNEL_PATH: runtimeKernelPath,
+    DESKTOP_CONTAINER_IMAGE_ROOT: containerImageRoot,
+    DESKTOP_CONTAINER_REQUIRE_BUNDLED: app.isPackaged ? '1' : '0',
   };
+
+  if (containerBinPath) {
+    runtimeEnv.DESKTOP_CONTAINER_BIN_PATH = containerBinPath;
+  }
+
+  return runtimeEnv;
 }
 
 function applyDesktopRuntimeEnv() {

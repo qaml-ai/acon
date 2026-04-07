@@ -16,7 +16,7 @@ export default defineConfig({
     include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
     exclude: [
       'tests/integration/**',
-      'tests/desktop-agentos-openrouter.test.ts',
+      'tests/desktop-container-openrouter.test.ts',
     ],
   },
 });

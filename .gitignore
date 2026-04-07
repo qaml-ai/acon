@@ -88,6 +88,7 @@ desktop/.local/
 desktop-agentos/.local/
 desktop-agentos/.local-dev/
 desktop-agentos/node_modules/
+desktop-container/.local/
 desktop/app-resources/
 desktop/renderer-dist/
 dist/desktop/
@@ -105,3 +106,7 @@ workers/main/src/embedded-skills.ts
 .admin_key
 .bedrock_key
 .claude/settings.local.json
+
+# Local cloned reference repos for container/ACPX exploration
+experiments/acpx/
+experiments/agent-client-protocol/

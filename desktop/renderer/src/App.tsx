@@ -7,7 +7,7 @@ import {
   useState,
   type ComponentType,
 } from "react";
-import { AlertCircle, Loader2, X } from "lucide-react";
+import { Loader2, X } from "lucide-react";
 import { ContentBlockRenderer } from "@/components/message-bubble";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -19,7 +19,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
 import {
   Select,
   SelectContent,
@@ -43,6 +42,7 @@ import type {
   DesktopClientEvent,
   DesktopModel,
   DesktopPanel,
+  DesktopProvider,
   DesktopServerEvent,
   DesktopSnapshot,
   DesktopTab,
@@ -58,7 +58,6 @@ import { getDesktopIcon } from "./desktop-icons";
 
 const desktopShell = window.desktopShell;
 const fallbackBackendUrl = "http://127.0.0.1:4315";
-const RUNTIME_BOOT_SCREEN_DELAY_MS = 450;
 const EMPTY_THREAD_DRAFT_KEY = "__no_thread__";
 
 type WorkbenchSurface = DesktopView | DesktopPanel;
@@ -72,6 +71,7 @@ type HostSurfaceComponentProps = {
   initialDraft: string;
   isStreaming: boolean;
   onDraftChange: (threadId: string | null, draft: string) => void;
+  onSetProvider: (provider: DesktopProvider) => void;
   onSetModel: (model: string) => void;
   onSubmitMessage: (threadId: string, content: string) => void;
 };
@@ -192,134 +192,7 @@ function shouldShowRuntimeNotice(snapshot: DesktopSnapshot | null): boolean {
     return false;
   }
 
-  return (
-    snapshot.runtimeStatus.state !== "running" &&
-    Boolean(runtimeDetail(snapshot))
-  );
-}
-
-function shouldBlockOnRuntime(
-  snapshot: DesktopSnapshot | null,
-  connectionState: "connecting" | "open" | "closed",
-): boolean {
-  if (connectionState === "connecting") {
-    return true;
-  }
-  if (!snapshot) {
-    return true;
-  }
-  return snapshot.runtimeStatus.state !== "running";
-}
-
-function getRuntimeBootProgress(snapshot: DesktopSnapshot | null): number {
-  if (!snapshot) {
-    return 10;
-  }
-
-  if (snapshot.runtimeStatus.state === "running") {
-    return 100;
-  }
-  if (snapshot.runtimeStatus.state === "error") {
-    return 100;
-  }
-  if (snapshot.runtimeStatus.state === "starting") {
-    return 60;
-  }
-  return 20;
-}
-
-function getRuntimeBootTitle(
-  snapshot: DesktopSnapshot | null,
-  connectionState: "connecting" | "open" | "closed",
-): string {
-  if (connectionState === "connecting") {
-    return "Connecting desktop runtime";
-  }
-  if (!snapshot) {
-    return "Preparing desktop runtime";
-  }
-  if (snapshot.runtimeStatus.state === "error") {
-    return "Runtime failed to start";
-  }
-  if (snapshot.runtimeStatus.state === "running") {
-    return "Runtime ready";
-  }
-  return "Starting local runtime";
-}
-
-function getRuntimeBootCaption(
-  snapshot: DesktopSnapshot | null,
-  connectionState: "connecting" | "open" | "closed",
-): string {
-  if (connectionState === "connecting") {
-    return "Connecting the desktop shell to the local backend.";
-  }
-  if (!snapshot) {
-    return "Preparing the local runtime.";
-  }
-
-  if (snapshot.runtimeStatus.state === "error") {
-    return "The local runtime did not finish booting.";
-  }
-  if (snapshot.runtimeStatus.state === "starting") {
-    return "Starting the local runtime.";
-  }
-  return "Preparing the local runtime.";
-}
-
-function RuntimeBootScreen({
-  snapshot,
-  connectionState,
-}: {
-  snapshot: DesktopSnapshot | null;
-  connectionState: "connecting" | "open" | "closed";
-}) {
-  const isError = snapshot?.runtimeStatus.state === "error";
-  const detail = runtimeDetail(snapshot);
-  const progress = getRuntimeBootProgress(snapshot);
-
-  return (
-    <div className="flex flex-1 items-center justify-center px-6 py-10">
-      <div className="w-full max-w-xl rounded-3xl border border-border/70 bg-card/85 p-8 shadow-sm backdrop-blur-xl">
-        <div className="flex items-center gap-3">
-          <div
-            className={`flex size-10 items-center justify-center rounded-2xl border ${
-              isError
-                ? "border-destructive/30 bg-destructive/10 text-destructive"
-                : "border-border/60 bg-muted/40 text-foreground"
-            }`}
-          >
-            {isError ? (
-              <AlertCircle className="size-5" />
-            ) : (
-              <Loader2 className="size-5 animate-spin" />
-            )}
-          </div>
-          <div className="space-y-1">
-            <h2 className="text-lg font-semibold">
-              {getRuntimeBootTitle(snapshot, connectionState)}
-            </h2>
-            <p className="text-sm text-muted-foreground">
-              {getRuntimeBootCaption(snapshot, connectionState)}
-            </p>
-          </div>
-        </div>
-
-        <div className="mt-6 space-y-3">
-          <Progress value={progress} />
-          {detail ? (
-            <p
-              className={`text-sm leading-relaxed ${
-                isError ? "text-destructive" : "text-muted-foreground"
-              }`}
-            >
-              {detail}
-            </p>
-          ) : null}
-        </div>
-      </div>
-    </div>
-  );
+  return snapshot.runtimeStatus.state === "error" && Boolean(runtimeDetail(snapshot));
 }
 
 function coerceTextContent(content: string | ContentBlock[]): string {
@@ -472,21 +345,27 @@ const MemoizedTranscriptPane = memo(
 );
 
 function Composer({
+  availableProviders,
   availableModels,
   activeThreadId,
   initialDraft,
   isStreaming,
+  provider,
   model,
   onDraftChange,
+  onSetProvider,
   onSetModel,
   onSubmitMessage,
 }: {
+  availableProviders: DesktopSnapshot["availableProviders"];
   availableModels: DesktopSnapshot["availableModels"];
   activeThreadId: string | null;
   initialDraft: string;
   isStreaming: boolean;
+  provider: DesktopProvider;
   model: DesktopModel;
   onDraftChange: (threadId: string | null, draft: string) => void;
+  onSetProvider: (provider: DesktopProvider) => void;
   onSetModel: (model: string) => void;
   onSubmitMessage: (threadId: string, content: string) => void;
 }) {
@@ -511,7 +390,26 @@ function Composer({
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center justify-end">
+      <div className="flex items-center justify-end gap-2">
+        <Select
+          value={provider}
+          onValueChange={(value) => onSetProvider(value as DesktopProvider)}
+        >
+          <SelectTrigger
+            size="sm"
+            className="desktop-chat-provider-switcher w-[148px]"
+            aria-label="Provider"
+          >
+            <SelectValue placeholder="Provider" />
+          </SelectTrigger>
+          <SelectContent>
+            {availableProviders.map((option) => (
+              <SelectItem key={option.id} value={option.id}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <Select value={model} onValueChange={onSetModel}>
           <SelectTrigger
             size="sm"
@@ -545,12 +443,15 @@ function Composer({
 const MemoizedComposer = memo(
   Composer,
   (prev, next) =>
+    prev.availableProviders === next.availableProviders &&
     prev.availableModels === next.availableModels &&
     prev.activeThreadId === next.activeThreadId &&
     prev.initialDraft === next.initialDraft &&
     prev.isStreaming === next.isStreaming &&
+    prev.provider === next.provider &&
     prev.model === next.model &&
     prev.onDraftChange === next.onDraftChange &&
+    prev.onSetProvider === next.onSetProvider &&
     prev.onSetModel === next.onSetModel &&
     prev.onSubmitMessage === next.onSubmitMessage,
 );
@@ -562,6 +463,7 @@ function ChatThreadView({
   initialDraft,
   isStreaming,
   onDraftChange,
+  onSetProvider,
   onSetModel,
   onSubmitMessage,
 }: Pick<
@@ -572,6 +474,7 @@ function ChatThreadView({
   | "initialDraft"
   | "isStreaming"
   | "onDraftChange"
+  | "onSetProvider"
   | "onSetModel"
   | "onSubmitMessage"
 >) {
@@ -588,12 +491,15 @@ function ChatThreadView({
           <div className="px-4 pb-4 pt-2">
             <div className="mx-auto flex w-full max-w-3xl flex-col max-h-[calc(100dvh-2rem)]">
               <MemoizedComposer
+                availableProviders={snapshot.availableProviders}
                 availableModels={snapshot.availableModels}
                 activeThreadId={activeThreadId}
                 initialDraft={initialDraft}
                 isStreaming={isStreaming}
+                provider={snapshot.provider}
                 model={snapshot.model}
                 onDraftChange={onDraftChange}
+                onSetProvider={onSetProvider}
                 onSetModel={onSetModel}
                 onSubmitMessage={onSubmitMessage}
               />
@@ -867,7 +773,7 @@ function GenericHostDataPane({
                 <CardTitle>{surface.title}</CardTitle>
                 <CardDescription>
                   {surface.description ??
-                    "Plugin-provided data for the current AgentOS context."}
+                    "Plugin-provided data for the current container runtime context."}
                 </CardDescription>
               </div>
             </div>
@@ -1237,7 +1143,6 @@ export function App() {
   const [connectionState, setConnectionState] = useState<
     "connecting" | "open" | "closed"
   >("connecting");
-  const [runtimeBootDelayElapsed, setRuntimeBootDelayElapsed] = useState(false);
   const composerDraftsRef = useRef<Record<string, string>>({});
   const fallbackSocketRef = useRef<WebSocket | null>(null);
   const streamingMessageIdsRef = useRef<Record<string, string | null>>({});
@@ -1277,15 +1182,6 @@ export function App() {
   const isStreaming = rawMessages.some(
     (message) => message.role === "assistant" && message.isStreaming,
   );
-  const shouldDelayRuntimeBootScreen =
-    connectionState === "open" &&
-    snapshot !== null &&
-    snapshot.runtimeStatus.state !== "running" &&
-    snapshot.runtimeStatus.state !== "error";
-  const shouldBlockRuntime =
-    shouldBlockOnRuntime(snapshot, connectionState) &&
-    (!shouldDelayRuntimeBootScreen || runtimeBootDelayElapsed);
-
   useEffect(() => {
     let cancelled = false;
 
@@ -1435,22 +1331,6 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!shouldDelayRuntimeBootScreen) {
-      setRuntimeBootDelayElapsed(false);
-      return;
-    }
-
-    setRuntimeBootDelayElapsed(false);
-    const timeoutId = window.setTimeout(() => {
-      setRuntimeBootDelayElapsed(true);
-    }, RUNTIME_BOOT_SCREEN_DELAY_MS);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [shouldDelayRuntimeBootScreen, snapshot?.runtimeStatus.state]);
-
-  useEffect(() => {
     if (!snapshot || reportedReadyRef.current || !desktopShell?.reportReady) {
       return;
     }
@@ -1582,6 +1462,13 @@ export function App() {
     sendEvent({ type: "set_model", model: model as DesktopModel });
   }, [sendEvent, snapshot?.availableModels]);
 
+  const handleSetProvider = useCallback((provider: DesktopProvider) => {
+    if (!snapshot?.availableProviders.some((option) => option.id === provider)) {
+      return;
+    }
+    sendEvent({ type: "set_provider", provider });
+  }, [sendEvent, snapshot?.availableProviders]);
+
   const initialDraft = composerDraftsRef.current[getDraftKey(activeThreadId)] ?? "";
 
   const handleDraftChange = useCallback((threadId: string | null, draft: string) => {
@@ -1664,6 +1551,7 @@ export function App() {
     initialDraft,
     isStreaming,
     onDraftChange: handleDraftChange,
+    onSetProvider: handleSetProvider,
     onSetModel: handleSetModel,
     onSubmitMessage: handleSubmitMessage,
   } : null;
@@ -1677,6 +1565,7 @@ export function App() {
     initialDraft,
     isStreaming,
     onDraftChange: handleDraftChange,
+    onSetProvider: handleSetProvider,
     onSetModel: handleSetModel,
     onSubmitMessage: handleSubmitMessage,
   } : null;
@@ -1726,12 +1615,7 @@ export function App() {
             />
             <SidebarInset className="overflow-hidden flex flex-col">
               <div className="flex flex-1 min-h-0 flex-col">
-                {shouldBlockRuntime ? (
-                  <RuntimeBootScreen
-                    snapshot={snapshot}
-                    connectionState={connectionState}
-                  />
-                ) : activeSurfaceProps ? (
+                {activeSurfaceProps ? (
                   <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
                     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                       <WorkbenchSurfacePane {...activeSurfaceProps} />
