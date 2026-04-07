@@ -33,11 +33,13 @@ const SKIP_REASON = !RUN_INTEGRATION
   : !CONTAINER_AVAILABLE
     ? `Apple container CLI is unavailable at ${CONTAINER_COMMAND}.`
     : null;
+const SHARED_CONTAINER_START_DETAIL = "Starting the shared agent container.";
 
 type RuntimeStateRecord = {
   at: number;
   state: string;
   detail?: string | null;
+  containerID?: string | null;
 };
 
 type RuntimeEventRecord = {
@@ -131,16 +133,17 @@ function getSessionIds(events: RuntimeEventRecord[]): string[] {
   }))];
 }
 
-function getProviderContainerName(
-  userDataDir: string,
-  providerId: DesktopProvider,
-): string {
+function getSharedContainerName(userDataDir: string): string {
   const runtimeDirectory = resolve(userDataDir, "runtime");
   const hash = createHash("sha1")
-    .update(`${runtimeDirectory}:${ROOT_DIR}:${providerId}`)
+    .update(`${runtimeDirectory}:${ROOT_DIR}:shared`)
     .digest("hex")
     .slice(0, 12);
-  return `acon-${providerId}-${hash}`;
+  return `acon-acpx-${hash}`;
+}
+
+function getSessionName(providerId: DesktopProvider, threadId: string): string {
+  return `${providerId}-${threadId}`;
 }
 
 function readAcpSessionModel(
@@ -148,7 +151,13 @@ function readAcpSessionModel(
   providerId: DesktopProvider,
   threadId: string,
 ): string | null {
-  const containerName = getProviderContainerName(userDataDir, providerId);
+  const containerName = getSharedContainerName(userDataDir);
+  const providerDataRoot = `/data/providers/${providerId}`;
+  const providerHome = `${providerDataRoot}/home`;
+  const providerEnv =
+    providerId === "codex"
+      ? ["--env", `CODEX_HOME=${providerHome}/.codex`]
+      : ["--env", `CLAUDE_CONFIG_DIR=${providerHome}/.claude`];
   const result = spawnSync(
     CONTAINER_COMMAND,
     [
@@ -156,13 +165,14 @@ function readAcpSessionModel(
       "--workdir",
       "/workspace",
       "--env",
-      "HOME=/data/home",
+      `DESKTOP_DATA_ROOT=${providerDataRoot}`,
       "--env",
-      "CLAUDE_CONFIG_DIR=/data/home/.claude",
+      `HOME=${providerHome}`,
+      ...providerEnv,
       containerName,
       "sh",
       "-lc",
-      `exec acpx --json-strict --format json --approve-all --cwd /workspace ${providerId} status --session ${threadId}`,
+      `exec acpx --json-strict --format json --approve-all --cwd /workspace ${providerId} status --session ${getSessionName(providerId, threadId)}`,
     ],
     {
       cwd: ROOT_DIR,
@@ -260,6 +270,7 @@ class DesktopBackendHarness {
             at: now(),
             state: event.snapshot.runtimeStatus.state,
             detail: event.snapshot.runtimeStatus.detail,
+            containerID: event.snapshot.runtimeStatus.containerID ?? null,
           });
           continue;
         }
@@ -345,6 +356,23 @@ class DesktopBackendHarness {
 
   async waitForActiveThread(): Promise<string> {
     return this.waitFor("active thread", () => this.snapshot?.activeThreadId);
+  }
+
+  async createThreadAndWait(title = "New thread"): Promise<string> {
+    const existingThreadIds = new Set(
+      (this.snapshot?.threads ?? []).map((thread) => thread.id),
+    );
+    this.send({
+      type: "create_thread",
+      title,
+    });
+    return this.waitFor("new thread", () => {
+      const activeThreadId = this.snapshot?.activeThreadId;
+      if (!activeThreadId || existingThreadIds.has(activeThreadId)) {
+        return null;
+      }
+      return activeThreadId;
+    });
   }
 
   async waitForProvider(providerId: DesktopProvider): Promise<void> {
@@ -520,10 +548,68 @@ integrationDescribe("desktop-container ACPX integration", () => {
           ).toBe(true);
 
           const containerStartCount = harness.runtimeStates.filter(
-            (entry) =>
-              entry.detail === `Starting the ${providerCase.label} session container.`,
+            (entry) => entry.detail === SHARED_CONTAINER_START_DETAIL,
           ).length;
           expect(containerStartCount).toBe(1);
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    providerTest(
+      `reuses the shared container across two ${providerCase.label} chats`,
+      { timeout: INTEGRATION_TIMEOUT_MS },
+      async () => {
+        const harness = new DesktopBackendHarness(providerCase.id);
+
+        try {
+          const firstThreadId = await harness.waitForActiveThread();
+          harness.send({
+            type: "set_provider",
+            provider: providerCase.id,
+          });
+          await harness.waitForProvider(providerCase.id);
+          if (providerCase.id === "claude") {
+            harness.send({
+              type: "set_model",
+              model: "opus",
+            });
+            await harness.waitForModel("opus");
+          }
+          await harness.waitForRuntimeReady(providerCase.id);
+
+          const firstTurn = await harness.sendMessageAndWait(
+            firstThreadId,
+            "Reply with THREAD_ONE and nothing else.",
+          );
+          expect(firstTurn.message.status).toBe("done");
+          expect(firstTurn.errorEvents).toHaveLength(0);
+          expect(firstTurn.text).toContain("THREAD_ONE");
+
+          const secondThreadId = await harness.createThreadAndWait("Second chat");
+          await harness.waitForProvider(providerCase.id);
+
+          const secondTurn = await harness.sendMessageAndWait(
+            secondThreadId,
+            "Reply with THREAD_TWO and nothing else.",
+          );
+          expect(secondTurn.message.status).toBe("done");
+          expect(secondTurn.errorEvents).toHaveLength(0);
+          expect(secondTurn.text).toContain("THREAD_TWO");
+
+          const containerStartCount = harness.runtimeStates.filter(
+            (entry) => entry.detail === SHARED_CONTAINER_START_DETAIL,
+          ).length;
+          expect(containerStartCount).toBe(1);
+
+          const startedContainerIds = [...new Set(
+            harness.runtimeStates
+              .filter((entry) => entry.detail === SHARED_CONTAINER_START_DETAIL)
+              .map((entry) => entry.containerID)
+              .filter((value): value is string => Boolean(value)),
+          )];
+          expect(startedContainerIds).toHaveLength(1);
         } finally {
           await harness.dispose();
         }
