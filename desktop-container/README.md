@@ -17,17 +17,19 @@ Current scope:
 
 Current limits:
 
-- dev-only prototype; no staging or packaged runtime flow yet
+- local bundle builds exist, but signed/notarized release packaging is still not wired
 - workspace is mounted directly from the host checkout into the VM at `/workspace`
 - auth is seeded from host `~/.codex`, host `~/.claude` / `~/.claude.json`, or `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`
 - the backend currently uses fixed default models per provider (`gpt-5.4` for Codex and `sonnet` for Claude)
 - ACPX sessions persist per thread inside a long-lived provider container, but host-to-container transport still uses `container exec` per turn
-- release packaging still needs to vendor the Apple `container` binary at `desktop/bin/container`
+- release packaging still needs to stage the vendored Apple `container` binary and image contexts into app resources
 
 ## Commands
 
 ```bash
 bun install
+bun run prepare:container
+bun run build:bundle
 bun run dev
 bun run check
 bun run backend
@@ -40,7 +42,11 @@ bun run start
 
 Notes:
 
+- `prepare:container` copies a usable Apple `container` install into `desktop-container/vendor/apple-container/` and prebuilds the Claude/Codex images when Apple container tooling is available.
+- `build` only builds the renderer.
+- `build:bundle` assembles the packaged desktop resources, bundles the backend entrypoint, stages builtin plugin manifests for packaged discovery, and produces an unpacked macOS `.app` bundle in `dist/bundle/`.
 - `dev` is the main command. It starts the renderer plus Electron and picks a free localhost port automatically.
+- `dev` only runs container-asset preparation when `DESKTOP_PREPARE_CONTAINER_ASSETS=1`.
 - `backend` is a smoke check for backend startup, not a long-lived backend server.
 - `probe` runs an end-to-end stdio turn against the desktop backend using the default provider.
 - `probe:claude` forces the Claude provider through the same end-to-end probe.
@@ -56,9 +62,12 @@ Optional:
 ```bash
 export DESKTOP_CONTAINER_WORKSPACE_DIR=/absolute/path/to/workspace
 export DESKTOP_CONTAINER_USER_DATA_DIR=/custom/path
+export DESKTOP_APPLE_CONTAINER_REPO_DIR=/absolute/path/to/apple-container
 export DESKTOP_CONTAINER_CLAUDE_IMAGE=acon-desktop-claude:0.1
 export DESKTOP_CONTAINER_CODEX_IMAGE=acon-desktop-codex:0.1
 export DESKTOP_CONTAINER_BIN_PATH=/absolute/path/to/container
+export DESKTOP_PREBUILD_CONTAINER_IMAGES=0
+export DESKTOP_PREPARE_CONTAINER_ASSETS=1
 ```
 
 Codex auth:
@@ -86,7 +95,7 @@ export ANTHROPIC_API_KEY=...
 - The backend mounts the current workspace into the container at `/workspace`.
 - Provider-specific runtime data lives under the shared desktop runtime directory and is mounted into the container at `/data`.
 - `desktop-container/container-images/` contains the Apple-container image definitions for Codex and Claude.
-- Packaged builds should stage the Apple `container` CLI at `Contents/Resources/desktop/bin/container` and the image contexts at `Contents/Resources/desktop/container-images/`.
+- Packaged builds should stage the Apple `container` CLI at `Contents/Resources/desktop/bin/container`, the helper tree at `Contents/Resources/desktop/libexec/container/`, builtin plugin manifests under `Contents/Resources/desktop/plugins/builtin/`, and the image contexts at `Contents/Resources/desktop/container-images/`.
 - `desktop-container/backend/extensions/host.ts` discovers V2 `camelai` plugin manifests from `desktop-container/plugins/builtin/` plus the user install directory, loads extension modules, exposes a runtime-first API (`on`, `registerView`, `registerPanel`, `registerCommand`, `registerTool`), and materializes workbench views plus per-thread companion panels into the shared snapshot model.
 - `desktop-container/backend/extensions/thread-state.ts` provides a persistent per-thread plugin state store under the desktop runtime directory so workbench views, companion panels, and runtime hooks can share thread-scoped JSON state.
 - `desktop-container/backend/extensions/harness-adapters.ts` is the abstraction layer between supported harnesses and the unified extension model; it currently includes `codex`, `claude-code`, and `opencode` adapter identities.

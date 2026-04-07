@@ -1,11 +1,14 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
   DesktopPanel,
   DesktopPluginRecord,
   DesktopView,
 } from "../../../desktop/shared/protocol";
+import builtinChatCore from "../../plugins/builtin/chat-core/index";
+import builtinExtensionLab from "../../plugins/builtin/extension-lab/index";
+import builtinThreadJournal from "../../plugins/builtin/thread-journal/index";
 import {
   getHarnessAdapterForProvider,
   getHarnessAdapters,
@@ -27,18 +30,25 @@ import type {
   DiscoveredCamelAIExtension,
 } from "./types";
 
+const extensionHostDirectory = dirname(fileURLToPath(import.meta.url));
+const backendDirectory = resolve(extensionHostDirectory, "..");
 const BUILTIN_EXTENSION_DIRECTORY = resolve(
-  process.cwd(),
-  "desktop-container/plugins/builtin",
+  process.env.DESKTOP_BUILTIN_PLUGIN_DIR ||
+    resolve(backendDirectory, "..", "plugins", "builtin"),
 );
 const USER_EXTENSION_DIRECTORY = resolve(
-  process.env.DESKTOP_DATA_DIR || resolve(process.cwd(), "desktop-container/.local"),
+  process.env.DESKTOP_DATA_DIR || resolve(backendDirectory, "..", ".local"),
   "plugins",
 );
 const DEFAULT_EXTENSION_DIRECTORIES = [
   { path: BUILTIN_EXTENSION_DIRECTORY, builtin: true },
   { path: USER_EXTENSION_DIRECTORY, builtin: false },
 ].filter((entry) => Boolean(entry.path));
+const BUILTIN_EXTENSION_MODULES: Record<string, CamelAIExtensionModule> = {
+  "chat-core": builtinChatCore as unknown as CamelAIExtensionModule,
+  "extension-lab": builtinExtensionLab as unknown as CamelAIExtensionModule,
+  "thread-journal": builtinThreadJournal as unknown as CamelAIExtensionModule,
+};
 
 function isDirectory(path: string): boolean {
   try {
@@ -315,17 +325,28 @@ export class CamelAIExtensionHost {
     }
 
     try {
-      const moduleUrl = pathToFileURL(record.discovered.entryPath);
-      moduleUrl.searchParams.set("camelai-load", String(this.loadGeneration));
-      const loadedModule = (await import(
-        moduleUrl.href
-      )) as CamelAIExtensionModule & {
-        default?: CamelAIExtensionModule;
-      };
-      const module =
-        loadedModule && typeof loadedModule === "object" && loadedModule.default
-          ? loadedModule.default
-          : loadedModule;
+      const builtinModule =
+        record.discovered.builtin
+          ? BUILTIN_EXTENSION_MODULES[record.discovered.id] ?? null
+          : null;
+      let module: CamelAIExtensionModule;
+
+      if (builtinModule) {
+        module = builtinModule;
+      } else {
+        const moduleUrl = pathToFileURL(record.discovered.entryPath);
+        moduleUrl.searchParams.set("camelai-load", String(this.loadGeneration));
+        const loadedModule = (await import(
+          moduleUrl.href
+        )) as CamelAIExtensionModule & {
+          default?: CamelAIExtensionModule;
+        };
+        module =
+          loadedModule && typeof loadedModule === "object" && loadedModule.default
+            ? loadedModule.default
+            : loadedModule;
+      }
+
       if (typeof module.activate === "function") {
         await module.activate(this.createApi(record, context));
       }

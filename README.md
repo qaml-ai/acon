@@ -10,6 +10,7 @@ This repo keeps the local Electron shell and shared desktop renderer, and runs c
 bun install
 bun run dev
 bun run check
+bun run build:bundle
 bun run probe
 bun run test:renderer
 bun run test:integration
@@ -17,6 +18,7 @@ bun run test:integration
 
 Useful variants:
 
+- `bun run build:bundle` creates an unpacked macOS `.app` bundle in `dist/bundle/`.
 - `bun run start` launches Electron against an already-running renderer.
 - `bun run check:backend` checks only the Apple `container` backend.
 - `bun run check:renderer` checks only the shared renderer.
