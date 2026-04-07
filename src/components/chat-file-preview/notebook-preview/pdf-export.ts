@@ -104,8 +104,10 @@ function resolvePdfFontSrc(path: string): string {
 function registerPdfFonts(font: typeof import('@react-pdf/renderer').Font): void {
   if (pdfFontsRegistered) return;
 
-  // react-pdf resolves fonts by family + weight + style and throws if an
-  // italic face is requested without a registered variant.
+  // FIXME: @react-pdf/renderer only supports TTF/WOFF, not woff2. These
+  // registrations will fail at export time. Fix when this is rebuilt as a
+  // native desktop plugin — load TTF copies or swap to a renderer that
+  // supports woff2.
   font.register({
     family: 'Figtree',
     fonts: [
