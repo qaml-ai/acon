@@ -131,7 +131,7 @@ function shellEscape(value: string): string {
 
 interface ProviderContainerState {
   containerName: string;
-  ensuredSessions: Set<string>;
+  ensuredSessions: Map<string, string>;
   startupPromise: Promise<void> | null;
 }
 
@@ -372,7 +372,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
       .slice(0, 12);
     const created: ProviderContainerState = {
       containerName: `acon-${provider.id}-${hash}`,
-      ensuredSessions: new Set<string>(),
+      ensuredSessions: new Map<string, string>(),
       startupPromise: null,
     };
     this.providerContainers.set(provider.id, created);
@@ -644,7 +644,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
     await this.ensureContainerSystemStarted();
     const state = this.getProviderContainerState(provider);
     const sessionName = threadId;
-    if (state.ensuredSessions.has(sessionName)) {
+    if (state.ensuredSessions.get(sessionName) === model) {
       return;
     }
 
@@ -703,7 +703,39 @@ export class ContainerRuntimeManager implements RuntimeManager {
       );
     }
 
-    state.ensuredSessions.add(sessionName);
+    const setModelArgs = this.buildExecArgs(
+      provider,
+      model,
+      state.containerName,
+      [
+        "acpx",
+        "--json-strict",
+        "--format",
+        "json",
+        "--approve-all",
+        "--cwd",
+        "/workspace",
+        provider.id,
+        "set",
+        "--session",
+        sessionName,
+        "model",
+        model,
+      ],
+    );
+
+    const setModelResult = await this.runCapturedCommand(setModelArgs, {
+      cwd: this.workspaceDirectory,
+    });
+    if (setModelResult.code !== 0) {
+      throw new Error(
+        setModelResult.stderr?.trim() ||
+          setModelResult.stdout?.trim() ||
+          `Failed to set ACPX session model ${model} for ${sessionName}.`,
+      );
+    }
+
+    state.ensuredSessions.set(sessionName, model);
   }
 
   private prepareClaudeSeed(runtimeDataDirectory: string): string | null {
@@ -786,6 +818,8 @@ export class ContainerRuntimeManager implements RuntimeManager {
         "--format",
         "json",
         "--approve-all",
+        "--model",
+        model,
         "--ttl",
         "0",
         "--cwd",

@@ -1,5 +1,6 @@
 // @vitest-environment node
 
+import { createHash } from "node:crypto";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -128,6 +129,57 @@ function getSessionIds(events: RuntimeEventRecord[]): string[] {
       ? [event.params.sessionId]
       : [];
   }))];
+}
+
+function getProviderContainerName(
+  userDataDir: string,
+  providerId: DesktopProvider,
+): string {
+  const runtimeDirectory = resolve(userDataDir, "runtime");
+  const hash = createHash("sha1")
+    .update(`${runtimeDirectory}:${ROOT_DIR}:${providerId}`)
+    .digest("hex")
+    .slice(0, 12);
+  return `acon-${providerId}-${hash}`;
+}
+
+function readAcpSessionModel(
+  userDataDir: string,
+  providerId: DesktopProvider,
+  threadId: string,
+): string | null {
+  const containerName = getProviderContainerName(userDataDir, providerId);
+  const result = spawnSync(
+    CONTAINER_COMMAND,
+    [
+      "exec",
+      "--workdir",
+      "/workspace",
+      "--env",
+      "HOME=/data/home",
+      "--env",
+      "CLAUDE_CONFIG_DIR=/data/home/.claude",
+      containerName,
+      "sh",
+      "-lc",
+      `exec acpx --json-strict --format json --approve-all --cwd /workspace ${providerId} status --session ${threadId}`,
+    ],
+    {
+      cwd: ROOT_DIR,
+      encoding: "utf8",
+    },
+  );
+
+  if (result.status !== 0) {
+    throw new Error(
+      result.stderr.trim() ||
+        result.stdout.trim() ||
+        `Failed to inspect ACPX session model for ${providerId}/${threadId}.`,
+    );
+  }
+
+  const parsed = JSON.parse(result.stdout.trim()) as { model?: unknown };
+  return typeof parsed.model === "string" ? parsed.model : null;
 }
 
 class DesktopBackendHarness {
@@ -314,6 +366,15 @@ class DesktopBackendHarness {
     });
   }
 
+  async waitForModel(model: string): Promise<void> {
+    await this.waitFor(`model ${model}`, () => {
+      if (this.snapshot?.model === model) {
+        return true;
+      }
+      return null;
+    });
+  }
+
   async waitForRuntimeReady(providerId: DesktopProvider): Promise<void> {
     const provider = requireDesktopProvider(providerId);
     await this.waitFor(`${provider.label} runtime ready`, () => {
@@ -410,6 +471,13 @@ integrationDescribe("desktop-container ACPX integration", () => {
             provider: providerCase.id,
           });
           await harness.waitForProvider(providerCase.id);
+          if (providerCase.id === "claude") {
+            harness.send({
+              type: "set_model",
+              model: "opus",
+            });
+            await harness.waitForModel("opus");
+          }
           await harness.waitForRuntimeReady(providerCase.id);
 
           const firstTurn = await harness.sendMessageAndWait(
@@ -429,6 +497,9 @@ integrationDescribe("desktop-container ACPX integration", () => {
 
           const firstSessionIds = getSessionIds(firstTurn.runtimeEvents);
           expect(firstSessionIds.length).toBeGreaterThan(0);
+          if (providerCase.id === "claude") {
+            expect(readAcpSessionModel(harness.userDataDir, "claude", threadId)).toBe("opus");
+          }
 
           const secondTurn = await harness.sendMessageAndWait(
             threadId,
