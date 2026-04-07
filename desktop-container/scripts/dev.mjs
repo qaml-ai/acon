@@ -122,10 +122,42 @@ async function resolveRendererPort(preferredPort) {
   return fallback;
 }
 
+async function prepareContainerAssets() {
+  if (process.env.DESKTOP_PREPARE_CONTAINER_ASSETS !== "1") {
+    return;
+  }
+
+  const scriptPath = resolve(
+    repoRoot,
+    "desktop-container/scripts/prepare-container-assets.mjs",
+  );
+  const child = spawn(process.execPath, [scriptPath, "--mode", "dev"], {
+    stdio: "inherit",
+    env: process.env,
+  });
+
+  await new Promise((resolvePromise, rejectPromise) => {
+    child.on("error", rejectPromise);
+    child.on("exit", (code, signal) => {
+      if (code === 0) {
+        resolvePromise();
+        return;
+      }
+      rejectPromise(
+        new Error(
+          `container asset preparation exited with code ${code ?? "null"} signal ${signal ?? "null"}`,
+        ),
+      );
+    });
+  });
+}
+
 mkdirSync(resolve(electronDataDir, "logs"), { recursive: true });
 mkdirSync(electronRuntimeDir, { recursive: true });
 const backendLogPath = resolve(electronDataDir, "logs/desktop-backend.log");
 writeFileSync(backendLogPath, "", { flag: "a" });
+
+await prepareContainerAssets();
 
 const rendererPort = `${await resolveRendererPort(defaultRendererPort)}`;
 const rendererUrl = `http://127.0.0.1:${rendererPort}`;

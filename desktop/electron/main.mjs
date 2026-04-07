@@ -177,6 +177,8 @@ function getDesktopRuntimeEnv() {
   );
   const stagedContainerImageRoot = resolve(resourcesDir, 'container-images');
   const devContainerImageRoot = resolve(repoRoot, 'desktop-container/container-images');
+  const stagedBuiltinPluginRoot = resolve(resourcesDir, 'plugins/builtin');
+  const devBuiltinPluginRoot = resolve(repoRoot, 'desktop-container/plugins/builtin');
   const containerBinPath = app.isPackaged
     ? stagedContainerBinPath
     : existsSync(devBundledContainerBinPath)
@@ -192,6 +194,9 @@ function getDesktopRuntimeEnv() {
     DESKTOP_RUNTIME_HELPER_PATH: runtimeHelperPath,
     DESKTOP_RUNTIME_KERNEL_PATH: runtimeKernelPath,
     DESKTOP_CONTAINER_IMAGE_ROOT: containerImageRoot,
+    DESKTOP_BUILTIN_PLUGIN_DIR: app.isPackaged
+      ? stagedBuiltinPluginRoot
+      : devBuiltinPluginRoot,
     DESKTOP_CONTAINER_REQUIRE_BUNDLED: app.isPackaged ? '1' : '0',
   };
 
