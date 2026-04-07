@@ -8,9 +8,7 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  readFileSync,
   rmSync,
-  writeFileSync,
 } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -156,11 +154,44 @@ function getClaudeJsonSeedDirectory(runtimeDirectory: string): string {
   return resolve(runtimeDirectory, "seed", "claude-json");
 }
 
+const CONTAINER_GLOBAL_INSTRUCTIONS = `# acon
+
+This environment is for \`acon\`, the standalone camelAI desktop app.
+
+- Use the codename \`acon\` when referring to this app.
+- This repository is the standalone desktop app for camelAI.
+- A bash tool named \`acon-mcp\` is available in the container.
+- Run \`acon-mcp servers\` to list available MCP servers.
+- Run \`acon-mcp tools <server-id>\` to list the tools exposed by a server.
+- Run \`acon-mcp <server-id>\` to expose that server over stdio for MCP clients in the container.
+- MCP tools are external integrations.
+`;
+
+function buildSeedFileScript(targetPath: string, content: string): string {
+  return `cat > "${targetPath}" <<'EOF'\n${content}\nEOF`;
+}
+
 function shellEscape(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function getSharedContainerBaseName(
+  runtimeDirectory: string,
+  workspaceDirectory: string,
+): string {
+  const hash = createHash("sha1")
+    .update(`${runtimeDirectory}:${workspaceDirectory}:shared`)
+    .digest("hex")
+    .slice(0, 12);
+  return `acon-acpx-${hash}`;
+}
+
+function buildSharedContainerName(baseContainerName: string): string {
+  return `${baseContainerName}-${process.pid.toString(36)}-${Date.now().toString(36)}`;
+}
+
 interface ProviderContainerState {
+  baseContainerName: string;
   containerName: string;
   ensuredSessions: Map<string, string>;
   startupPromise: Promise<void> | null;
@@ -325,7 +356,24 @@ export class ContainerRuntimeManager implements RuntimeManager {
 
       await this.ensureContainerSystemStarted();
       await this.ensureImage(provider, onStatus);
-      await this.ensureProviderContainer(provider, onStatus);
+      try {
+        await this.ensureProviderContainer(provider, onStatus);
+      } catch (error) {
+        if (!isRecoverableContainerExecError(error)) {
+          throw error;
+        }
+
+        logDesktop(
+          "desktop-runtime",
+          "provider_container:startup_retry",
+          {
+            provider: provider.id,
+            error: formatError(error),
+          },
+          "warn",
+        );
+        await this.restartProviderContainer(provider);
+      }
 
       const readyStatus: DesktopRuntimeStatus = {
         state: "running",
@@ -393,17 +441,23 @@ export class ContainerRuntimeManager implements RuntimeManager {
       return this.sharedContainerState;
     }
 
-    const hash = createHash("sha1")
-      .update(`${this.runtimeDirectory}:${this.workspaceDirectory}:shared`)
-      .digest("hex")
-      .slice(0, 12);
+    const baseContainerName = getSharedContainerBaseName(
+      this.runtimeDirectory,
+      this.workspaceDirectory,
+    );
     this.sharedContainerState = {
-      containerName: `acon-acpx-${hash}`,
+      baseContainerName,
+      containerName: buildSharedContainerName(baseContainerName),
       ensuredSessions: new Map<string, string>(),
       startupPromise: null,
       bridge: null,
     };
     return this.sharedContainerState;
+  }
+
+  private rotateSharedContainerName(state: ProviderContainerState): string {
+    state.containerName = buildSharedContainerName(state.baseContainerName);
+    return state.containerName;
   }
 
   private async inspectContainerStatus(containerName: string): Promise<string | null> {
@@ -518,6 +572,29 @@ export class ContainerRuntimeManager implements RuntimeManager {
     await this.ensureProviderContainer(provider);
   }
 
+  private async deleteProviderContainer(
+    containerName: string,
+    providerId: string,
+  ): Promise<void> {
+    const removeResult = await this.runCapturedCommand(
+      ["delete", "--force", containerName],
+      {
+        commandLabel: `container delete ${containerName}`,
+      },
+    );
+    if (removeResult.code !== 0) {
+      throw new Error(
+        removeResult.stderr?.trim() ||
+          removeResult.stdout?.trim() ||
+          `Failed to delete stale container ${containerName}.`,
+      );
+    }
+    logDesktop("desktop-runtime", "shared_container:deleted_stale", {
+      provider: providerId,
+      containerName,
+    });
+  }
+
   private buildProviderHomeEnv(
     provider: DesktopProviderDefinition,
   ): Record<string, string> {
@@ -569,11 +646,20 @@ export class ContainerRuntimeManager implements RuntimeManager {
         ? [
             'mkdir -p "$HOME" "$CODEX_HOME"',
             'if [ -f /seed-codex/auth.json ] && [ ! -f "$CODEX_HOME/auth.json" ]; then cp /seed-codex/auth.json "$CODEX_HOME/auth.json"; fi',
+            'rm -f "$CODEX_HOME/AGENTS.override.md"',
+            buildSeedFileScript(
+              "$CODEX_HOME/AGENTS.md",
+              CONTAINER_GLOBAL_INSTRUCTIONS,
+            ),
           ].join("; ")
         : [
             'mkdir -p "$HOME" "$CLAUDE_CONFIG_DIR"',
             'if [ -f /seed-claude/.credentials.json ] && [ ! -f "$CLAUDE_CONFIG_DIR/.credentials.json" ]; then cp /seed-claude/.credentials.json "$CLAUDE_CONFIG_DIR/.credentials.json"; fi',
             'if [ -f /seed-claude-json/.claude.json ] && [ ! -f "$HOME/.claude.json" ]; then cp /seed-claude-json/.claude.json "$HOME/.claude.json"; fi',
+            buildSeedFileScript(
+              "$CLAUDE_CONFIG_DIR/CLAUDE.md",
+              CONTAINER_GLOBAL_INSTRUCTIONS,
+            ),
           ].join("; ");
     const execScript = `${setupScript}; exec ${command.map(shellEscape).join(" ")}`;
 
@@ -587,7 +673,8 @@ export class ContainerRuntimeManager implements RuntimeManager {
   ): Promise<void> {
     await this.ensureContainerSystemStarted();
     const state = this.getSharedContainerState();
-    if ((await this.inspectContainerStatus(state.containerName)) === "running") {
+    const existingStatus = await this.inspectContainerStatus(state.containerName);
+    if (existingStatus === "running") {
       await this.ensureProviderBridge(provider, state);
       logDesktop("desktop-runtime", "shared_container:reuse", {
         provider: provider.id,
@@ -603,6 +690,36 @@ export class ContainerRuntimeManager implements RuntimeManager {
 
     state.startupPromise = (async () => {
       state.ensuredSessions.clear();
+      this.stopProviderBridge(state);
+      if (existingStatus) {
+        logDesktop(
+          "desktop-runtime",
+          "shared_container:delete_before_start",
+          {
+            provider: provider.id,
+            containerName: state.containerName,
+            status: existingStatus,
+          },
+          "warn",
+        );
+        try {
+          await this.deleteProviderContainer(state.containerName, provider.id);
+        } catch (error) {
+          const previousContainerName = state.containerName;
+          const nextContainerName = this.rotateSharedContainerName(state);
+          logDesktop(
+            "desktop-runtime",
+            "shared_container:delete_failed_rotate_name",
+            {
+              provider: provider.id,
+              previousContainerName,
+              nextContainerName,
+              error: formatError(error),
+            },
+            "warn",
+          );
+        }
+      }
       const providersDataDirectory = resolve(this.runtimeDirectory, "providers");
       mkdirSync(providersDataDirectory, { recursive: true });
       logDesktop("desktop-runtime", "shared_container:start_requested", {

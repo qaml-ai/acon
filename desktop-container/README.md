@@ -20,6 +20,7 @@ Current limits:
 - local bundle builds exist, but signed/notarized release packaging is still not wired
 - workspace is mounted directly from the host checkout into the VM at `/workspace`
 - auth is seeded from host `~/.codex`, host `~/.claude` / `~/.claude.json`, or `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`
+- provider startup always writes a small built-in global instruction file into container `~/.codex/AGENTS.md` or `~/.claude/CLAUDE.md` with `acon` context and `acon-mcp` guidance
 - the backend currently uses fixed default models per provider (`gpt-5.4` for Codex and `sonnet` for Claude)
 - ACPX sessions persist per thread inside a single long-lived shared agent container, and the backend keeps a long-lived `container exec --interactive` bridge process attached to that container for guest-to-host RPC
 - release packaging still needs to stage the vendored Apple `container` binary and image contexts into app resources
