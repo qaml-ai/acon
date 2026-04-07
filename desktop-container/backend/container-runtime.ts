@@ -51,10 +51,6 @@ export interface StreamContainerPromptResult {
   sessionId: string;
 }
 
-function sanitizeContainerNamePart(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_.-]+/g, "-").slice(0, 48) || "thread";
-}
-
 function formatError(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -352,10 +348,6 @@ export class ContainerRuntimeManager implements RuntimeManager {
     this.checkedImages.add(imageName);
   }
 
-  private getProviderDataDirectory(provider: DesktopProviderDefinition): string {
-    return resolve(this.runtimeDirectory, "providers", provider.id);
-  }
-
   private getSharedContainerState(): ProviderContainerState {
     if (this.sharedContainerState) {
       return this.sharedContainerState;
@@ -543,7 +535,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
 
       const startingStatus: DesktopRuntimeStatus = {
         state: "starting",
-        detail: `Starting the ${provider.label} session container.`,
+        detail: "Starting the shared agent container.",
         helperPath: this.containerCommand,
         runtimeDirectory: this.runtimeDirectory,
         imageReference: provider.getImageName(),

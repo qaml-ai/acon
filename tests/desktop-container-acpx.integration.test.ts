@@ -33,6 +33,7 @@ const SKIP_REASON = !RUN_INTEGRATION
   : !CONTAINER_AVAILABLE
     ? `Apple container CLI is unavailable at ${CONTAINER_COMMAND}.`
     : null;
+const SHARED_CONTAINER_START_DETAIL = "Starting the shared agent container.";
 
 type RuntimeStateRecord = {
   at: number;
@@ -547,8 +548,7 @@ integrationDescribe("desktop-container ACPX integration", () => {
           ).toBe(true);
 
           const containerStartCount = harness.runtimeStates.filter(
-            (entry) =>
-              entry.detail === `Starting the ${providerCase.label} session container.`,
+            (entry) => entry.detail === SHARED_CONTAINER_START_DETAIL,
           ).length;
           expect(containerStartCount).toBe(1);
         } finally {
@@ -599,17 +599,13 @@ integrationDescribe("desktop-container ACPX integration", () => {
           expect(secondTurn.text).toContain("THREAD_TWO");
 
           const containerStartCount = harness.runtimeStates.filter(
-            (entry) =>
-              entry.detail === `Starting the ${providerCase.label} session container.`,
+            (entry) => entry.detail === SHARED_CONTAINER_START_DETAIL,
           ).length;
           expect(containerStartCount).toBe(1);
 
           const startedContainerIds = [...new Set(
             harness.runtimeStates
-              .filter(
-                (entry) =>
-                  entry.detail === `Starting the ${providerCase.label} session container.`,
-              )
+              .filter((entry) => entry.detail === SHARED_CONTAINER_START_DETAIL)
               .map((entry) => entry.containerID)
               .filter((value): value is string => Boolean(value)),
           )];
