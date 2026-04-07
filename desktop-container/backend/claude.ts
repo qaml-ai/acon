@@ -8,8 +8,8 @@ import type { DesktopProviderDefinition } from "./provider-types";
 
 const DEFAULT_CLAUDE_IMAGE =
   process.env.DESKTOP_CONTAINER_ACPX_IMAGE?.trim() ||
-  process.env.DESKTOP_CONTAINER_CODEX_IMAGE?.trim() ||
   process.env.DESKTOP_CONTAINER_CLAUDE_IMAGE?.trim() ||
+  process.env.DESKTOP_CONTAINER_CODEX_IMAGE?.trim() ||
   "acon-desktop-acpx:0.1";
 const DEFAULT_CLAUDE_MODEL = "sonnet";
 const CLAUDE_MODELS = [

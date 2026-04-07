@@ -123,7 +123,7 @@ async function resolveRendererPort(preferredPort) {
 }
 
 async function prepareContainerAssets() {
-  if (process.env.DESKTOP_PREPARE_CONTAINER_ASSETS !== "1") {
+  if (process.env.DESKTOP_PREPARE_CONTAINER_ASSETS === "0") {
     return;
   }
 

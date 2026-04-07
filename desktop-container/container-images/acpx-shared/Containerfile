@@ -1,20 +1,22 @@
-FROM node:22-bookworm-slim
+FROM node:22-bookworm
 
-ARG ACPX_VERSION=latest
-ARG CODEX_VERSION=latest
-ARG CLAUDE_VERSION=latest
+RUN mkdir -p /opt/acon/npm-global /usr/local/lib/acon
 
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
+COPY vendor/npm-global/ /opt/acon/npm-global/
 
-RUN npm install -g \
-  acpx@${ACPX_VERSION} \
-  @anthropic-ai/claude-code@${CLAUDE_VERSION} \
-  @openai/codex@${CODEX_VERSION}
-
-COPY entrypoint.sh /usr/local/bin/desktop-entrypoint.sh
-RUN chmod +x /usr/local/bin/desktop-entrypoint.sh
+COPY acpx-shared/entrypoint.sh /usr/local/bin/desktop-entrypoint.sh
+COPY bridge/acon-host-bridge.mjs /usr/local/lib/acon/acon-host-bridge.mjs
+COPY bridge/acon-mcp.mjs /usr/local/lib/acon/acon-mcp.mjs
+RUN chmod +x \
+    /usr/local/bin/desktop-entrypoint.sh \
+    /usr/local/lib/acon/acon-host-bridge.mjs \
+    /usr/local/lib/acon/acon-mcp.mjs \
+  && printf '%s\n' '#!/bin/sh' 'exec node /opt/acon/npm-global/node_modules/acpx/dist/cli.js "$@"' > /usr/local/bin/acpx \
+  && printf '%s\n' '#!/bin/sh' 'exec node /opt/acon/npm-global/node_modules/@anthropic-ai/claude-code/cli.js "$@"' > /usr/local/bin/claude \
+  && printf '%s\n' '#!/bin/sh' 'exec node /opt/acon/npm-global/node_modules/@openai/codex/bin/codex.js "$@"' > /usr/local/bin/codex \
+  && chmod +x /usr/local/bin/acpx /usr/local/bin/claude /usr/local/bin/codex \
+  && ln -sf /usr/local/lib/acon/acon-host-bridge.mjs /usr/local/bin/acon-host-bridge \
+  && ln -sf /usr/local/lib/acon/acon-mcp.mjs /usr/local/bin/acon-mcp
 
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/desktop-entrypoint.sh"]

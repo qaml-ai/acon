@@ -2,22 +2,24 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
-  cpSync,
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
+const prepareScriptPath = resolve(import.meta.dirname, "prepare-container-assets.mjs");
 const scriptMode = getFlagValue("--mode") || "manual";
 const strictMode = process.env.DESKTOP_PREPARE_CONTAINER_ASSETS_STRICT === "1";
-const prepareImages = process.env.DESKTOP_PREBUILD_CONTAINER_IMAGES !== "0";
 const buildAppleContainer = process.env.DESKTOP_BUILD_APPLE_CONTAINER !== "0";
 const appleContainerRepoDir = process.env.DESKTOP_APPLE_CONTAINER_REPO_DIR?.trim()
   ? resolve(process.env.DESKTOP_APPLE_CONTAINER_REPO_DIR.trim())
@@ -30,39 +32,32 @@ const vendorContainerLibexecPath = resolve(
   repoRoot,
   "desktop-container/vendor/apple-container/libexec/container",
 );
+const defaultCliVersions = {
+  acpx: "0.5.2",
+  codex: "0.118.0",
+  claude: "2.1.45",
+};
 const stateFilePath = resolve(
   repoRoot,
   "desktop-container/.local/container-assets-state.json",
 );
-const sharedBuildArgs = [];
-
-if (process.env.DESKTOP_ACPX_IMAGE_VERSION?.trim()) {
-  sharedBuildArgs.push(
-    "--build-arg",
-    `ACPX_VERSION=${process.env.DESKTOP_ACPX_IMAGE_VERSION.trim()}`,
-  );
-}
+const cliPackageSpecs = {
+  acpx: `acpx@${process.env.DESKTOP_ACPX_IMAGE_VERSION?.trim() || defaultCliVersions.acpx}`,
+  codex: `@openai/codex@${
+    process.env.DESKTOP_CODEX_IMAGE_VERSION?.trim() || defaultCliVersions.codex
+  }`,
+  claude: `@anthropic-ai/claude-code@${
+    process.env.DESKTOP_CLAUDE_IMAGE_VERSION?.trim() || defaultCliVersions.claude
+  }`,
+};
 
 const imageBuilds = [
   {
-    id: "claude",
-    label: "Claude",
+    id: "acpx",
+    label: "Shared ACPX",
     imageName:
-      process.env.DESKTOP_CONTAINER_CLAUDE_IMAGE?.trim() || "acon-desktop-claude:0.1",
-    buildContext: resolve(repoRoot, "desktop-container/container-images/acpx-claude"),
-    versionBuildArgs: process.env.DESKTOP_CLAUDE_IMAGE_VERSION?.trim()
-      ? ["--build-arg", `CLAUDE_VERSION=${process.env.DESKTOP_CLAUDE_IMAGE_VERSION.trim()}`]
-      : [],
-  },
-  {
-    id: "codex",
-    label: "Codex",
-    imageName:
-      process.env.DESKTOP_CONTAINER_CODEX_IMAGE?.trim() || "acon-desktop-codex:0.1",
-    buildContext: resolve(repoRoot, "desktop-container/container-images/acpx-codex"),
-    versionBuildArgs: process.env.DESKTOP_CODEX_IMAGE_VERSION?.trim()
-      ? ["--build-arg", `CODEX_VERSION=${process.env.DESKTOP_CODEX_IMAGE_VERSION.trim()}`]
-      : [],
+      process.env.DESKTOP_CONTAINER_ACPX_IMAGE?.trim() || "acon-desktop-acpx:0.1",
+    buildContext: resolve(repoRoot, "desktop-container/container-images"),
   },
 ];
 
@@ -316,16 +311,73 @@ function imageExists(containerCommand, imageName) {
   return result.status === 0;
 }
 
+function installHostCliPrefix(destinationDirectory) {
+  const workingDirectory = mkdtempSync(resolve(tmpdir(), "acon-npm-prefix-"));
+  const npmCacheDirectory = resolve(workingDirectory, ".npm-cache");
+  const npmBinDirectory = resolve(workingDirectory, "node_modules/.bin");
+  const result = run("npm", [
+    "install",
+    "--prefix",
+    workingDirectory,
+    "--no-audit",
+    "--no-fund",
+    "--os=linux",
+    "--cpu=arm64",
+    cliPackageSpecs.acpx,
+    cliPackageSpecs.codex,
+    cliPackageSpecs.claude,
+  ], {
+    env: {
+      npm_config_cache: npmCacheDirectory,
+    },
+  });
+  if (result.status !== 0) {
+    throw new Error(
+      result.stderr.trim() ||
+        result.stdout.trim() ||
+        "failed to prepare host CLI packages for the container image",
+    );
+  }
+  rmSync(npmBinDirectory, { force: true, recursive: true });
+  rmSync(npmCacheDirectory, { force: true, recursive: true });
+  rmSync(destinationDirectory, { force: true, recursive: true });
+  cpSync(workingDirectory, destinationDirectory, { force: true, recursive: true });
+  rmSync(workingDirectory, { force: true, recursive: true });
+}
+
+function prepareBuildContext(imageBuild) {
+  const preparedRoot = resolve(repoRoot, "desktop-container/.local/prepared-build-context");
+  const contextDir = resolve(preparedRoot, imageBuild.id);
+  const copiedBuildContext = resolve(contextDir, "container-images");
+  const vendorDirectory = resolve(copiedBuildContext, "vendor");
+  const npmGlobalDirectory = resolve(vendorDirectory, "npm-global");
+
+  rmSync(contextDir, { force: true, recursive: true });
+  mkdirSync(contextDir, { recursive: true });
+  cpSync(imageBuild.buildContext, copiedBuildContext, {
+    force: true,
+    recursive: true,
+  });
+  mkdirSync(vendorDirectory, { recursive: true });
+  installHostCliPrefix(npmGlobalDirectory);
+
+  return {
+    buildContext: copiedBuildContext,
+    containerfilePath: resolve(copiedBuildContext, "acpx-shared/Containerfile"),
+  };
+}
+
 function ensureImage(containerCommand, containerVersion, state, imageBuild) {
   const contextHash = sha1Directory(imageBuild.buildContext);
+  const prepareScriptHash = sha1File(prepareScriptPath);
   const desiredHash = createHash("sha1")
     .update(
       JSON.stringify({
         containerVersion,
         contextHash,
         imageName: imageBuild.imageName,
-        sharedBuildArgs,
-        versionBuildArgs: imageBuild.versionBuildArgs,
+        cliPackageSpecs,
+        prepareScriptHash,
       }),
     )
     .digest("hex");
@@ -341,17 +393,16 @@ function ensureImage(containerCommand, containerVersion, state, imageBuild) {
   }
 
   log(`building ${imageBuild.label} image (${imageBuild.imageName})`);
+  const preparedContext = prepareBuildContext(imageBuild);
   const args = [
     "build",
     "--progress",
     "plain",
-    ...sharedBuildArgs,
-    ...imageBuild.versionBuildArgs,
     "--file",
-    resolve(imageBuild.buildContext, "Containerfile"),
+    preparedContext.containerfilePath,
     "--tag",
     imageBuild.imageName,
-    imageBuild.buildContext,
+    preparedContext.buildContext,
   ];
   const result = run(containerCommand, args, { stdio: "inherit" });
   if (result.status !== 0) {
@@ -375,11 +426,6 @@ function main() {
   const containerCommand = ensureBundledContainerInstall();
   const containerVersion = getContainerVersion(containerCommand);
   log(`using ${containerVersion}`);
-
-  if (!prepareImages) {
-    log("skipping image builds because DESKTOP_PREBUILD_CONTAINER_IMAGES=0");
-    return;
-  }
 
   const state = readStateFile();
   state.images ||= {};

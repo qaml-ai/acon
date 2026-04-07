@@ -24,6 +24,7 @@ import {
 } from "./container-runtime";
 import { CamelAIExtensionHost } from "./extensions/host";
 import { getHarnessAdapterForProvider } from "./extensions/harness-adapters";
+import type { HostMcpServerRegistration } from "./host-mcp";
 
 type Listener = (event: DesktopServerEvent) => void;
 
@@ -73,6 +74,14 @@ export class DesktopService {
     this.runtimeManager.dispose();
     this.listeners.clear();
     this.activeThreads.clear();
+  }
+
+  registerHostMcpServer(registration: HostMcpServerRegistration): void {
+    this.runtimeManager.registerHostMcpServer(registration);
+  }
+
+  unregisterHostMcpServer(serverId: string): void {
+    this.runtimeManager.unregisterHostMcpServer(serverId);
   }
 
   emitSnapshot(listener?: Listener): void {
