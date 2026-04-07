@@ -1009,4 +1009,27 @@ describe("desktop container renderer streaming", () => {
     expect(textBlocks[0]).toHaveTextContent("Checking now.");
     expect(textBlocks[1]).toHaveTextContent("Done checking.");
   });
+
+  it("renders ACP plan session updates as a TodoWrite tool block", async () => {
+    const { emit } = await renderAppWithShell(createSnapshot());
+
+    await emit(
+      createAcpRuntimeEvent({
+        sessionUpdate: "plan",
+        entries: [
+          { content: "Investigate", status: "in_progress", priority: "medium" },
+          { content: "Fix it", status: "pending", priority: "medium" },
+        ],
+      }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("tool-use-block")).toBeInTheDocument();
+    });
+
+    const toolUse = screen.getByTestId("tool-use-block");
+    expect(toolUse.textContent).toContain("TodoWrite");
+    expect(toolUse.textContent).toContain("Investigate");
+    expect(toolUse.textContent).toContain("Fix it");
+  });
 });
