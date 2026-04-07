@@ -114,11 +114,8 @@ function resolveContainerImageRoot(): string {
   return DEFAULT_CONTAINER_IMAGE_ROOT;
 }
 
-function getBuildContext(
-  imageRoot: string,
-  provider: DesktopProviderDefinition,
-): string {
-  return resolve(imageRoot, provider.id === "claude" ? "acpx-claude" : "acpx-codex");
+function getBuildContext(imageRoot: string): string {
+  return resolve(imageRoot, "acpx-shared");
 }
 
 function getClaudeJsonSeedDirectory(runtimeDirectory: string): string {
@@ -160,7 +157,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
   private readonly containerCommand = resolveContainerCommand();
   private readonly containerImageRoot = resolveContainerImageRoot();
   private readonly checkedImages = new Set<string>();
-  private readonly providerContainers = new Map<string, ProviderContainerState>();
+  private sharedContainerState: ProviderContainerState | null = null;
 
   getWorkspaceDirectory(): string {
     return this.workspaceDirectory;
@@ -197,7 +194,8 @@ export class ContainerRuntimeManager implements RuntimeManager {
   }
 
   dispose(): void {
-    for (const state of this.providerContainers.values()) {
+    if (this.sharedContainerState) {
+      const state = this.sharedContainerState;
       spawnSync(this.containerCommand, ["stop", state.containerName], {
         encoding: "utf8",
       });
@@ -304,7 +302,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
     this.lastRuntimeStatus = buildingStatus;
     onStatus?.(buildingStatus);
 
-    const buildContext = getBuildContext(this.containerImageRoot, provider);
+    const buildContext = getBuildContext(this.containerImageRoot);
     const buildArgs = [
       "build",
       "--progress",
@@ -316,10 +314,10 @@ export class ContainerRuntimeManager implements RuntimeManager {
       buildContext,
     ];
 
-    if (provider.id === "codex" && process.env.DESKTOP_CODEX_IMAGE_VERSION?.trim()) {
+    if (process.env.DESKTOP_CODEX_IMAGE_VERSION?.trim()) {
       buildArgs.splice(4, 0, "--build-arg", `CODEX_VERSION=${process.env.DESKTOP_CODEX_IMAGE_VERSION.trim()}`);
     }
-    if (provider.id === "claude" && process.env.DESKTOP_CLAUDE_IMAGE_VERSION?.trim()) {
+    if (process.env.DESKTOP_CLAUDE_IMAGE_VERSION?.trim()) {
       buildArgs.splice(4, 0, "--build-arg", `CLAUDE_VERSION=${process.env.DESKTOP_CLAUDE_IMAGE_VERSION.trim()}`);
     }
     if (process.env.DESKTOP_ACPX_IMAGE_VERSION?.trim()) {
@@ -358,25 +356,21 @@ export class ContainerRuntimeManager implements RuntimeManager {
     return resolve(this.runtimeDirectory, "providers", provider.id);
   }
 
-  private getProviderContainerState(
-    provider: DesktopProviderDefinition,
-  ): ProviderContainerState {
-    const existing = this.providerContainers.get(provider.id);
-    if (existing) {
-      return existing;
+  private getSharedContainerState(): ProviderContainerState {
+    if (this.sharedContainerState) {
+      return this.sharedContainerState;
     }
 
     const hash = createHash("sha1")
-      .update(`${this.runtimeDirectory}:${this.workspaceDirectory}:${provider.id}`)
+      .update(`${this.runtimeDirectory}:${this.workspaceDirectory}:shared`)
       .digest("hex")
       .slice(0, 12);
-    const created: ProviderContainerState = {
-      containerName: `acon-${provider.id}-${hash}`,
+    this.sharedContainerState = {
+      containerName: `acon-acpx-${hash}`,
       ensuredSessions: new Map<string, string>(),
       startupPromise: null,
     };
-    this.providerContainers.set(provider.id, created);
-    return created;
+    return this.sharedContainerState;
   }
 
   private async inspectContainerStatus(containerName: string): Promise<string | null> {
@@ -437,7 +431,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
   private async restartProviderContainer(
     provider: DesktopProviderDefinition,
   ): Promise<void> {
-    const state = this.getProviderContainerState(provider);
+    const state = this.getSharedContainerState();
     logDesktop(
       "desktop-runtime",
       "provider_container:restart",
@@ -457,21 +451,23 @@ export class ContainerRuntimeManager implements RuntimeManager {
   private buildProviderHomeEnv(
     provider: DesktopProviderDefinition,
   ): Record<string, string> {
+    const providerDataRoot = `/data/providers/${provider.id}`;
+    const providerHome = `${providerDataRoot}/home`;
     const env: Record<string, string> = {
-      DESKTOP_DATA_ROOT: "/data",
-      HOME: "/data/home",
+      DESKTOP_DATA_ROOT: providerDataRoot,
+      HOME: providerHome,
     };
 
     if (provider.id === "codex") {
       return {
         ...env,
-        CODEX_HOME: "/data/home/.codex",
+        CODEX_HOME: `${providerHome}/.codex`,
       };
     }
 
     return {
       ...env,
-      CLAUDE_CONFIG_DIR: "/data/home/.claude",
+      CLAUDE_CONFIG_DIR: `${providerHome}/.claude`,
     };
   }
 
@@ -519,8 +515,12 @@ export class ContainerRuntimeManager implements RuntimeManager {
     onStatus?: (status: DesktopRuntimeStatus) => void,
   ): Promise<void> {
     await this.ensureContainerSystemStarted();
-    const state = this.getProviderContainerState(provider);
+    const state = this.getSharedContainerState();
     if ((await this.inspectContainerStatus(state.containerName)) === "running") {
+      logDesktop("desktop-runtime", "shared_container:reuse", {
+        provider: provider.id,
+        containerName: state.containerName,
+      });
       return;
     }
 
@@ -531,8 +531,15 @@ export class ContainerRuntimeManager implements RuntimeManager {
 
     state.startupPromise = (async () => {
       state.ensuredSessions.clear();
-      const runtimeDataDirectory = this.getProviderDataDirectory(provider);
-      mkdirSync(runtimeDataDirectory, { recursive: true });
+      const providersDataDirectory = resolve(this.runtimeDirectory, "providers");
+      mkdirSync(providersDataDirectory, { recursive: true });
+      logDesktop("desktop-runtime", "shared_container:start_requested", {
+        provider: provider.id,
+        containerName: state.containerName,
+        workspaceDirectory: this.workspaceDirectory,
+        providersDataDirectory,
+        imageName: provider.getImageName(),
+      });
 
       const startingStatus: DesktopRuntimeStatus = {
         state: "starting",
@@ -554,38 +561,32 @@ export class ContainerRuntimeManager implements RuntimeManager {
         "--workdir",
         "/workspace",
         "--volume",
-        `${runtimeDataDirectory}:/data`,
+        `${providersDataDirectory}:/data/providers`,
         "--volume",
         `${this.workspaceDirectory}:/workspace`,
       ];
 
-      for (const [key, value] of Object.entries(this.buildProviderHomeEnv(provider))) {
-        if (value.trim()) {
-          args.push("--env", `${key}=${value}`);
-        }
-      }
-
-      if (provider.id === "codex" && existsSync(HOST_CODEX_HOME)) {
+      if (existsSync(HOST_CODEX_HOME)) {
         args.push(
           "--mount",
           `type=bind,source=${HOST_CODEX_HOME},target=/seed-codex,readonly`,
         );
       }
 
-      if (provider.id === "claude") {
-        if (existsSync(HOST_CLAUDE_CONFIG_DIR)) {
-          args.push(
-            "--mount",
-            `type=bind,source=${HOST_CLAUDE_CONFIG_DIR},target=/seed-claude,readonly`,
-          );
-        }
-        const seedDirectory = this.prepareClaudeSeed(runtimeDataDirectory);
-        if (seedDirectory) {
-          args.push(
-            "--mount",
-            `type=bind,source=${seedDirectory},target=/seed-claude-json,readonly`,
-          );
-        }
+      if (existsSync(HOST_CLAUDE_CONFIG_DIR)) {
+        args.push(
+          "--mount",
+          `type=bind,source=${HOST_CLAUDE_CONFIG_DIR},target=/seed-claude,readonly`,
+        );
+      }
+      const seedDirectory = this.prepareClaudeSeed(
+        resolve(this.runtimeDirectory, "providers", "claude"),
+      );
+      if (seedDirectory) {
+        args.push(
+          "--mount",
+          `type=bind,source=${seedDirectory},target=/seed-claude-json,readonly`,
+        );
       }
 
       args.push(
@@ -610,6 +611,15 @@ export class ContainerRuntimeManager implements RuntimeManager {
           `Container ${state.containerName} failed to reach running state.`,
         );
       }
+
+      logDesktop("desktop-runtime", "shared_container:started", {
+        provider: provider.id,
+        containerName: state.containerName,
+        workspaceDirectory: this.workspaceDirectory,
+        providersDataDirectory,
+        imageName: provider.getImageName(),
+        status: runningStatus,
+      });
     })();
 
     try {
@@ -642,8 +652,8 @@ export class ContainerRuntimeManager implements RuntimeManager {
     model: string,
   ): Promise<void> {
     await this.ensureContainerSystemStarted();
-    const state = this.getProviderContainerState(provider);
-    const sessionName = threadId;
+    const state = this.getSharedContainerState();
+    const sessionName = `${provider.id}-${threadId}`;
     if (state.ensuredSessions.get(sessionName) === model) {
       return;
     }
@@ -807,7 +817,8 @@ export class ContainerRuntimeManager implements RuntimeManager {
   }: StreamContainerPromptOptions): Promise<StreamContainerPromptResult> {
     await this.ensureContainerSystemStarted();
     mkdirSync(this.getThreadStateDirectory(threadId), { recursive: true });
-    const state = this.getProviderContainerState(provider);
+    const state = this.getSharedContainerState();
+    const sessionName = `${provider.id}-${threadId}`;
     const args = this.buildExecArgs(
       provider,
       model,
@@ -827,7 +838,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
         provider.id,
         "prompt",
         "--session",
-        threadId,
+        sessionName,
         "--file",
         "-",
       ],
