@@ -36,6 +36,7 @@ let startupProbeResolved = false;
 let startupProbeTimeout = null;
 let startupProbeRendererReady = null;
 let pendingPluginRefresh = null;
+let backendCleanupDone = false;
 
 function getWindowBackgroundColor() {
   return nativeTheme.shouldUseDarkColors ? '#09090b' : '#f5f5f4';
@@ -89,6 +90,26 @@ function finishStartupProbe(ok, detail = {}) {
   setTimeout(() => {
     app.quit();
   }, 50);
+}
+
+function cleanupBackendResources() {
+  if (backendCleanupDone) {
+    return;
+  }
+
+  backendCleanupDone = true;
+  isQuitting = true;
+  if (unsubscribeDesktopService) {
+    unsubscribeDesktopService();
+    unsubscribeDesktopService = null;
+  }
+  if (directDesktopService && typeof directDesktopService.dispose === 'function') {
+    directDesktopService.dispose();
+  }
+  directDesktopService = null;
+  if (backendProcess && backendProcess.exitCode === null) {
+    backendProcess.kill('SIGTERM');
+  }
 }
 
 function getDesktopResourcesDir() {
@@ -509,7 +530,7 @@ async function ensureBackend() {
     resolveDesktopOverridePath(process.env.DESKTOP_BACKEND_BINARY_PATH) ??
     resolve(resourcesDir, 'bin/camelai-desktop-backend');
   const backendEntry =
-    process.env.DESKTOP_BACKEND_ENTRY || 'desktop/backend/server.ts';
+    process.env.DESKTOP_BACKEND_ENTRY || 'desktop-container/backend/server.ts';
   const backendCwd =
     resolveDesktopOverridePath(process.env.DESKTOP_BACKEND_CWD) ?? repoRoot;
   const runtimeEnv = applyDesktopRuntimeEnv();
@@ -713,22 +734,23 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', () => {
-  isQuitting = true;
-  if (unsubscribeDesktopService) {
-    unsubscribeDesktopService();
-    unsubscribeDesktopService = null;
-  }
-  if (directDesktopService && typeof directDesktopService.dispose === 'function') {
-    directDesktopService.dispose();
-  }
-  directDesktopService = null;
-  if (backendProcess && backendProcess.exitCode === null) {
-    backendProcess.kill('SIGTERM');
-  }
+  cleanupBackendResources();
 });
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+process.once('exit', () => {
+  cleanupBackendResources();
+});
+process.once('SIGTERM', () => {
+  cleanupBackendResources();
+  process.exit(0);
+});
+process.once('SIGINT', () => {
+  cleanupBackendResources();
+  process.exit(0);
 });

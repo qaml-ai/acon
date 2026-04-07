@@ -3,7 +3,6 @@
 import { useEffect, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { TodoProgressHeader } from './todo-progress-header';
 import { TodoTaskItem } from './todo-task-item';
 
@@ -61,7 +60,7 @@ export function FloatingTodoList({ todos, isStreaming, className }: FloatingTodo
             "motion-reduce:animate-none"
           )}
         >
-          <ScrollArea viewportClassName="max-h-[200px]">
+          <div className="max-h-[200px] overflow-y-auto">
             <div className="space-y-2 px-4 pb-3">
               {todos.map((todo, index) => (
                 <TodoTaskItem
@@ -72,7 +71,7 @@ export function FloatingTodoList({ todos, isStreaming, className }: FloatingTodo
                 />
               ))}
             </div>
-          </ScrollArea>
+          </div>
         </CollapsibleContent>
       </Collapsible>
     </div>

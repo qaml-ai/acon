@@ -16,7 +16,7 @@ import { TaskNotification } from '@/components/tool-call/task-notification';
 import { LoadingDots } from '@/components/loading-dots';
 import { CompactSummaryCard } from '@/components/compact-summary-card';
 import type { ReactNode } from 'react';
-import { useAuthData } from '@/hooks/use-auth-data';
+import { useCurrentWorkspaceId } from '@/hooks/use-current-workspace-id';
 import { FilePreviewChip, parseUploadRefs } from '@/components/chat-file-preview';
 import { BugReportCard, parseBugReport } from '@/components/bug-report-preview';
 import { CollapsibleUserMessage } from '@/components/collapsible-user-message';
@@ -510,7 +510,7 @@ export function MessageBubble({
     return null;
   }
 
-  const { currentWorkspace } = useAuthData();
+  const workspaceId = useCurrentWorkspaceId();
   const isCopied = copiedId === message.id;
   const isStreaming = (message.isStreaming ?? false) || suppressFinalizedState;
   const hasContent = typeof message.content === 'string'
@@ -547,8 +547,6 @@ export function MessageBubble({
 
     const previewRefs = uploadInfo.refs;
     const cleanedContent = uploadInfo.cleanContent;
-    const workspaceId = currentWorkspace?.id;
-
     const hasCleanContent = typeof cleanedContent === 'string'
       ? cleanedContent.length > 0
       : cleanedContent.length > 0;

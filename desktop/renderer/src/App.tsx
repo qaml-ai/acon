@@ -9,6 +9,7 @@ import {
 } from "react";
 import { Loader2, X } from "lucide-react";
 import { ContentBlockRenderer } from "@/components/message-bubble";
+import { FloatingTodoList, type TodoItem } from "@/components/floating-todo";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -457,6 +458,54 @@ const MemoizedComposer = memo(
     prev.onSubmitMessage === next.onSubmitMessage,
 );
 
+function normalizeTodoStatus(status: unknown): TodoItem["status"] {
+  if (status === "completed") return "completed";
+  if (status === "in_progress" || status === "inProgress") return "in_progress";
+  return "pending";
+}
+
+function extractLatestTodos(messages: Message[]): TodoItem[] {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.role !== "assistant" || !Array.isArray(message.content)) {
+      continue;
+    }
+    for (let j = message.content.length - 1; j >= 0; j -= 1) {
+      const block = message.content[j];
+      if (
+        block.type === "tool_use" &&
+        block.name === "TodoWrite" &&
+        block.input &&
+        typeof block.input === "object"
+      ) {
+        const rawTodos = (block.input as { todos?: unknown }).todos;
+        if (!Array.isArray(rawTodos)) continue;
+        return rawTodos
+          .map((entry): TodoItem | null => {
+            if (!entry || typeof entry !== "object") return null;
+            const record = entry as Record<string, unknown>;
+            const content =
+              typeof record.content === "string" && record.content.trim()
+                ? record.content
+                : null;
+            if (!content) return null;
+            const activeForm =
+              typeof record.activeForm === "string" && record.activeForm.trim()
+                ? record.activeForm
+                : content;
+            return {
+              content,
+              status: normalizeTodoStatus(record.status),
+              activeForm,
+            };
+          })
+          .filter((todo): todo is TodoItem => todo !== null);
+      }
+    }
+  }
+  return [];
+}
+
 function ChatThreadView({
   snapshot,
   activeThreadId,
@@ -479,6 +528,8 @@ function ChatThreadView({
   | "onSetModel"
   | "onSubmitMessage"
 >) {
+  const currentTodos = useMemo(() => extractLatestTodos(rawMessages), [rawMessages]);
+
   return (
     <>
       <MemoizedTranscriptPane rawMessages={rawMessages} />
@@ -491,6 +542,14 @@ function ChatThreadView({
         <div className="bg-background">
           <div className="px-4 pb-4 pt-2">
             <div className="mx-auto flex w-full max-w-3xl flex-col max-h-[calc(100dvh-2rem)]">
+              {currentTodos.length > 0 && (
+                <div className="mb-2">
+                  <FloatingTodoList
+                    todos={currentTodos}
+                    isStreaming={isStreaming}
+                  />
+                </div>
+              )}
               <MemoizedComposer
                 availableProviders={snapshot.availableProviders}
                 availableModels={snapshot.availableModels}
