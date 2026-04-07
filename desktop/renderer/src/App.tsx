@@ -55,6 +55,7 @@ import {
   mergeSnapshotMessages,
 } from "../../shared/message-state";
 import { DesktopSidebar } from "./desktop-sidebar";
+import { SettingsPage } from "./settings-page";
 import { getDesktopIcon } from "./desktop-icons";
 
 const desktopShell = window.desktopShell;
@@ -634,7 +635,7 @@ function ExtensionCatalogPane({
       >
         <div className="space-y-3">
           <div className="space-y-1">
-            <h2 className="text-lg font-semibold">Extension Lab</h2>
+            <h2 className="text-lg font-semibold font-heading">Extension Lab</h2>
             <p className="max-w-3xl text-sm text-muted-foreground">
               Install plugins and inspect the ones currently loaded by the
               desktop app. Re-installing the same `camelai.id` updates that
@@ -687,7 +688,7 @@ function ExtensionCatalogPane({
 
         <Card size="sm">
           <CardHeader className="gap-1">
-            <CardTitle className="text-base">Installed plugins</CardTitle>
+            <CardTitle>Installed plugins</CardTitle>
             <CardDescription>
               {snapshot.plugins.length === 1
                 ? "1 plugin loaded"
@@ -719,7 +720,7 @@ function ExtensionCatalogPane({
                       <div className="flex flex-col gap-2 xl:flex-row xl:items-start xl:justify-between">
                         <div className="min-w-0 space-y-1">
                           <div className="flex min-w-0 flex-wrap items-center gap-2">
-                            <CardTitle className="text-base">{plugin.name}</CardTitle>
+                            <CardTitle>{plugin.name}</CardTitle>
                             <Badge variant="secondary">{plugin.source}</Badge>
                             <Badge
                               variant={
@@ -770,10 +771,10 @@ function ExtensionCatalogPane({
                         </div>
 
                         <div className="space-y-1 rounded-md border border-border/70 bg-muted/20 px-3 py-2">
-                          <p className="break-all font-mono text-[11px] leading-relaxed text-foreground">
+                          <p className="break-all font-mono text-xs leading-relaxed text-foreground">
                             {plugin.id}
                           </p>
-                          <p className="break-all font-mono text-[11px] leading-relaxed text-muted-foreground">
+                          <p className="break-all font-mono text-xs leading-relaxed text-muted-foreground">
                             {plugin.path}
                           </p>
                         </div>
@@ -842,7 +843,7 @@ function GenericHostDataPane({
         {surface.hostData?.sections.map((section) => (
           <Card key={section.id}>
             <CardHeader>
-              <CardTitle className="text-base">{section.title}</CardTitle>
+              <CardTitle>{section.title}</CardTitle>
               <CardDescription>
                 {section.description ?? "Plugin-provided section"}
               </CardDescription>
@@ -857,7 +858,7 @@ function GenericHostDataPane({
                   key={`${section.id}:${item.label}`}
                   className="rounded-lg border border-border/60 bg-background/70 px-3 py-3"
                 >
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                     {item.label}
                   </p>
                   <p className="mt-2 break-all text-sm text-foreground">
@@ -1202,6 +1203,7 @@ export function App() {
   const [connectionState, setConnectionState] = useState<
     "connecting" | "open" | "closed"
   >("connecting");
+  const [showSettings, setShowSettings] = useState(false);
   const composerDraftsRef = useRef<Record<string, string>>({});
   const fallbackSocketRef = useRef<WebSocket | null>(null);
   const streamingMessageIdsRef = useRef<Record<string, string | null>>({});
@@ -1666,15 +1668,19 @@ export function App() {
               activeViewId={activeViewId}
               connectionState={connectionState}
               onCreateThread={handleCreateThread}
-              onSelectThread={handleSelectThread}
-              onSelectView={handleSelectView}
+              onOpenSettings={() => setShowSettings(true)}
+              onSelectThread={(threadId) => { setShowSettings(false); handleSelectThread(threadId); }}
+              onSelectView={(viewId) => { setShowSettings(false); handleSelectView(viewId); }}
+              showSettings={showSettings}
               snapshot={snapshot}
               threads={snapshot?.threads ?? []}
               views={snapshot?.views ?? []}
             />
             <SidebarInset className="overflow-hidden flex flex-col">
               <div className="flex flex-1 min-h-0 flex-col">
-                {activeSurfaceProps ? (
+                {showSettings ? (
+                  <SettingsPage />
+                ) : activeSurfaceProps ? (
                   <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
                     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                       <WorkbenchSurfacePane {...activeSurfaceProps} />

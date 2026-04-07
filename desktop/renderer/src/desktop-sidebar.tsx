@@ -1,6 +1,7 @@
 import {
   CircleHelp,
   Plus,
+  Settings,
   TerminalSquare,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -33,8 +34,10 @@ interface DesktopSidebarProps {
   activeViewId: string | null;
   connectionState: "connecting" | "open" | "closed";
   onCreateThread: () => void;
+  onOpenSettings: () => void;
   onSelectThread: (threadId: string) => void;
   onSelectView: (viewId: string) => void;
+  showSettings: boolean;
   snapshot: DesktopSnapshot | null;
   threads: DesktopThread[];
   views: DesktopView[];
@@ -64,8 +67,10 @@ export function DesktopSidebar({
   activeViewId,
   connectionState,
   onCreateThread,
+  onOpenSettings,
   onSelectThread,
   onSelectView,
+  showSettings,
   snapshot,
   threads,
   views,
@@ -104,7 +109,7 @@ export function DesktopSidebar({
         >
           <Badge
             variant="secondary"
-            className="text-[10px] tracking-wider font-semibold uppercase"
+            className="tracking-wider font-semibold uppercase"
           >
             Beta
           </Badge>
@@ -154,7 +159,7 @@ export function DesktopSidebar({
                     onClick={() => onSelectThread(thread.id)}
                     className="h-auto min-h-12"
                   >
-                    <span className="flex size-4 items-center justify-center rounded-full bg-sidebar-accent text-[10px] font-semibold text-sidebar-accent-foreground">
+                    <span className="flex size-4 items-center justify-center rounded-full bg-sidebar-accent text-xs font-semibold text-sidebar-accent-foreground">
                       {thread.title.slice(0, 1).toUpperCase()}
                     </span>
                     <div className="grid flex-1 min-w-0 text-left text-sm leading-tight">
@@ -176,6 +181,12 @@ export function DesktopSidebar({
 
       <SidebarFooter>
         <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton tooltip="Settings" isActive={showSettings} onClick={onOpenSettings}>
+              <Settings />
+              <span>Settings</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton tooltip="Get Help" disabled>
               <CircleHelp />

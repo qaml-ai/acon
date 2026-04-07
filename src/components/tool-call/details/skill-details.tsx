@@ -45,7 +45,7 @@ export function SkillDetails({ tool, result, skillSheet }: SkillDetailsProps) {
             type="button"
             onClick={() => setIsSheetExpanded(prev => !prev)}
             className={cn(
-              "flex items-center gap-1 text-[0.7rem] text-muted-foreground/60 hover:text-muted-foreground transition-colors",
+              "flex items-center gap-1 text-xs text-muted-foreground/60 hover:text-muted-foreground transition-colors",
               "focus:outline-none focus-visible:ring-1 focus-visible:ring-ring/50 rounded"
             )}
           >
