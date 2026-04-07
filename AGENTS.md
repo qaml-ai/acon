@@ -14,11 +14,12 @@ Core areas:
 
 ## Commands
 
-- `bun run desktop-container:dev` start the app in development
-- `bun run desktop-container:start` launch Electron against an already-running renderer
-- `bun run desktop-container:check` typecheck the container backend path
-- `bun run desktop:check` typecheck the shared renderer path
-- `bun run test:desktop-container-renderer` run the renderer streaming test
+- `bun run dev` start the app in development
+- `bun run start` launch Electron against an already-running renderer
+- `bun run check` typecheck both the container backend and the shared renderer paths
+- `bun run check:backend` typecheck only the container backend path
+- `bun run check:renderer` typecheck only the shared renderer path
+- `bun run test:renderer` run the renderer streaming test
 
 ## Repo Policy
 

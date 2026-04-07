@@ -28,25 +28,25 @@ Current limits:
 
 ```bash
 bun install
-bun run desktop-container:dev
-bun run desktop-container:check
-bun run desktop-container:backend
-bun run desktop-container:probe-claude
-bun run desktop-container:probe-codex
-bun run desktop-container:probe-turn
-bun run test:desktop-container-integration
-bun run desktop-container:start
+bun run dev
+bun run check
+bun run backend
+bun run probe:claude
+bun run probe:codex
+bun run probe
+bun run test:integration
+bun run start
 ```
 
 Notes:
 
-- `desktop-container:dev` is the main command. It starts the renderer plus Electron and picks a free localhost port automatically.
-- `desktop-container:backend` is a smoke check for backend startup, not a long-lived backend server.
-- `desktop-container:probe-turn` runs an end-to-end stdio turn against the desktop backend using the default provider.
-- `desktop-container:probe-claude` forces the Claude provider through the same end-to-end probe.
-- `desktop-container:probe-codex` forces the Codex provider through the same end-to-end probe.
-- `test:desktop-container-integration` runs the opt-in Vitest suite that drives the real desktop backend over stdio, sends two turns through ACPX inside Apple containers, and checks session continuity for both Claude and Codex.
-- `desktop-container:start` is the lower-level Electron entrypoint and expects the renderer URL to already be available.
+- `dev` is the main command. It starts the renderer plus Electron and picks a free localhost port automatically.
+- `backend` is a smoke check for backend startup, not a long-lived backend server.
+- `probe` runs an end-to-end stdio turn against the desktop backend using the default provider.
+- `probe:claude` forces the Claude provider through the same end-to-end probe.
+- `probe:codex` forces the Codex provider through the same end-to-end probe.
+- `test:integration` runs the opt-in Vitest suite that drives the real desktop backend over stdio, sends two turns through ACPX inside Apple containers, and checks session continuity for both Claude and Codex.
+- `start` is the lower-level Electron entrypoint and expects the renderer URL to already be available.
 - The integration command sets `RUN_DESKTOP_CONTAINER_INTEGRATION=1` for you. Run it only on a machine that has Apple `container` plus valid Codex and Claude auth.
 
 ## Environment

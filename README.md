@@ -8,10 +8,9 @@ This repo keeps the local Electron shell and shared desktop renderer, and runs c
 
 ```bash
 bun install
-bun run desktop-container:dev
-bun run desktop-container:check
-bun run desktop:check
-bun run test:desktop-container-renderer
+bun run dev
+bun run check
+bun run test:renderer
 ```
 
 ## Structure
