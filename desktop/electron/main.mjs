@@ -504,7 +504,7 @@ async function ensureBackend() {
     resolveDesktopOverridePath(process.env.DESKTOP_BACKEND_BINARY_PATH) ??
     resolve(resourcesDir, 'bin/camelai-desktop-backend');
   const backendEntry =
-    process.env.DESKTOP_BACKEND_ENTRY || 'desktop/backend/server.ts';
+    process.env.DESKTOP_BACKEND_ENTRY || 'desktop-container/backend/server.ts';
   const backendCwd =
     resolveDesktopOverridePath(process.env.DESKTOP_BACKEND_CWD) ?? repoRoot;
   const runtimeEnv = applyDesktopRuntimeEnv();
