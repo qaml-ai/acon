@@ -30,6 +30,7 @@ export interface CamelAIManifest {
   description?: string;
   icon?: string;
   main?: string;
+  skills?: string[];
   webviews?: Record<string, string>;
   settings?: string;
 }
@@ -38,6 +39,7 @@ export interface DiscoveredCamelAIExtension {
   id: string;
   extensionPath: string;
   entryPath: string;
+  skillDirectories: string[];
   builtin: boolean;
   packageName: string;
   packageVersion: string;

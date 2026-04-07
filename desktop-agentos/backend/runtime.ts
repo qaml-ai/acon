@@ -1,4 +1,13 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { resolve } from "node:path";
 import commonSoftware from "@rivet-dev/agent-os-common";
 import AgentOsPi from "@rivet-dev/agent-os-pi";
@@ -18,8 +27,14 @@ const DEFAULT_RUNTIME_DIRECTORY = resolve(process.cwd(), "desktop-agentos/.local
 const DEFAULT_WORKSPACE_DIRECTORY = resolve(process.cwd());
 const VM_WORKSPACE_PATH = "/workspace";
 const VM_PI_HOME_PATH = "/home/user/.pi";
+const VM_AGENTS_PATH = "/home/user/.agents";
 const VM_PI_THREAD_SESSIONS_PATH = `${VM_PI_HOME_PATH}/thread-sessions`;
 const VM_CAMELAI_THREAD_STATE_PATH = `${VM_PI_HOME_PATH}/camelai-state/threads`;
+
+export interface AgentOsRuntimePluginResource {
+  id: string;
+  path: string;
+}
 
 function getPiAgentSoftware() {
   return process.env.DESKTOP_AGENTOS_PI_ADAPTER?.trim() === "upstream"
@@ -56,6 +71,53 @@ function createNormalizedHostDirBackend(options: Parameters<typeof createHostDir
       return normalizeStat(await backend.lstat(path));
     },
   } satisfies HostDirBackend;
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function readPluginSkillDirectories(plugin: AgentOsRuntimePluginResource): string[] {
+  const directories = new Set<string>();
+  const packagePath = resolve(plugin.path, "package.json");
+
+  if (existsSync(packagePath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(packagePath, "utf8")) as {
+        camelai?: {
+          skills?: unknown;
+        };
+      };
+      const explicit = parsed.camelai?.skills;
+      const entries =
+        typeof explicit === "string"
+          ? [explicit]
+          : Array.isArray(explicit)
+            ? explicit.filter((value): value is string => typeof value === "string")
+            : [];
+      for (const entry of entries) {
+        const resolvedPath = resolve(plugin.path, entry);
+        if (isDirectory(resolvedPath)) {
+          directories.add(resolvedPath);
+        }
+      }
+    } catch {
+      // Ignore malformed manifests here; the extension host already reports them.
+    }
+  }
+
+  for (const relativePath of [".agents/skills", "skills"]) {
+    const resolvedPath = resolve(plugin.path, relativePath);
+    if (isDirectory(resolvedPath)) {
+      directories.add(resolvedPath);
+    }
+  }
+
+  return Array.from(directories).sort((left, right) => left.localeCompare(right));
 }
 
 export interface StreamAgentOsPromptOptions {
@@ -140,6 +202,11 @@ export class AgentOsRuntimeManager {
   private readonly workspaceDirectory =
     process.env.DESKTOP_AGENTOS_WORKSPACE_DIR || DEFAULT_WORKSPACE_DIRECTORY;
   private readonly piHomeDirectory = resolve(this.runtimeDirectory, "pi-home", ".pi");
+  private readonly agentsHomeDirectory = resolve(
+    this.runtimeDirectory,
+    "agents-home",
+    ".agents",
+  );
   private readonly piAgentDirectory = resolve(this.piHomeDirectory, "agent");
   private readonly piAuthPath = resolve(this.piAgentDirectory, "auth.json");
   private readonly piSettingsPath = resolve(this.piAgentDirectory, "settings.json");
@@ -150,6 +217,32 @@ export class AgentOsRuntimeManager {
 
   getRuntimeDirectory(): string {
     return this.runtimeDirectory;
+  }
+
+  syncAgentsDirectory(
+    plugins: AgentOsRuntimePluginResource[],
+  ): void {
+    rmSync(this.agentsHomeDirectory, { recursive: true, force: true });
+
+    const skillsDirectory = resolve(this.agentsHomeDirectory, "skills");
+    mkdirSync(skillsDirectory, { recursive: true });
+
+    for (const plugin of [...plugins].sort((left, right) => left.id.localeCompare(right.id))) {
+      for (const pluginSkillsDirectory of readPluginSkillDirectories(plugin)) {
+        // Namespace plugin-provided skills by plugin id so multiple plugins
+        // can contribute without colliding at the filesystem layer.
+        const targetSkillsDirectory = resolve(skillsDirectory, plugin.id);
+        mkdirSync(targetSkillsDirectory, { recursive: true });
+
+        for (const entry of readdirSync(pluginSkillsDirectory)) {
+          cpSync(
+            resolve(pluginSkillsDirectory, entry),
+            resolve(targetSkillsDirectory, entry),
+            { recursive: true, force: true },
+          );
+        }
+      }
+    }
   }
 
   getThreadStateDirectory(threadId: string): string {
@@ -226,6 +319,13 @@ export class AgentOsRuntimeManager {
             driver: createNormalizedHostDirBackend({
               hostPath: this.piHomeDirectory,
               readOnly: false,
+            }),
+          },
+          {
+            path: VM_AGENTS_PATH,
+            driver: createNormalizedHostDirBackend({
+              hostPath: this.agentsHomeDirectory,
+              readOnly: true,
             }),
           },
         ];

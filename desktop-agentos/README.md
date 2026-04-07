@@ -81,7 +81,7 @@ export ANTHROPIC_API_KEY=...
 
 - `desktop-agentos/backend/runtime.ts` owns the AgentOS VM lifecycle and per-thread session management.
 - The backend mounts the current workspace into the VM at `/workspace`.
-- The backend writes Pi settings into a dedicated runtime home, stages host Pi auth from `~/.pi/agent/auth.json`, mounts that into the VM at `/home/user/.pi`, and assigns each thread a dedicated persisted Pi session directory under `/home/user/.pi/thread-sessions/<provider>/<threadId>`.
+- The backend writes Pi settings into a dedicated runtime home, stages host Pi auth from `~/.pi/agent/auth.json`, mounts that into the VM at `/home/user/.pi`, synthesizes a read-only `/home/user/.agents` tree from plugin-local `.agents/skills/` content, and assigns each thread a dedicated persisted Pi session directory under `/home/user/.pi/thread-sessions/<provider>/<threadId>`.
 - `desktop-agentos/backend/extensions/host.ts` discovers V2 `camelai` plugin manifests from `desktop-agentos/plugins/builtin/` plus the user install directory, loads extension modules, exposes a runtime-first API (`on`, `registerView`, `registerPanel`, `registerCommand`, `registerTool`), and materializes workbench views plus per-thread companion panels into the shared snapshot model.
 - `desktop-agentos/backend/extensions/thread-state.ts` provides a persistent per-thread plugin state store backed by the shared `.pi` home so workbench views, companion panels, and runtime hooks can share thread-scoped JSON state.
 - `desktop-agentos/backend/extensions/harness-adapters.ts` is the abstraction layer between platform-native harnesses and the unified extension model; it currently includes `pi`, `codex`, `claude-code`, and `opencode` adapter identities and provider-to-harness mapping.

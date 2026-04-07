@@ -18,7 +18,10 @@ import {
   getProviderOptions,
   requireDesktopProvider,
 } from "./providers";
-import { AgentOsRuntimeManager } from "./runtime";
+import {
+  AgentOsRuntimeManager,
+  type AgentOsRuntimePluginResource,
+} from "./runtime";
 import { CamelAIExtensionHost } from "./extensions/host";
 import { getHarnessAdapterForProvider } from "./extensions/harness-adapters";
 
@@ -44,6 +47,7 @@ export class DesktopService {
     void this.extensionHost
       .initialize(this.getExtensionActivationContext())
       .then(() => {
+        this.syncRuntimeAgentsDirectory();
         this.ensureDefaultTab();
         this.ensureDefaultThreadPanels();
         this.emitSnapshot();
@@ -132,6 +136,19 @@ export class DesktopService {
         ? this.runtimeManager.getThreadStateDirectory(activeThreadId)
         : null,
     };
+  }
+
+  private getRuntimePluginResources(): AgentOsRuntimePluginResource[] {
+    return this.extensionHost
+      .getSnapshot(this.getExtensionActivationContext())
+      .plugins.map((plugin) => ({
+        id: plugin.id,
+        path: plugin.path,
+      }));
+  }
+
+  private syncRuntimeAgentsDirectory(): void {
+    this.runtimeManager.syncAgentsDirectory(this.getRuntimePluginResources());
   }
 
   handleClientEvent(event: DesktopClientEvent): void {
@@ -315,6 +332,7 @@ export class DesktopService {
   private async handleRefreshPlugins(): Promise<void> {
     try {
       await this.extensionHost.refresh(this.getExtensionActivationContext());
+      this.syncRuntimeAgentsDirectory();
       this.reconcileWorkbenchState();
       this.ensureDefaultTab();
       this.ensureDefaultThreadPanels();
@@ -372,6 +390,8 @@ export class DesktopService {
 
     this.runtimeStartupPromise = (async () => {
       try {
+        await this.extensionHost.initialize(this.getExtensionActivationContext());
+        this.syncRuntimeAgentsDirectory();
         this.runtimeStatus = await this.runtimeManager.ensureRuntime((status) => {
           this.runtimeStatus = status;
           this.emitSnapshot();

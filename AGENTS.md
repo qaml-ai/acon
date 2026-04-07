@@ -26,4 +26,5 @@ Core areas:
 - Prefer `desktop-agentos/` for runtime and extension-host changes.
 - Prefer `desktop/renderer/` and `src/` for desktop UI changes.
 - User plugins are installed into the desktop data directory under `plugins/`, and the builtin Extension Lab view is the primary install/manage entrypoint for them.
+- AgentOS synthesizes a read-only `/home/user/.agents` mount from plugin-local `.agents/skills/` directories so Pi can auto-discover plugin-provided skills.
 - Keep this file current when the standalone architecture changes.
