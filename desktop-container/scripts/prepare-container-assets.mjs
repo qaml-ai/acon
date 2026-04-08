@@ -48,6 +48,12 @@ const cliPackageSpecs = {
     process.env.DESKTOP_CLAUDE_IMAGE_VERSION?.trim() || defaultCliVersions.claude
   }`,
 };
+const bundledNodePackagePaths = {
+  hostRpc: resolve(
+    repoRoot,
+    "desktop-container/container-images/npm-packages/acon-host-rpc",
+  ),
+};
 
 const imageBuilds = [
   {
@@ -327,6 +333,7 @@ function installHostCliPrefix(destinationDirectory) {
     "--cpu=arm64",
     cliPackageSpecs.codex,
     cliPackageSpecs.claude,
+    bundledNodePackagePaths.hostRpc,
   ], {
     env: {
       npm_config_cache: npmCacheDirectory,

@@ -1,13 +1,10 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto";
-import { createConnection } from "node:net";
+import { createHostRpcClient } from "@acon/host-rpc";
 
-const socketPath =
-  process.env.ACON_HOST_RPC_SOCKET?.trim() || "/data/host-rpc/bridge.sock";
-const timeoutMs =
-  Number.parseInt(process.env.ACON_HOST_RPC_TIMEOUT_MS ?? "", 10) || 30_000;
 const args = process.argv.slice(2);
+const client = createHostRpcClient();
 
 function printHelp(exitCode = 0) {
   const output = [
@@ -83,115 +80,8 @@ function toInternalError(message, id = null) {
   };
 }
 
-function sendBridgeRequest(method, params) {
-  return new Promise((resolve, reject) => {
-    const requestId = randomUUID();
-    const socket = createConnection(socketPath);
-    socket.setEncoding("utf8");
-    socket.setTimeout(timeoutMs);
-
-    let responseBuffer = "";
-    let settled = false;
-
-    function finish(error, result) {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      socket.destroy();
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve(result);
-    }
-
-    socket.on("connect", () => {
-      socket.write(
-        `${JSON.stringify({
-          id: requestId,
-          method,
-          params,
-        })}\n`,
-      );
-    });
-
-    socket.on("data", (chunk) => {
-      responseBuffer += chunk;
-
-      while (true) {
-        const newlineIndex = responseBuffer.indexOf("\n");
-        if (newlineIndex === -1) {
-          break;
-        }
-
-        const line = responseBuffer.slice(0, newlineIndex).trim();
-        responseBuffer = responseBuffer.slice(newlineIndex + 1);
-        if (!line) {
-          continue;
-        }
-
-        let message;
-        try {
-          message = JSON.parse(line);
-        } catch (error) {
-          finish(
-            error instanceof Error
-              ? error
-              : new Error("acon-mcp received invalid JSON from the bridge."),
-          );
-          return;
-        }
-
-        if (message?.id !== requestId) {
-          continue;
-        }
-
-        if (message.error) {
-          finish(
-            new Error(
-              typeof message.error.message === "string"
-                ? message.error.message
-                : "Host bridge returned an unknown error.",
-            ),
-          );
-          return;
-        }
-
-        finish(null, message.result ?? null);
-        return;
-      }
-    });
-
-    socket.on("timeout", () => {
-      finish(
-        new Error(`acon-mcp timed out after ${timeoutMs}ms waiting for ${method}.`),
-      );
-    });
-
-    socket.on("close", () => {
-      if (!settled) {
-        finish(
-          new Error(
-            `acon-mcp bridge connection closed before ${method} completed.`,
-          ),
-        );
-      }
-    });
-
-    socket.on("error", (error) => {
-      finish(error instanceof Error ? error : new Error(String(error)));
-    });
-  });
-}
-
 async function dispatchMcpMessage(serverId, sessionId, message) {
-  const response = await sendBridgeRequest("mcp.request", {
-    serverId,
-    sessionId,
-    message,
-  });
-  return Array.isArray(response?.messages) ? response.messages : [];
+  return await client.mcpRequest(serverId, sessionId, message);
 }
 
 async function closeMcpSession(serverId, sessionId) {
@@ -200,18 +90,14 @@ async function closeMcpSession(serverId, sessionId) {
   }
 
   try {
-    await sendBridgeRequest("mcp.close", {
-      serverId,
-      sessionId,
-    });
+    await client.closeMcpSession(serverId, sessionId);
   } catch {
     // Best effort only.
   }
 }
 
 async function listServers() {
-  const servers = await sendBridgeRequest("mcp.list_servers", {});
-  const records = Array.isArray(servers) ? servers : [];
+  const records = await client.listMcpServers();
   if (jsonOutput) {
     process.stdout.write(`${JSON.stringify(records, null, 2)}\n`);
     return;
@@ -230,80 +116,32 @@ async function listServers() {
 }
 
 async function listTools(serverId) {
-  const sessionId = randomUUID();
-  try {
-    await dispatchMcpMessage(serverId, sessionId, {
-      jsonrpc: "2.0",
-      id: 1,
-      method: "initialize",
-      params: {
-        protocolVersion: "2025-03-26",
-        capabilities: {},
-        clientInfo: {
-          name: "acon-mcp",
-          version: "1.0.0",
-        },
-      },
-    });
-    await dispatchMcpMessage(serverId, sessionId, {
-      jsonrpc: "2.0",
-      method: "notifications/initialized",
-    });
-    const messages = await dispatchMcpMessage(serverId, sessionId, {
-      jsonrpc: "2.0",
-      id: 2,
-      method: "tools/list",
-      params: {},
-    });
-    const resultMessage = messages.find(
-      (message) =>
-        message &&
-        typeof message === "object" &&
-        "id" in message &&
-        message.id === 2 &&
-        "result" in message,
-    );
-    const errorMessage = messages.find(
-      (message) =>
-        message &&
-        typeof message === "object" &&
-        "id" in message &&
-        message.id === 2 &&
-        "error" in message,
-    );
-    if (errorMessage?.error) {
-      throw new Error(
-        typeof errorMessage.error.message === "string"
-          ? errorMessage.error.message
-          : `Host MCP tools/list failed for ${serverId}.`,
-      );
-    }
-    const tools = Array.isArray(resultMessage?.result?.tools)
-      ? resultMessage.result.tools
-      : [];
+  const tools = await client.listMcpTools(serverId, {
+    clientInfo: {
+      name: "acon-mcp",
+      version: "1.0.0",
+    },
+  });
 
-    if (jsonOutput) {
-      process.stdout.write(`${JSON.stringify(tools, null, 2)}\n`);
-      return;
-    }
+  if (jsonOutput) {
+    process.stdout.write(`${JSON.stringify(tools, null, 2)}\n`);
+    return;
+  }
 
-    if (tools.length === 0) {
-      process.stdout.write(`No tools are registered for ${serverId}.\n`);
-      return;
-    }
+  if (tools.length === 0) {
+    process.stdout.write(`No tools are registered for ${serverId}.\n`);
+    return;
+  }
 
-    for (const tool of tools) {
-      if (!tool || typeof tool.name !== "string") {
-        continue;
-      }
-      const description =
-        typeof tool.description === "string" && tool.description.trim()
-          ? ` - ${tool.description.trim()}`
-          : "";
-      process.stdout.write(`${tool.name}${description}\n`);
+  for (const tool of tools) {
+    if (!tool || typeof tool.name !== "string") {
+      continue;
     }
-  } finally {
-    await closeMcpSession(serverId, sessionId);
+    const description =
+      typeof tool.description === "string" && tool.description.trim()
+        ? ` - ${tool.description.trim()}`
+        : "";
+    process.stdout.write(`${tool.name}${description}\n`);
   }
 }
 

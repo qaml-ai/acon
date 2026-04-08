@@ -20,7 +20,7 @@ Current limits:
 - local bundle builds exist, but signed/notarized release packaging is still not wired
 - the container workspace at `/workspace` is an app-managed persistent directory under desktop app data, not a live mount of the host checkout
 - auth is seeded from host `~/.codex`, host `~/.claude` / `~/.claude.json`, or `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`
-- provider startup always writes a small built-in global instruction file into container `~/.codex/AGENTS.md` or `~/.claude/CLAUDE.md` with `acon` context and `acon-mcp` guidance
+- provider startup always writes a small built-in global instruction file into container `~/.codex/AGENTS.md` or `~/.claude/CLAUDE.md` with `acon` context, `acon-mcp` guidance, and guest JavaScript `@acon/host-rpc` usage
 - the backend currently uses fixed default models per provider (`gpt-5.4` for Codex and `sonnet` for Claude)
 - provider sessions persist per thread inside a single long-lived shared agent container, and the container's main daemon process brokers both agent control and guest-to-host RPC over one stdio connection to the desktop backend
 - release packaging still needs to stage the vendored Apple `container` binary and image contexts into app resources
@@ -66,6 +66,8 @@ Host MCP notes:
 - `acon-mcp servers` lists the host MCP servers that the Electron app has registered for that backend session.
 - `acon-mcp tools <server-id>` lists the tools exposed by one registered host MCP server.
 - `acon-mcp <server-id>` exposes that registered host MCP server over stdio for any MCP client running in the guest.
+- Inside the container, `@acon/host-rpc` is preinstalled and symlinked into `/workspace/node_modules/@acon/host-rpc` so guest JavaScript or TypeScript can call the same host RPC bridge directly.
+- `createHostRpcClient()` exposes typed helpers for `ping`, `fetch`, `listMcpServers`, `listMcpTools`, `mcpRequest`, and `closeMcpSession`.
 - The daemon-backed guest-to-host bridge is internal. The positive loopback and host-MCP cases are covered by the integration test in `tests/desktop-container-agentd.integration.test.ts`.
 
 ## Environment

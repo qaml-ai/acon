@@ -1191,6 +1191,30 @@ integrationDescribe("desktop-container agent runtime integration", () => {
           expect(helpResult.stdout).toContain("acon-mcp servers [--json]");
           expect(helpResult.stdout).toContain("acon-mcp tools <server-id> [--json]");
 
+          const jsClientResult = await runContainerCommand(
+            harness.userDataDir,
+            providerCase.id,
+            [
+              "node",
+              "--input-type=module",
+              "-e",
+              [
+                'import { existsSync } from "node:fs";',
+                'import { createHostRpcClient } from "@acon/host-rpc";',
+                'const client = createHostRpcClient();',
+                'const servers = await client.listMcpServers();',
+                'process.stdout.write(JSON.stringify({',
+                '  typedPackageLinked: existsSync("/workspace/node_modules/@acon/host-rpc/index.d.ts"),',
+                '  serverIds: servers.map((server) => server.id).sort(),',
+                '}) + "\\n");',
+              ].join(" "),
+            ],
+          );
+          expect(JSON.parse(jsClientResult.stdout)).toEqual({
+            typedPackageLinked: true,
+            serverIds: [HOST_MCP_TEST_SERVER_ID],
+          });
+
           const serversResult = await runContainerCommand(
             harness.userDataDir,
             providerCase.id,
