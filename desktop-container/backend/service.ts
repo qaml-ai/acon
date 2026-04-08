@@ -128,12 +128,13 @@ export class DesktopService {
     this.runtimeStatus = this.runtimeManager.getCachedStatus();
     this.loadPersistedHostMcpServers();
     this.extensionHost = new CamelAIExtensionHost({
-      registerHostMcpServer: (registration) => {
+      registerMcpServer: (registration) => {
         this.registerHostMcpServer(registration);
       },
-      unregisterHostMcpServer: (serverId) => {
+      unregisterMcpServer: (serverId) => {
         this.unregisterHostMcpServer(serverId);
       },
+      getActivationContext: () => this.getExtensionActivationContext(),
       listInstalledHostMcpServers: () => this.listInstalledHostMcpServers(),
       installStdioHostMcpServer: (server, context) =>
         this.installStdioHostMcpServer(server, context),

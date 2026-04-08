@@ -117,6 +117,13 @@ export interface CamelAIToolExecutionContext {
   threadState: AgentExtensionThreadStateStore;
 }
 
+export interface CamelAIMcpServerSessionContext extends CamelAIActivationContext {
+  pluginId: string;
+  serverId: string;
+  sessionId: string;
+  threadState(threadId?: string | null): AgentExtensionThreadStateStore;
+}
+
 export interface CamelAIViewRegistration {
   title: string;
   description?: string;
@@ -153,9 +160,19 @@ export interface CamelAIHostMcpSessionServer {
   close(): Promise<void>;
 }
 
-export interface CamelAIHostMcpServerRegistration {
+export interface CamelAIMcpServerRegistration {
+  name?: string;
+  version?: string;
+  description?: string;
+  createServer: (
+    context: CamelAIMcpServerSessionContext,
+  ) => CamelAIHostMcpSessionServer;
+}
+
+/** @deprecated Use CamelAIMcpServerRegistration with registerMcpServer(id, registration). */
+export interface CamelAIHostMcpServerRegistration
+  extends CamelAIMcpServerRegistration {
   id: string;
-  createServer: () => CamelAIHostMcpSessionServer;
 }
 
 export interface CamelAIHostMcpOAuthConfig {
@@ -302,9 +319,16 @@ export interface CamelAIPluginApi {
     command: CamelAICommandRegistration,
   ): CamelAIDisposable;
   registerTool(id: string, tool: CamelAIToolRegistration): CamelAIDisposable;
+  registerMcpServer(
+    id: string,
+    registration: CamelAIMcpServerRegistration,
+  ): CamelAIDisposable;
+  unregisterMcpServer(serverId: string): boolean;
+  /** @deprecated Use registerMcpServer(id, registration). */
   registerHostMcpServer(
     registration: CamelAIHostMcpServerRegistration,
   ): CamelAIDisposable;
+  /** @deprecated Use unregisterMcpServer(serverId). */
   unregisterHostMcpServer(serverId: string): boolean;
   listInstalledHostMcpServers(): CamelAIPersistedHostMcpServerRecord[];
   installStdioHostMcpServer(

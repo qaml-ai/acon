@@ -397,6 +397,11 @@ export function createPersistedHostMcpServerRegistration(
   if (server.transport === "stdio") {
     return {
       id: server.id,
+      name: server.name ?? server.id,
+      version: server.version ?? null,
+      description: null,
+      pluginId: null,
+      source: "host",
       createServer: () =>
         createStdioProxyHostMcpServer(
           {
@@ -419,6 +424,11 @@ export function createPersistedHostMcpServerRegistration(
 
   return {
     id: server.id,
+    name: server.name ?? server.id,
+    version: server.version ?? null,
+    description: null,
+    pluginId: null,
+    source: "host",
     createServer: () =>
       createRemoteProxyHostMcpServer(
         {

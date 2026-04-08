@@ -12,6 +12,7 @@ import builtinExtensionLab from "../../plugins/builtin/extension-lab/index";
 import builtinHostMcpManager from "../../plugins/builtin/host-mcp-manager/index";
 import builtinPreviewControl from "../../plugins/builtin/preview-control/index";
 import builtinThreadJournal from "../../plugins/builtin/thread-journal/index";
+import type { HostMcpServerRegistration } from "../host-mcp";
 import {
   getHarnessAdapterForProvider,
   getHarnessAdapters,
@@ -30,7 +31,7 @@ import type {
   CamelAIEventName,
   CamelAIExtensionModule,
   CamelAIHostMcpMutationContext,
-  CamelAIHostMcpServerRegistration,
+  CamelAIMcpServerRegistration,
   CamelAIInstallHostMcpServerResult,
   CamelAIInstallHttpHostMcpServerOptions,
   CamelAIInstallStdioHostMcpServerOptions,
@@ -81,6 +82,7 @@ const BUILTIN_EXTENSION_MODULES: Record<string, CamelAIExtensionModule> = {
 const VALID_PLUGIN_PERMISSIONS = new Set<DesktopPluginPermission>([
   "host-mcp",
   "thread-preview",
+  "serve-mcp",
 ]);
 
 interface ThreadPreviewMutationResult {
@@ -89,8 +91,9 @@ interface ThreadPreviewMutationResult {
 }
 
 export interface CamelAIExtensionHostOptions {
-  registerHostMcpServer?: (registration: CamelAIHostMcpServerRegistration) => void;
-  unregisterHostMcpServer?: (serverId: string) => void;
+  registerMcpServer?: (registration: HostMcpServerRegistration) => void;
+  unregisterMcpServer?: (serverId: string) => void;
+  getActivationContext?: () => CamelAIActivationContext;
   listInstalledHostMcpServers?: () => CamelAIPersistedHostMcpServerRecord[];
   installStdioHostMcpServer?: (
     server: CamelAIInstallStdioHostMcpServerOptions,
@@ -570,12 +573,84 @@ export class CamelAIExtensionHost {
     });
   }
 
+  private resolveActivationContext(
+    fallback: CamelAIActivationContext,
+  ): CamelAIActivationContext {
+    return this.options.getActivationContext?.() ?? fallback;
+  }
+
+  private createMcpServerSessionContext(
+    pluginId: string,
+    serverId: string,
+    sessionId: string,
+    context: CamelAIActivationContext,
+  ) {
+    return {
+      ...context,
+      pluginId,
+      serverId,
+      sessionId,
+      threadState: (threadId = context.activeThreadId) =>
+        this.createThreadState(pluginId, threadId ?? null, context),
+    };
+  }
+
   private createApi(
     record: CamelAIRuntimeRecord,
     context: CamelAIActivationContext,
   ): CamelAIPluginApi {
     const harnessAdapters = getHarnessAdapters();
     const pluginId = record.discovered.id;
+    const registerMcpServer = (
+      serverId: string,
+      registration: CamelAIMcpServerRegistration,
+    ) => {
+      this.assertPluginPermission(record, "serve-mcp");
+      const normalizedServerId = serverId.trim();
+      if (!normalizedServerId) {
+        throw new Error("Plugin MCP server id must be a non-empty string.");
+      }
+
+      const registeredServerId = getContributionId(pluginId, normalizedServerId);
+
+      this.options.registerMcpServer?.({
+        id: registeredServerId,
+        name: registration.name?.trim() || normalizedServerId,
+        version: registration.version?.trim() || null,
+        description: registration.description?.trim() || null,
+        pluginId,
+        source: "plugin",
+        createServer: (sessionContext) =>
+          registration.createServer(
+            this.createMcpServerSessionContext(
+              pluginId,
+              sessionContext.serverId,
+              sessionContext.sessionId,
+              this.resolveActivationContext(context),
+            ),
+          ),
+      });
+      record.registeredHostMcpServerIds.add(registeredServerId);
+      return this.registerRecordDisposable(record, () => {
+        if (!record.registeredHostMcpServerIds.delete(registeredServerId)) {
+          return;
+        }
+        this.options.unregisterMcpServer?.(registeredServerId);
+      });
+    };
+    const unregisterMcpServer = (serverId: string) => {
+      this.assertPluginPermission(record, "serve-mcp");
+      const normalizedServerId = serverId.trim();
+      if (!normalizedServerId) {
+        return false;
+      }
+      const registeredServerId = getContributionId(pluginId, normalizedServerId);
+      const registered = record.registeredHostMcpServerIds.delete(registeredServerId);
+      if (registered) {
+        this.options.unregisterMcpServer?.(registeredServerId);
+      }
+      return registered;
+    };
 
     return {
       pluginId,
@@ -616,25 +691,11 @@ export class CamelAIExtensionHost {
           record.tools.delete(id);
         });
       },
-      registerHostMcpServer: (registration) => {
-        this.assertPluginPermission(record, "host-mcp");
-        this.options.registerHostMcpServer?.(registration);
-        record.registeredHostMcpServerIds.add(registration.id);
-        return this.registerRecordDisposable(record, () => {
-          if (!record.registeredHostMcpServerIds.delete(registration.id)) {
-            return;
-          }
-          this.options.unregisterHostMcpServer?.(registration.id);
-        });
-      },
-      unregisterHostMcpServer: (serverId) => {
-        this.assertPluginPermission(record, "host-mcp");
-        const registered = record.registeredHostMcpServerIds.delete(serverId);
-        if (registered) {
-          this.options.unregisterHostMcpServer?.(serverId);
-        }
-        return registered;
-      },
+      registerMcpServer,
+      unregisterMcpServer,
+      registerHostMcpServer: (registration) =>
+        registerMcpServer(registration.id, registration),
+      unregisterHostMcpServer: unregisterMcpServer,
       listInstalledHostMcpServers: () => {
         this.assertPluginPermission(record, "host-mcp");
         return this.options.listInstalledHostMcpServers?.() ?? [];
@@ -644,11 +705,12 @@ export class CamelAIExtensionHost {
         if (!this.options.installStdioHostMcpServer) {
           throw new Error("Host MCP installation is unavailable.");
         }
+        const activeContext = this.resolveActivationContext(context);
         return await this.options.installStdioHostMcpServer(server, {
           pluginId,
-          harness: context.harness,
-          threadId: context.activeThreadId,
-          workspaceDirectory: context.workspaceDirectory,
+          harness: activeContext.harness,
+          threadId: activeContext.activeThreadId,
+          workspaceDirectory: activeContext.workspaceDirectory,
         });
       },
       installHttpHostMcpServer: async (server) => {
@@ -656,23 +718,26 @@ export class CamelAIExtensionHost {
         if (!this.options.installHttpHostMcpServer) {
           throw new Error("Host MCP installation is unavailable.");
         }
+        const activeContext = this.resolveActivationContext(context);
         return await this.options.installHttpHostMcpServer(server, {
           pluginId,
-          harness: context.harness,
-          threadId: context.activeThreadId,
-          workspaceDirectory: context.workspaceDirectory,
+          harness: activeContext.harness,
+          threadId: activeContext.activeThreadId,
+          workspaceDirectory: activeContext.workspaceDirectory,
         });
       },
       uninstallInstalledHostMcpServer: async (serverId) => {
         this.assertPluginPermission(record, "host-mcp");
+        const activeContext = this.resolveActivationContext(context);
         return (
           await this.options.uninstallInstalledHostMcpServer?.(serverId, {
             pluginId,
-            harness: context.harness,
-            threadId: context.activeThreadId,
+            harness: activeContext.harness,
+            threadId: activeContext.activeThreadId,
           })
         ) ?? false;
       },
+<<<<<<< HEAD
       openThreadPreviewItem: (target, threadId = context.activeThreadId) => {
         this.assertPluginPermission(record, "thread-preview");
         if (!this.options.openThreadPreviewItem) {
@@ -713,6 +778,12 @@ export class CamelAIExtensionHost {
       },
       threadState: (threadId = context.activeThreadId) =>
         this.createThreadState(pluginId, threadId ?? null, context),
+=======
+      threadState: (threadId = this.resolveActivationContext(context).activeThreadId) => {
+        const activeContext = this.resolveActivationContext(context);
+        return this.createThreadState(pluginId, threadId ?? null, activeContext);
+      },
+>>>>>>> origin/main
     };
   }
 

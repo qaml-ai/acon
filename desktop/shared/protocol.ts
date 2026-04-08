@@ -55,7 +55,7 @@ export interface DesktopPluginWebviewContribution {
   entrypoint: string;
 }
 
-export type DesktopPluginPermission = "host-mcp" | "thread-preview";
+export type DesktopPluginPermission = "host-mcp" | "serve-mcp" | "thread-preview";
 
 export type DesktopPluginSettingFieldType =
   | "boolean"
