@@ -106,6 +106,7 @@ This environment is for \`acon\`, the standalone camelAI desktop app.
  *   finalText: string;
  *   stopReason: string | null;
  *   cancelled: boolean;
+ *   sawThoughtChunk: boolean;
  *   waiters: Array<{
  *     resolve: (value: { sessionId: string; finalText: string; stopReason: string | null }) => void;
  *     reject: (error: Error) => void;
@@ -117,7 +118,8 @@ This environment is for \`acon\`, the standalone camelAI desktop app.
  * @typedef {{
  *   finalText: string;
  *   turnId: string | null;
-  *   cancelled: boolean;
+ *   cancelled: boolean;
+ *   sawThoughtChunk: boolean;
  *   waiters: Array<{
  *     resolve: (value: { sessionId: string; finalText: string; stopReason: string | null }) => void;
  *     reject: (error: Error) => void;
@@ -161,6 +163,10 @@ function toTextContent(text) {
     type: "text",
     text,
   };
+}
+
+function joinTextParts(parts) {
+  return parts.filter((part) => typeof part === "string" && part).join("");
 }
 
 function emitSessionRuntimeEvent(sessionName, event) {
@@ -573,6 +579,14 @@ function resolveCodexToolTitle(item) {
       return item.tool ? `Tool: ${String(item.tool)}` : "tool";
     case "webSearch":
       return "Searching the Web";
+    case "imageView":
+      return "View Image";
+    case "enteredReviewMode":
+      return "Review Mode";
+    case "exitedReviewMode":
+      return "Review Mode";
+    case "contextCompaction":
+      return "Context Compaction";
     default:
       return null;
   }
@@ -601,6 +615,14 @@ function getCodexToolOutputText(item) {
       return item.status === "completed" ? "Updated files." : null;
     case "webSearch":
       return maybeString(item.query) ?? null;
+    case "imageView":
+      return maybeString(item.path) ?? "Viewed image.";
+    case "enteredReviewMode":
+      return maybeString(item.review) ?? "Entered review mode.";
+    case "exitedReviewMode":
+      return maybeString(item.review) ?? "Exited review mode.";
+    case "contextCompaction":
+      return "Context compacted.";
     default:
       return null;
   }
@@ -642,6 +664,10 @@ function resolveCodexToolStatus(item) {
           return "pending";
       }
     case "webSearch":
+    case "imageView":
+    case "enteredReviewMode":
+    case "exitedReviewMode":
+    case "contextCompaction":
       return "completed";
     default:
       return "pending";
@@ -693,6 +719,10 @@ function isCodexToolItem(item) {
         "mcpToolCall",
         "dynamicToolCall",
         "webSearch",
+        "imageView",
+        "enteredReviewMode",
+        "exitedReviewMode",
+        "contextCompaction",
       ].includes(item.type),
   );
 }
@@ -702,6 +732,50 @@ function emitCodexSessionUpdate(session, update) {
     return;
   }
   emitAcpSessionUpdate(session.sessionName, session.threadId, update);
+}
+
+function emitCodexReasoningFallback(session, item) {
+  if (
+    !item ||
+    typeof item !== "object" ||
+    item.type !== "reasoning" ||
+    !session.activePrompt ||
+    session.activePrompt.sawThoughtChunk
+  ) {
+    return;
+  }
+
+  const summaryText = Array.isArray(item.summary)
+    ? joinTextParts(
+        item.summary.map((entry) =>
+          entry && typeof entry === "object" && typeof entry.text === "string"
+            ? entry.text
+            : "",
+        ),
+      )
+    : "";
+  const contentText = Array.isArray(item.content)
+    ? joinTextParts(
+        item.content.map((entry) =>
+          entry &&
+          typeof entry === "object" &&
+          (entry.type === "reasoning_text" || entry.type === "text") &&
+          typeof entry.text === "string"
+            ? entry.text
+            : "",
+        ),
+      )
+    : "";
+  const text = summaryText || contentText;
+  if (!text) {
+    return;
+  }
+
+  session.activePrompt.sawThoughtChunk = true;
+  emitCodexSessionUpdate(session, {
+    sessionUpdate: "agent_thought_chunk",
+    content: toTextContent(text),
+  });
 }
 
 function resolveClaudeToolTitle(toolUse) {
@@ -740,6 +814,9 @@ function emitClaudeContentUpdate(session, chunk) {
     case "thinking":
     case "thinking_delta":
       if (typeof chunk.thinking === "string" && chunk.thinking) {
+        if (session.activePrompt) {
+          session.activePrompt.sawThoughtChunk = true;
+        }
         emitAcpSessionUpdate(session.sessionName, session.sessionId, {
           sessionUpdate: "agent_thought_chunk",
           content: toTextContent(chunk.thinking),
@@ -866,6 +943,9 @@ function handleCodexNotification(message) {
       method === "item/reasoning/summaryTextDelta" &&
       typeof params.delta === "string"
     ) {
+      if (session.activePrompt) {
+        session.activePrompt.sawThoughtChunk = true;
+      }
       emitCodexSessionUpdate(session, {
         sessionUpdate: "agent_thought_chunk",
         content: toTextContent(params.delta),
@@ -876,6 +956,9 @@ function handleCodexNotification(message) {
       method === "item/reasoning/textDelta" &&
       typeof params.delta === "string"
     ) {
+      if (session.activePrompt) {
+        session.activePrompt.sawThoughtChunk = true;
+      }
       emitCodexSessionUpdate(session, {
         sessionUpdate: "agent_thought_chunk",
         content: toTextContent(params.delta),
@@ -883,10 +966,17 @@ function handleCodexNotification(message) {
     }
 
     if (method === "item/reasoning/summaryPartAdded") {
+      if (session.activePrompt) {
+        session.activePrompt.sawThoughtChunk = true;
+      }
       emitCodexSessionUpdate(session, {
         sessionUpdate: "agent_thought_chunk",
         content: toTextContent("\n\n"),
       });
+    }
+
+    if (method === "rawResponseItem/completed") {
+      emitCodexReasoningFallback(session, params.item);
     }
 
     if (
@@ -944,10 +1034,47 @@ function handleCodexNotification(message) {
     }
 
     if (
+      method === "item/commandExecution/terminalInteraction" &&
+      typeof params.itemId === "string" &&
+      typeof params.input === "string"
+    ) {
+      emitCodexSessionUpdate(session, {
+        sessionUpdate: "tool_call_update",
+        toolCallId: params.itemId,
+        status: "pending",
+        content: toTextContent(`\n> ${params.input}\n`),
+        rawOutput: params.input,
+      });
+    }
+
+    if (
+      method === "item/mcpToolCall/progress" &&
+      typeof params.itemId === "string" &&
+      typeof params.message === "string"
+    ) {
+      emitCodexSessionUpdate(session, {
+        sessionUpdate: "tool_call_update",
+        toolCallId: params.itemId,
+        status: "pending",
+        content: toTextContent(params.message),
+        rawOutput: params.message,
+      });
+    }
+
+    if (
       method === "item/completed" &&
       isCodexToolItem(params.item)
     ) {
       emitCodexToolCallUpdated(session, params.item);
+    }
+
+    if (
+      method === "item/completed" &&
+      params.item &&
+      typeof params.item === "object" &&
+      params.item.type === "reasoning"
+    ) {
+      emitCodexReasoningFallback(session, params.item);
     }
 
     if (
@@ -1121,6 +1248,8 @@ function createClaudeArgs(session) {
     "--output-format",
     "stream-json",
     "--include-partial-messages",
+    "--disallowedTools",
+    "AskUserQuestion",
     "--permission-mode",
     "acceptEdits",
     "--model",
@@ -1196,6 +1325,19 @@ function emitClaudeRuntimeEvent(session, message) {
         return;
       }
       for (const chunk of assistantMessage.content) {
+        if (
+          message.type === "assistant" &&
+          chunk &&
+          typeof chunk === "object" &&
+          chunk.type === "thinking" &&
+          typeof chunk.thinking === "string" &&
+          chunk.thinking &&
+          session.activePrompt &&
+          !session.activePrompt.sawThoughtChunk
+        ) {
+          emitClaudeContentUpdate(session, chunk);
+          continue;
+        }
         if (
           chunk &&
           typeof chunk === "object" &&
@@ -1487,6 +1629,7 @@ async function promptClaudeSession(session, content) {
       finalText: "",
       stopReason: null,
       cancelled: false,
+      sawThoughtChunk: false,
       waiters: [],
     };
     if (!session.activePrompt) {
@@ -1552,6 +1695,7 @@ async function promptCodexSession(session, content) {
           finalText: "",
           turnId: null,
           cancelled: false,
+          sawThoughtChunk: false,
           waiters: [{ resolve, reject }],
         };
         try {
@@ -1597,6 +1741,7 @@ async function promptCodexSession(session, content) {
       finalText: "",
       turnId: null,
       cancelled: false,
+      sawThoughtChunk: false,
       waiters: [{ resolve, reject }],
     };
     session.activePrompt = promptState;
