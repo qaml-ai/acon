@@ -190,6 +190,11 @@ interface ProviderDaemonState {
   >;
 }
 
+interface ActivePromptListener {
+  onDelta?: (delta: string) => void;
+  onRuntimeEvent?: (event: unknown) => void;
+}
+
 interface CapturedCommandResult {
   code: number | null;
   signal: NodeJS.Signals | null;
@@ -232,10 +237,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
   private readonly hostMcpRegistry = new HostMcpRegistry();
   private readonly activePromptListeners = new Map<
     string,
-    {
-      onDelta?: (delta: string) => void;
-      onRuntimeEvent?: (event: unknown) => void;
-    }
+    Set<ActivePromptListener>
   >();
   private managedWorkspaceState: ManagedWorkspaceState | null = null;
   private sharedContainerState: ProviderContainerState | null = null;
@@ -1052,7 +1054,9 @@ export class ContainerRuntimeManager implements RuntimeManager {
     if (method === "session.runtime_event") {
       const sessionName =
         typeof params.sessionName === "string" ? params.sessionName : "";
-      this.activePromptListeners.get(sessionName)?.onRuntimeEvent?.(params.event);
+      for (const listener of this.activePromptListeners.get(sessionName) ?? []) {
+        listener.onRuntimeEvent?.(params.event);
+      }
       return;
     }
 
@@ -1061,8 +1065,33 @@ export class ContainerRuntimeManager implements RuntimeManager {
         typeof params.sessionName === "string" ? params.sessionName : "";
       const delta = typeof params.delta === "string" ? params.delta : "";
       if (delta) {
-        this.activePromptListeners.get(sessionName)?.onDelta?.(delta);
+        for (const listener of this.activePromptListeners.get(sessionName) ?? []) {
+          listener.onDelta?.(delta);
+        }
       }
+    }
+  }
+
+  private addActivePromptListener(
+    sessionName: string,
+    listener: ActivePromptListener,
+  ): void {
+    const listeners = this.activePromptListeners.get(sessionName) ?? new Set();
+    listeners.add(listener);
+    this.activePromptListeners.set(sessionName, listeners);
+  }
+
+  private removeActivePromptListener(
+    sessionName: string,
+    listener: ActivePromptListener,
+  ): void {
+    const listeners = this.activePromptListeners.get(sessionName);
+    if (!listeners) {
+      return;
+    }
+    listeners.delete(listener);
+    if (listeners.size === 0) {
+      this.activePromptListeners.delete(sessionName);
     }
   }
 
@@ -1479,10 +1508,16 @@ export class ContainerRuntimeManager implements RuntimeManager {
     mkdirSync(this.getThreadStateDirectory(threadId), { recursive: true });
     const state = this.getSharedContainerState();
     const sessionName = `${provider.id}-${threadId}`;
-    this.activePromptListeners.set(sessionName, {
-      onDelta,
-      onRuntimeEvent,
-    });
+    const promptListener =
+      onDelta || onRuntimeEvent
+        ? {
+            onDelta,
+            onRuntimeEvent,
+          }
+        : null;
+    if (promptListener) {
+      this.addActivePromptListener(sessionName, promptListener);
+    }
 
     try {
       const result = await this.callProviderDaemon(state, "session.prompt", {
@@ -1514,7 +1549,9 @@ export class ContainerRuntimeManager implements RuntimeManager {
           typeof result?.stopReason === "string" ? result.stopReason : null,
       };
     } finally {
-      this.activePromptListeners.delete(sessionName);
+      if (promptListener) {
+        this.removeActivePromptListener(sessionName, promptListener);
+      }
     }
   }
 }

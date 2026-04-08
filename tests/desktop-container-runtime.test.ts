@@ -157,4 +157,71 @@ describe("ContainerRuntimeManager", () => {
       rmSync(sandboxRoot, { recursive: true, force: true });
     }
   });
+
+  it("fans out daemon runtime events to every active prompt listener for a session", () => {
+    const runtime = new ContainerRuntimeManager() as ContainerRuntimeManager & {
+      addActivePromptListener: (
+        sessionName: string,
+        listener: {
+          onRuntimeEvent?: (event: unknown) => void;
+        },
+      ) => void;
+      handleProviderDaemonNotification: (message: {
+        method: string;
+        params: {
+          sessionName: string;
+          event: unknown;
+        };
+      }) => void;
+    };
+
+    const received: unknown[] = [];
+    runtime.addActivePromptListener("codex-thread-1", {
+      onRuntimeEvent: (event) => {
+        received.push({ listener: "first", event });
+      },
+    });
+    runtime.addActivePromptListener("codex-thread-1", {
+      onRuntimeEvent: (event) => {
+        received.push({ listener: "second", event });
+      },
+    });
+
+    runtime.handleProviderDaemonNotification({
+      method: "session.runtime_event",
+      params: {
+        sessionName: "codex-thread-1",
+        event: {
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId: "session-1",
+          },
+        },
+      },
+    });
+
+    expect(received).toEqual([
+      {
+        listener: "first",
+        event: {
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId: "session-1",
+          },
+        },
+      },
+      {
+        listener: "second",
+        event: {
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId: "session-1",
+          },
+        },
+      },
+    ]);
+  });
 });

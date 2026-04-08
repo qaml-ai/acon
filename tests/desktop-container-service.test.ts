@@ -84,7 +84,7 @@ describe("DesktopService", () => {
     rmSync(sandboxDataDir, { recursive: true, force: true });
   });
 
-  it("rejects a follow-up message while a turn is already active", async () => {
+  it("forwards a follow-up message while a turn is already active", async () => {
     const { runtime, pendingPrompts, streamPrompt } = createRuntimeManagerStub();
     const service = new DesktopService(runtime);
     const threadId = service.getSnapshot().threads[0]?.id ?? "";
@@ -107,17 +107,33 @@ describe("DesktopService", () => {
       content: "second task",
     });
 
-    expect(streamPrompt).toHaveBeenCalledTimes(1);
-    await vi.waitFor(() => {
-      expect(events).toContainEqual({
-        type: "error",
-        threadId,
-        message:
-          "This thread already has an active turn. Wait for it to finish or stop it first.",
-      });
-    });
+    await vi.waitFor(() => expect(streamPrompt).toHaveBeenCalledTimes(2));
+    expect(
+      events.some(
+        (event) =>
+          event.type === "error" &&
+          event.threadId === threadId &&
+          event.message.includes("active turn"),
+      ),
+    ).toBe(false);
 
-    pendingPrompts.shift()?.resolve({
+    const firstPrompt = pendingPrompts.shift();
+    expect(firstPrompt).toBeTruthy();
+    firstPrompt?.options.onRuntimeEvent?.({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "session-1",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: {
+            type: "text",
+            text: "first answer in progress",
+          },
+        },
+      },
+    });
+    firstPrompt?.resolve({
       finalText: "first answer",
       model: "sonnet",
       sessionId: "session-1",
@@ -126,7 +142,20 @@ describe("DesktopService", () => {
 
     await vi.waitFor(() => {
       const messages = service.getSnapshot().messagesByThread[threadId] ?? [];
-      expect(messages.at(-1)?.content).toBe("first answer");
+      expect(messages.filter((message) => message.role === "user")).toHaveLength(2);
+      expect(
+        messages.some(
+          (message) => message.role === "user" && message.content === "second task",
+        ),
+      ).toBe(true);
+      expect(
+        messages.some(
+          (message) =>
+            message.role === "assistant" &&
+            message.status === "done" &&
+            JSON.stringify(message.content).includes("first answer"),
+        ),
+      ).toBe(true);
       expect(messages.every((message) => message.status !== "streaming")).toBe(true);
     });
 

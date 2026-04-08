@@ -7,7 +7,6 @@ import type {
   DesktopServerEvent,
   DesktopSnapshot,
 } from "../../desktop/shared/protocol";
-import type { Message } from "../../src/types";
 import {
   applyRuntimeEventToMessages,
   desktopMessageToUiMessage,
@@ -472,11 +471,12 @@ export class DesktopService {
       });
       return;
     }
-    if (this.activeThreadRuns.has(threadId)) {
+    const activeRun = this.activeThreadRuns.get(threadId);
+    if (activeRun?.stopRequested) {
       this.broadcast({
         type: "error",
         threadId,
-        message: "This thread already has an active turn. Wait for it to finish or stop it first.",
+        message: "This thread is stopping. Wait for it to finish or send again after it stops.",
       });
       return;
     }
@@ -484,14 +484,51 @@ export class DesktopService {
     const promptContent = promptUpdate.content;
     this.store.appendMessage(threadId, "user", promptContent, "done");
     this.emitSnapshot();
-    const activeRun: ActiveThreadRun = {
+    if (activeRun) {
+      void this.forwardPromptToActiveThread(threadId, promptContent, activeRun);
+      return;
+    }
+
+    const nextActiveRun: ActiveThreadRun = {
       stopRequested: false,
     };
-    this.activeThreadRuns.set(threadId, activeRun);
+    this.activeThreadRuns.set(threadId, nextActiveRun);
     try {
-      await this.processThreadTurn(threadId, promptContent, activeRun);
+      await this.processThreadTurn(threadId, promptContent, nextActiveRun);
     } finally {
       this.activeThreadRuns.delete(threadId);
+    }
+  }
+
+  private async forwardPromptToActiveThread(
+    threadId: string,
+    content: string,
+    activeRun: ActiveThreadRun,
+  ): Promise<void> {
+    const provider = requireDesktopProvider(this.store.getThreadProvider(threadId));
+    const model = this.getCurrentModel(provider);
+    const providerSessionId = this.store.getProviderSessionId(threadId, provider.id);
+
+    try {
+      await this.runtimeManager.streamPrompt({
+        provider,
+        threadId,
+        content,
+        model,
+        sessionId: providerSessionId,
+        onSessionId: (sessionId) => {
+          this.store.setProviderSessionId(threadId, provider.id, sessionId);
+        },
+      });
+    } catch (error) {
+      if (activeRun.stopRequested) {
+        return;
+      }
+      this.broadcast({
+        type: "error",
+        threadId,
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -546,9 +583,6 @@ export class DesktopService {
       assistantId = assistant.id;
       this.emitSnapshot();
 
-      let persistedThreadMessages: Message[] = this.store
-        .getThreadMessages(threadId)
-        .map(desktopMessageToUiMessage);
       const streamingMessageIds: Record<string, string | null> = {
         [threadId]: assistant.id,
       };
@@ -600,8 +634,11 @@ export class DesktopService {
             event,
           });
 
-          persistedThreadMessages = applyRuntimeEventToMessages(
-            persistedThreadMessages,
+          const currentThreadMessages = this.store
+            .getThreadMessages(threadId)
+            .map(desktopMessageToUiMessage);
+          const nextThreadMessages = applyRuntimeEventToMessages(
+            currentThreadMessages,
             threadId,
             provider.id,
             event,
@@ -610,7 +647,7 @@ export class DesktopService {
           this.store.replaceThreadMessages(
             threadId,
             uiMessagesToDesktopMessages(
-              persistedThreadMessages,
+              nextThreadMessages,
               this.store.getThreadMessages(threadId),
             ),
           );
