@@ -14,17 +14,18 @@ export interface Thread {
 
 export type PreviewTarget =
   | {
-      kind: 'app';
-      scriptName: string;
-      isPublic: boolean;
-    }
-  | {
       kind: 'file';
       source: 'workspace' | 'upload' | 'output';
       workspaceId: string;
       path: string;
       filename?: string;
+      title?: string;
       contentType?: string;
+    }
+  | {
+      kind: 'url';
+      url: string;
+      title?: string;
     };
 
 export interface PreviewTab {

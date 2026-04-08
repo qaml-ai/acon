@@ -15,6 +15,16 @@ protocol.registerSchemesAsPrivileged([
       stream: true,
     },
   },
+  {
+    scheme: 'desktop-preview',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+    },
+  },
 ]);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -77,6 +87,42 @@ function getWindowBackgroundColor() {
 
 function applyWindowAppearance(window) {
   window.setBackgroundColor(getWindowBackgroundColor());
+}
+
+function decodeHex(text) {
+  if (!text || text.length % 2 !== 0 || /[^0-9a-f]/i.test(text)) {
+    return null;
+  }
+
+  let decoded = '';
+  for (let index = 0; index < text.length; index += 2) {
+    decoded += String.fromCharCode(Number.parseInt(text.slice(index, index + 2), 16));
+  }
+  return decoded;
+}
+
+function decodeDesktopPreviewProxyHost(hostname) {
+  if (!hostname.startsWith('item-')) {
+    return null;
+  }
+
+  const decoded = decodeHex(hostname.slice('item-'.length));
+  if (!decoded) {
+    return null;
+  }
+
+  const separatorIndex = decoded.indexOf('\n');
+  if (separatorIndex === -1) {
+    return null;
+  }
+
+  const threadId = decoded.slice(0, separatorIndex).trim();
+  const itemId = decoded.slice(separatorIndex + 1).trim();
+  if (!threadId || !itemId) {
+    return null;
+  }
+
+  return { threadId, itemId };
 }
 
 function recordStartup(stage, detail = {}) {
@@ -760,6 +806,41 @@ app.whenReady().then(async () => {
   protocol.handle('desktop-plugin', (request) => {
     try {
       return net.fetch(pathToFileURL(fromDesktopPluginUrl(request.url)).toString());
+    } catch (error) {
+      return new Response(error instanceof Error ? error.message : String(error), {
+        status: 404,
+      });
+    }
+  });
+  protocol.handle('desktop-preview', async (request) => {
+    try {
+      await ensureBackend();
+      const previewContext = decodeDesktopPreviewProxyHost(new URL(request.url).hostname);
+      if (!previewContext || !directDesktopService?.fetchThreadPreviewResource) {
+        return new Response('Preview proxy is unavailable.', { status: 404 });
+      }
+
+      const requestUrl = new URL(request.url);
+      const result = await directDesktopService.fetchThreadPreviewResource(
+        previewContext.threadId,
+        previewContext.itemId,
+        {
+          pathname: requestUrl.pathname,
+          search: requestUrl.search,
+        },
+      );
+
+      if (result.localPath) {
+        return net.fetch(pathToFileURL(result.localPath).toString());
+      }
+
+      return new Response(
+        result.bodyBase64 ? Buffer.from(result.bodyBase64, 'base64') : null,
+        {
+          status: result.status,
+          headers: result.headers,
+        },
+      );
     } catch (error) {
       return new Response(error instanceof Error ? error.message : String(error), {
         status: 404,

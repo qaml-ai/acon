@@ -7,16 +7,21 @@ import type {
   DesktopMessage,
   DesktopModel,
   DesktopModelOption,
-  DesktopPanel,
+  DesktopPreviewItem,
+  DesktopPreviewTarget,
   DesktopProvider,
   DesktopProviderOption,
   DesktopRuntimeStatus,
   DesktopSnapshot,
   DesktopTab,
   DesktopThread,
-  DesktopThreadPanelState,
+  DesktopThreadPreviewState,
   DesktopView,
 } from '../../desktop/shared/protocol';
+import {
+  getDesktopPreviewItemId,
+  getDesktopPreviewItemTitle,
+} from '../../desktop/shared/preview';
 import type { ContentBlock } from '../../src/types';
 import { extractTextContent } from '../../desktop/shared/message-state';
 import {
@@ -38,7 +43,7 @@ interface PersistedState {
   activeViewId?: string | null;
   provider: DesktopProvider;
   modelsByProvider: Partial<Record<DesktopProvider, DesktopModel>>;
-  threadPanelStateById?: Record<string, DesktopThreadPanelState>;
+  threadPreviewStateById?: Record<string, PersistedThreadPreviewState>;
   providerStateByThread?: Partial<
     Record<
       string,
@@ -55,6 +60,17 @@ interface PersistedState {
   pluginEnabledById?: Record<string, boolean>;
   threads: DesktopThread[];
   messagesByThread: Record<string, DesktopMessage[]>;
+}
+
+interface PersistedPreviewItem {
+  id: string;
+  target: DesktopPreviewTarget;
+}
+
+interface PersistedThreadPreviewState {
+  visible: boolean;
+  activeItemId: string | null;
+  items: PersistedPreviewItem[];
 }
 
 type PersistedDesktopThread = Omit<DesktopThread, 'provider'> & {
@@ -94,19 +110,128 @@ function normalizePersistedId(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function normalizePanelState(value: unknown): DesktopThreadPanelState | null {
+function normalizePreviewTarget(value: unknown): DesktopPreviewTarget | null {
   if (!value || typeof value !== 'object') {
     return null;
   }
 
-  const panel = value as {
-    panelId?: unknown;
-    pageId?: unknown;
+  const target = value as {
+    kind?: unknown;
+    source?: unknown;
+    workspaceId?: unknown;
+    path?: unknown;
+    filename?: unknown;
+    title?: unknown;
+    contentType?: unknown;
+    url?: unknown;
+  };
+
+  if (target.kind === 'url' && typeof target.url === 'string') {
+    const url = target.url.trim();
+    if (!url) {
+      return null;
+    }
+    return {
+      kind: 'url',
+      url,
+      title: typeof target.title === 'string' ? target.title : null,
+    };
+  }
+
+  if (
+    target.kind === 'file' &&
+    (target.source === 'workspace' || target.source === 'upload' || target.source === 'output') &&
+    typeof target.path === 'string'
+  ) {
+    const path = target.path.trim();
+    if (!path) {
+      return null;
+    }
+
+    return {
+      kind: 'file',
+      source: target.source,
+      workspaceId: typeof target.workspaceId === 'string' ? target.workspaceId : null,
+      path,
+      filename: typeof target.filename === 'string' ? target.filename : null,
+      title: typeof target.title === 'string' ? target.title : null,
+      contentType: typeof target.contentType === 'string' ? target.contentType : null,
+    };
+  }
+
+  return null;
+}
+
+function normalizePreviewItem(value: unknown): PersistedPreviewItem | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const item = value as {
+    id?: unknown;
+    target?: unknown;
+  };
+  const target = normalizePreviewTarget(item.target);
+  if (!target) {
+    return null;
+  }
+
+  return {
+    id: normalizePersistedId(item.id) ?? getDesktopPreviewItemId(target),
+    target,
+  };
+}
+
+function normalizePreviewState(value: unknown): PersistedThreadPreviewState | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const preview = value as {
+    items?: unknown;
+    activeItemId?: unknown;
     visible?: unknown;
   };
+  const items = Array.isArray(preview.items)
+    ? preview.items.flatMap((item) => {
+        const normalized = normalizePreviewItem(item);
+        return normalized ? [normalized] : [];
+      })
+    : [];
+  const activeItemId = normalizePersistedId(preview.activeItemId);
+
   return {
-    panelId: normalizePersistedId(panel.panelId ?? panel.pageId),
-    visible: panel.visible === true,
+    visible: preview.visible === true && items.length > 0,
+    activeItemId:
+      activeItemId && items.some((item) => item.id === activeItemId)
+        ? activeItemId
+        : items[0]?.id ?? null,
+    items,
+  };
+}
+
+function toDesktopPreviewState(
+  state: PersistedThreadPreviewState | undefined,
+): DesktopThreadPreviewState {
+  const items: DesktopPreviewItem[] = (state?.items ?? []).map((item) => ({
+    id: item.id,
+    title: getDesktopPreviewItemTitle(item.target),
+    target: item.target,
+    src: null,
+    contentType:
+      item.target.kind === 'file'
+        ? item.target.contentType ?? null
+        : null,
+  }));
+  const activeItemId =
+    state?.activeItemId && items.some((item) => item.id === state.activeItemId)
+      ? state.activeItemId
+      : items[0]?.id ?? null;
+
+  return {
+    visible: state?.visible === true && items.length > 0,
+    activeItemId,
+    items,
   };
 }
 
@@ -162,7 +287,7 @@ export class DesktopStore {
         model?: DesktopModel;
         threads?: PersistedDesktopThread[];
         activePluginPageId?: string | null;
-        threadPreviewStateById?: Record<string, unknown>;
+        threadPanelStateById?: Record<string, unknown>;
       };
       const providerAdapter = requireDesktopProvider(
         parsed.provider ?? getDefaultProvider(),
@@ -230,11 +355,11 @@ export class DesktopStore {
               requireDesktopProvider(activeThreadProvider).getDefaultModel(),
           ),
         },
-        threadPanelStateById: Object.fromEntries(
+        threadPreviewStateById: Object.fromEntries(
           Object.entries(
-            parsed.threadPanelStateById ?? parsed.threadPreviewStateById ?? {},
-          ).flatMap(([threadId, panelState]) => {
-            const normalized = normalizePanelState(panelState);
+            parsed.threadPreviewStateById ?? parsed.threadPanelStateById ?? {},
+          ).flatMap(([threadId, previewState]) => {
+            const normalized = normalizePreviewState(previewState);
             return normalized ? [[threadId, normalized]] : [];
           }),
         ),
@@ -261,7 +386,7 @@ export class DesktopStore {
         modelsByProvider: {
           [provider]: requireDesktopProvider(provider).getDefaultModel(),
         },
-        threadPanelStateById: {},
+        threadPreviewStateById: {},
         providerStateByThread: {},
         pluginEnabledById: {},
         threads: [],
@@ -492,73 +617,180 @@ export class DesktopStore {
     this.persist();
   }
 
-  getThreadPanelStateById(): Record<string, DesktopThreadPanelState> {
+  getThreadPreviewStateById(): Record<string, DesktopThreadPreviewState> {
     return Object.fromEntries(
-      Object.entries(this.state.threadPanelStateById ?? {}).map(
-        ([threadId, panelState]) => [
-          threadId,
-          {
-            panelId: normalizePersistedId(panelState.panelId),
-            visible: panelState.visible === true,
-          },
-        ],
-      ),
+      Object.entries(this.state.threadPreviewStateById ?? {}).map(([threadId, previewState]) => [
+        threadId,
+        toDesktopPreviewState(previewState),
+      ]),
     );
   }
 
-  getThreadPanelState(threadId: string): DesktopThreadPanelState {
-    const panelState = this.state.threadPanelStateById?.[threadId];
-    return {
-      panelId: normalizePersistedId(panelState?.panelId),
-      visible: panelState?.visible === true,
-    };
+  getThreadPreviewState(threadId: string): DesktopThreadPreviewState {
+    return toDesktopPreviewState(this.state.threadPreviewStateById?.[threadId]);
   }
 
-  openThreadPanel(threadId: string, panelId: string): void {
-    if (!this.getThread(threadId)) {
-      throw new Error(`Thread ${threadId} does not exist`);
-    }
-
-    this.state.threadPanelStateById = {
-      ...(this.state.threadPanelStateById ?? {}),
-      [threadId]: {
-        panelId: normalizePersistedId(panelId),
-        visible: true,
-      },
-    };
-    this.persist();
-  }
-
-  closeThreadPanel(threadId: string): void {
-    if (!this.getThread(threadId)) {
-      throw new Error(`Thread ${threadId} does not exist`);
-    }
-
-    const current = this.state.threadPanelStateById ?? {};
-    this.state.threadPanelStateById = {
-      ...current,
-      [threadId]: {
-        panelId: normalizePersistedId(current[threadId]?.panelId),
-        visible: false,
-      },
-    };
-    this.persist();
-  }
-
-  setThreadPanelState(
+  setThreadPreviewItems(
     threadId: string,
-    panelId: string | null,
-    visible: boolean,
+    targets: DesktopPreviewTarget[],
+    activeItemId?: string | null,
   ): void {
     if (!this.getThread(threadId)) {
       throw new Error(`Thread ${threadId} does not exist`);
     }
 
-    this.state.threadPanelStateById = {
-      ...(this.state.threadPanelStateById ?? {}),
+    const items = targets.flatMap((target) => {
+      const normalized = normalizePreviewTarget(target);
+      if (!normalized) {
+        return [];
+      }
+
+      return [{
+        id: getDesktopPreviewItemId(normalized),
+        target: normalized,
+      }];
+    });
+
+    const dedupedItems = items.filter((item, index) =>
+      items.findIndex((candidate) => candidate.id === item.id) === index,
+    );
+    const nextActiveItemId =
+      normalizePersistedId(activeItemId) &&
+      dedupedItems.some((item) => item.id === normalizePersistedId(activeItemId))
+        ? normalizePersistedId(activeItemId)
+        : dedupedItems[0]?.id ?? null;
+
+    this.state.threadPreviewStateById = {
+      ...(this.state.threadPreviewStateById ?? {}),
       [threadId]: {
-        panelId: normalizePersistedId(panelId),
-        visible,
+        visible: dedupedItems.length > 0,
+        activeItemId: nextActiveItemId,
+        items: dedupedItems,
+      },
+    };
+    this.persist();
+  }
+
+  openThreadPreviewItem(threadId: string, target: DesktopPreviewTarget): void {
+    if (!this.getThread(threadId)) {
+      throw new Error(`Thread ${threadId} does not exist`);
+    }
+
+    const normalized = normalizePreviewTarget(target);
+    if (!normalized) {
+      return;
+    }
+
+    const current = this.state.threadPreviewStateById?.[threadId] ?? {
+      visible: false,
+      activeItemId: null,
+      items: [],
+    };
+    const nextItem: PersistedPreviewItem = {
+      id: getDesktopPreviewItemId(normalized),
+      target: normalized,
+    };
+    const existingIndex = current.items.findIndex((item) => item.id === nextItem.id);
+    const items =
+      existingIndex === -1
+        ? [...current.items, nextItem]
+        : current.items.map((item, index) => (index === existingIndex ? nextItem : item));
+
+    this.state.threadPreviewStateById = {
+      ...(this.state.threadPreviewStateById ?? {}),
+      [threadId]: {
+        visible: items.length > 0,
+        activeItemId: nextItem.id,
+        items,
+      },
+    };
+    this.persist();
+  }
+
+  selectThreadPreviewItem(threadId: string, itemId: string): void {
+    if (!this.getThread(threadId)) {
+      throw new Error(`Thread ${threadId} does not exist`);
+    }
+
+    const current = this.state.threadPreviewStateById?.[threadId];
+    const normalizedItemId = normalizePersistedId(itemId);
+    if (!current || !normalizedItemId || !current.items.some((item) => item.id === normalizedItemId)) {
+      return;
+    }
+
+    this.state.threadPreviewStateById = {
+      ...(this.state.threadPreviewStateById ?? {}),
+      [threadId]: {
+        ...current,
+        visible: current.items.length > 0,
+        activeItemId: normalizedItemId,
+      },
+    };
+    this.persist();
+  }
+
+  closeThreadPreviewItem(threadId: string, itemId: string): void {
+    if (!this.getThread(threadId)) {
+      throw new Error(`Thread ${threadId} does not exist`);
+    }
+
+    const current = this.state.threadPreviewStateById?.[threadId];
+    const normalizedItemId = normalizePersistedId(itemId);
+    if (!current || !normalizedItemId) {
+      return;
+    }
+
+    const items = current.items.filter((item) => item.id !== normalizedItemId);
+    const activeItemId =
+      current.activeItemId === normalizedItemId
+        ? items[0]?.id ?? null
+        : current.activeItemId && items.some((item) => item.id === current.activeItemId)
+          ? current.activeItemId
+          : items[0]?.id ?? null;
+
+    this.state.threadPreviewStateById = {
+      ...(this.state.threadPreviewStateById ?? {}),
+      [threadId]: {
+        visible: current.visible && items.length > 0,
+        activeItemId,
+        items,
+      },
+    };
+    this.persist();
+  }
+
+  clearThreadPreview(threadId: string): void {
+    if (!this.getThread(threadId)) {
+      throw new Error(`Thread ${threadId} does not exist`);
+    }
+
+    this.state.threadPreviewStateById = {
+      ...(this.state.threadPreviewStateById ?? {}),
+      [threadId]: {
+        visible: false,
+        activeItemId: null,
+        items: [],
+      },
+    };
+    this.persist();
+  }
+
+  setThreadPreviewVisibility(threadId: string, visible: boolean): void {
+    if (!this.getThread(threadId)) {
+      throw new Error(`Thread ${threadId} does not exist`);
+    }
+
+    const current = this.state.threadPreviewStateById?.[threadId] ?? {
+      visible: false,
+      activeItemId: null,
+      items: [],
+    };
+
+    this.state.threadPreviewStateById = {
+      ...(this.state.threadPreviewStateById ?? {}),
+      [threadId]: {
+        ...current,
+        visible: visible && current.items.length > 0,
       },
     };
     this.persist();
@@ -686,11 +918,12 @@ export class DesktopStore {
     };
     this.state.threads.unshift(thread);
     this.state.messagesByThread[thread.id] = [];
-    this.state.threadPanelStateById = {
-      ...(this.state.threadPanelStateById ?? {}),
+    this.state.threadPreviewStateById = {
+      ...(this.state.threadPreviewStateById ?? {}),
       [thread.id]: {
-        panelId: null,
         visible: false,
+        activeItemId: null,
+        items: [],
       },
     };
     this.state.providerStateByThread = {
@@ -821,7 +1054,6 @@ export class DesktopStore {
     availableModels: DesktopModelOption[],
     auth: DesktopAuthState,
     views: DesktopView[],
-    panels: DesktopPanel[],
     plugins: DesktopSnapshot['plugins'],
   ): DesktopSnapshot {
     const tabs = this.normalizeTabs(views);
@@ -835,7 +1067,7 @@ export class DesktopStore {
       activeTabId: this.getActiveTabId(),
       activeThreadId: this.state.activeThreadId,
       activeViewId: this.getActiveViewId(),
-      threadPanelStateById: this.getThreadPanelStateById(),
+      threadPreviewStateById: this.getThreadPreviewStateById(),
       threads: this.listThreads(),
       messagesByThread: this.getMessagesByThread(),
       provider,
@@ -845,7 +1077,6 @@ export class DesktopStore {
       auth,
       runtimeStatus,
       views,
-      panels,
       plugins,
       pendingPermissionRequest: null,
     };

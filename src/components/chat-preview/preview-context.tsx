@@ -5,6 +5,12 @@ import type { PreviewTarget } from '@/types';
 
 interface ChatPreviewContextValue {
   openPreviewTarget: (target: PreviewTarget) => void;
+  setPreviewTargets: (
+    targets: PreviewTarget[],
+    options?: {
+      activeTarget?: PreviewTarget | null;
+    }
+  ) => void;
   clearPreviewTarget: () => void;
 }
 

@@ -250,7 +250,7 @@ function createSnapshot(): DesktopSnapshot {
         id: "tab-thread-1",
         kind: "thread",
         threadId: "thread-1",
-        viewId: "plugin:chat-core:chat-core.thread",
+        viewId: "core:chat-thread",
         title: "Claude test thread",
         subtitle: null,
         icon: "MessagesSquare",
@@ -259,11 +259,12 @@ function createSnapshot(): DesktopSnapshot {
     ],
     activeTabId: "tab-thread-1",
     activeThreadId: "thread-1",
-    activeViewId: "plugin:chat-core:chat-core.thread",
-    threadPanelStateById: {
+    activeViewId: "core:chat-thread",
+    threadPreviewStateById: {
       "thread-1": {
-        panelId: null,
         visible: false,
+        activeItemId: null,
+        items: [],
       },
     },
     provider: "claude",
@@ -294,11 +295,11 @@ function createSnapshot(): DesktopSnapshot {
     },
     views: [
       {
-        id: "plugin:chat-core:chat-core.thread",
+        id: "core:chat-thread",
         title: "Chat",
         description: "Thread-focused chat workspace.",
         icon: "MessagesSquare",
-        pluginId: "chat-core",
+        pluginId: null,
         scope: "thread",
         isDefault: true,
         render: {
@@ -322,67 +323,7 @@ function createSnapshot(): DesktopSnapshot {
         hostData: null,
       },
     ],
-    panels: [
-      {
-        id: "plugin:random-site-preview:random-site-preview.frame",
-        title: "Random Site Preview",
-        description: "Shows a thread-specific random website.",
-        icon: "Globe",
-        pluginId: "random-site-preview",
-        autoOpen: "all-threads",
-        render: {
-          kind: "webview",
-          entrypoint: "/tmp/random-site-preview/site/index.html",
-        },
-        hostData: null,
-      },
-    ],
     plugins: [
-      {
-        id: "chat-core",
-        name: "Chat",
-        version: "0.1.0",
-        description: "Provides the primary thread chat workbench view.",
-        source: "builtin",
-        enabled: true,
-        disableable: false,
-        path: "/tmp/chat-core",
-        main: "/tmp/chat-core/index.ts",
-        webviews: [],
-        permissions: [],
-        settings: null,
-        compatibility: {
-          currentApiVersion: 1,
-          declaredApiVersion: 1,
-          minApiVersion: 1,
-          compatible: true,
-          reason: null,
-        },
-        capabilities: {
-          views: [
-            {
-              id: "chat-core.thread",
-              title: "Chat",
-              description: "Thread-focused chat workspace.",
-              icon: "MessagesSquare",
-              scope: "thread",
-              default: true,
-            },
-          ],
-          panels: [],
-          commands: [],
-          tools: [],
-        },
-        runtime: {
-          activated: true,
-          activationError: null,
-          subscribedEvents: [],
-          registeredViewIds: ["chat-core.thread"],
-          registeredPanelIds: [],
-          registeredCommandIds: [],
-          registeredToolIds: [],
-        },
-      },
       {
         id: "extension-lab",
         name: "Extension Lab",
@@ -414,7 +355,6 @@ function createSnapshot(): DesktopSnapshot {
               default: false,
             },
           ],
-          panels: [],
           commands: [],
           tools: [],
         },
@@ -423,7 +363,6 @@ function createSnapshot(): DesktopSnapshot {
           activationError: null,
           subscribedEvents: [],
           registeredViewIds: ["extension-lab.home"],
-          registeredPanelIds: [],
           registeredCommandIds: [],
           registeredToolIds: [],
         },
@@ -455,15 +394,6 @@ function createSnapshot(): DesktopSnapshot {
         },
         capabilities: {
           views: [],
-          panels: [
-            {
-              id: "random-site-preview.frame",
-              title: "Random Site Preview",
-              description: "Shows a thread-specific random website.",
-              icon: "Globe",
-              autoOpen: "all-threads",
-            },
-          ],
           commands: [],
           tools: [],
         },
@@ -472,7 +402,6 @@ function createSnapshot(): DesktopSnapshot {
           activationError: null,
           subscribedEvents: [],
           registeredViewIds: [],
-          registeredPanelIds: ["random-site-preview.frame"],
           registeredCommandIds: [],
           registeredToolIds: [],
         },
@@ -499,7 +428,6 @@ function createSnapshot(): DesktopSnapshot {
         },
         capabilities: {
           views: [],
-          panels: [],
           commands: [
             {
               id: "thread-journal.reset",
@@ -522,7 +450,6 @@ function createSnapshot(): DesktopSnapshot {
           activationError: null,
           subscribedEvents: ["before_prompt"],
           registeredViewIds: [],
-          registeredPanelIds: [],
           registeredCommandIds: ["thread-journal.reset"],
           registeredToolIds: ["thread-journal.snapshot"],
         },
@@ -727,7 +654,7 @@ describe("desktop container renderer streaming", () => {
       snapshot: {
         ...snapshot,
         activeTabId: "tab-thread-1",
-        activeViewId: "plugin:chat-core:chat-core.thread",
+        activeViewId: "core:chat-thread",
       },
     });
 
@@ -782,7 +709,7 @@ describe("desktop container renderer streaming", () => {
       snapshot: {
         ...snapshot,
         activeTabId: "tab-thread-1",
-        activeViewId: "plugin:chat-core:chat-core.thread",
+        activeViewId: "core:chat-thread",
       },
     });
 
@@ -877,7 +804,7 @@ describe("desktop container renderer streaming", () => {
         ...snapshot,
         tabs: [snapshot.tabs[0]],
         activeTabId: "tab-thread-1",
-        activeViewId: "plugin:chat-core:chat-core.thread",
+        activeViewId: "core:chat-thread",
       },
     });
 
@@ -890,9 +817,22 @@ describe("desktop container renderer streaming", () => {
 
   it("renders the right panel from thread-owned state while chat stays visible", async () => {
     const snapshot = createSnapshot();
-    snapshot.threadPanelStateById["thread-1"] = {
-      panelId: "plugin:random-site-preview:random-site-preview.frame",
+    snapshot.threadPreviewStateById["thread-1"] = {
       visible: true,
+      activeItemId: "url:https://example.com/preview",
+      items: [
+        {
+          id: "url:https://example.com/preview",
+          title: "Random Site Preview",
+          target: {
+            kind: "url",
+            url: "https://example.com/preview",
+            title: "Random Site Preview",
+          },
+          src: "https://example.com/preview",
+          contentType: null,
+        },
+      ],
     };
     snapshot.messagesByThread["thread-1"] = [
       {
@@ -908,58 +848,84 @@ describe("desktop container renderer streaming", () => {
     await renderAppWithShell(snapshot);
 
     await waitFor(() => {
-      expect(screen.getByTitle("Random Site Preview plugin webview")).toBeInTheDocument();
+      expect(screen.getByTitle("Random Site Preview")).toBeInTheDocument();
     });
 
     expect(
       screen.getByText("Chat stays visible while the plugin pane is open."),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Prompt input")).toBeInTheDocument();
-    expect(screen.getByTitle("Random Site Preview plugin webview")).toHaveAttribute(
+    expect(screen.getByTitle("Random Site Preview")).toHaveAttribute(
       "src",
-      "desktop-plugin://local/tmp/random-site-preview/site/index.html?threadId=thread-1&pluginId=random-site-preview&surfaceId=plugin%3Arandom-site-preview%3Arandom-site-preview.frame&surface=companion",
+      "https://example.com/preview",
     );
   });
 
   it("can render a thread-specific random-site panel in the right pane", async () => {
     const snapshot = createSnapshot();
-    snapshot.threadPanelStateById["thread-1"] = {
-      panelId: "plugin:random-site-preview:random-site-preview.frame",
+    snapshot.threadPreviewStateById["thread-1"] = {
       visible: true,
+      activeItemId: "url:https://example.com/preview",
+      items: [
+        {
+          id: "url:https://example.com/preview",
+          title: "Random Site Preview",
+          target: {
+            kind: "url",
+            url: "https://example.com/preview",
+            title: "Random Site Preview",
+          },
+          src: "https://example.com/preview",
+          contentType: null,
+        },
+      ],
     };
 
     await renderAppWithShell(snapshot);
 
     await waitFor(() => {
       expect(
-        screen.getByTitle("Random Site Preview plugin webview"),
+        screen.getByTitle("Random Site Preview"),
       ).toBeInTheDocument();
     });
 
     expect(
-      screen.getByTitle("Random Site Preview plugin webview"),
+      screen.getByTitle("Random Site Preview"),
     ).toHaveAttribute(
       "src",
-      "desktop-plugin://local/tmp/random-site-preview/site/index.html?threadId=thread-1&pluginId=random-site-preview&surfaceId=plugin%3Arandom-site-preview%3Arandom-site-preview.frame&surface=companion",
+      "https://example.com/preview",
     );
   });
 
-  it("keeps the companion webview mounted while chat messages stream", async () => {
+  it("keeps the preview iframe mounted while chat messages stream", async () => {
     const snapshot = createSnapshot();
-    snapshot.threadPanelStateById["thread-1"] = {
-      panelId: "plugin:random-site-preview:random-site-preview.frame",
+    snapshot.threadPreviewStateById["thread-1"] = {
       visible: true,
+      activeItemId: "url:https://example.com/preview",
+      items: [
+        {
+          id: "url:https://example.com/preview",
+          title: "Random Site Preview",
+          target: {
+            kind: "url",
+            url: "https://example.com/preview",
+            title: "Random Site Preview",
+          },
+          src: "https://example.com/preview",
+          contentType: null,
+        },
+      ],
     };
 
     const { emit } = await renderAppWithShell(snapshot);
 
     await waitFor(() => {
       expect(
-        screen.getByTitle("Random Site Preview plugin webview"),
+        screen.getByTitle("Random Site Preview"),
       ).toBeInTheDocument();
     });
 
-    const iframeBefore = screen.getByTitle("Random Site Preview plugin webview");
+    const iframeBefore = screen.getByTitle("Random Site Preview");
 
     await emit(
       createAcpRuntimeEvent({
@@ -974,7 +940,7 @@ describe("desktop container renderer streaming", () => {
       ).toBeInTheDocument();
     });
 
-    expect(screen.getByTitle("Random Site Preview plugin webview")).toBe(
+    expect(screen.getByTitle("Random Site Preview")).toBe(
       iframeBefore,
     );
   });

@@ -1,6 +1,6 @@
 export type CamelAIHarness = "opencode" | "claude-code" | "codex";
 export const CAMELAI_PLUGIN_API_VERSION = 1;
-export type CamelAIPermission = "host-mcp" | "serve-mcp";
+export type CamelAIPermission = "host-mcp" | "serve-mcp" | "thread-preview";
 export type CamelAISettingFieldType =
   | "boolean"
   | "number"
@@ -83,16 +83,6 @@ export interface CamelAIViewRegistration {
     | { kind: "webview"; webviewId: string };
 }
 
-export interface CamelAIPanelRegistration {
-  title: string;
-  description?: string;
-  icon?: string;
-  autoOpen?: "never" | "new-thread" | "all-threads";
-  render:
-    | { kind: "host"; component: string }
-    | { kind: "webview"; webviewId: string };
-}
-
 export interface CamelAICommandRegistration {
   title: string;
   description?: string;
@@ -156,6 +146,39 @@ export interface CamelAIMcpServerRegistration {
 export interface CamelAIHostMcpServerRegistration
   extends CamelAIMcpServerRegistration {
   id: string;
+}
+
+export type CamelAIPreviewTarget =
+  | {
+      kind: "file";
+      source: "workspace" | "upload" | "output";
+      workspaceId?: string | null;
+      path: string;
+      filename?: string | null;
+      title?: string | null;
+      contentType?: string | null;
+    }
+  | {
+      kind: "url";
+      url: string;
+      title?: string | null;
+    };
+
+export interface CamelAIPreviewItem {
+  id: string;
+  title: string;
+  target: CamelAIPreviewTarget;
+}
+
+export interface CamelAIThreadPreviewState {
+  visible: boolean;
+  activeItemId: string | null;
+  items: CamelAIPreviewItem[];
+}
+
+export interface CamelAIThreadPreviewMutationResult {
+  threadId: string;
+  state: CamelAIThreadPreviewState;
 }
 
 export interface CamelAIHostMcpOAuthConfig {
@@ -224,8 +247,7 @@ export type CamelAIEventName =
   | "before_prompt"
   | "turn_start"
   | "turn_end"
-  | "page_open"
-  | "preview_open";
+  | "page_open";
 
 export interface CamelAIActivationApi {
   readonly pluginId: string;
@@ -243,7 +265,6 @@ export interface CamelAIActivationApi {
     ) => Promise<unknown> | unknown,
   ): CamelAIDisposable;
   registerView(id: string, view: CamelAIViewRegistration): CamelAIDisposable;
-  registerPanel(id: string, panel: CamelAIPanelRegistration): CamelAIDisposable;
   registerCommand(
     id: string,
     command: CamelAICommandRegistration,
@@ -271,6 +292,22 @@ export interface CamelAIActivationApi {
     server: CamelAIInstallHttpHostMcpServerOptions,
   ): Promise<CamelAIInstallHostMcpServerResult>;
   uninstallInstalledHostMcpServer(serverId: string): Promise<boolean>;
+  openThreadPreviewItem(
+    target: CamelAIPreviewTarget,
+    threadId?: string | null,
+  ): CamelAIThreadPreviewMutationResult;
+  setThreadPreviewItems(
+    targets: CamelAIPreviewTarget[],
+    options?: {
+      threadId?: string | null;
+      activeIndex?: number | null;
+    },
+  ): CamelAIThreadPreviewMutationResult;
+  clearThreadPreview(threadId?: string | null): CamelAIThreadPreviewMutationResult;
+  setThreadPreviewVisibility(
+    visible: boolean,
+    threadId?: string | null,
+  ): CamelAIThreadPreviewMutationResult;
   threadState(threadId?: string | null): CamelAIThreadStateStore;
 }
 

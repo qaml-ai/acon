@@ -36,14 +36,6 @@ export interface DesktopPluginViewContribution {
   default: boolean;
 }
 
-export interface DesktopPluginPanelContribution {
-  id: string;
-  title: string;
-  description: string | null;
-  icon: string | null;
-  autoOpen: "never" | "new-thread" | "all-threads";
-}
-
 export interface DesktopPluginCommandContribution {
   id: string;
   title: string;
@@ -63,7 +55,7 @@ export interface DesktopPluginWebviewContribution {
   entrypoint: string;
 }
 
-export type DesktopPluginPermission = "host-mcp" | "serve-mcp";
+export type DesktopPluginPermission = "host-mcp" | "serve-mcp" | "thread-preview";
 
 export type DesktopPluginSettingFieldType =
   | "boolean"
@@ -115,7 +107,6 @@ export interface DesktopPluginRecord {
   compatibility: DesktopPluginCompatibility;
   capabilities: {
     views: DesktopPluginViewContribution[];
-    panels: DesktopPluginPanelContribution[];
     commands: DesktopPluginCommandContribution[];
     tools: DesktopPluginToolContribution[];
   };
@@ -124,7 +115,6 @@ export interface DesktopPluginRecord {
     activationError: string | null;
     subscribedEvents: string[];
     registeredViewIds: string[];
-    registeredPanelIds: string[];
     registeredCommandIds: string[];
     registeredToolIds: string[];
   };
@@ -150,20 +140,34 @@ export interface DesktopView {
   hostData?: DesktopPluginHostPanelData | null;
 }
 
-export interface DesktopPanel {
+export type DesktopPreviewTarget =
+  | {
+      kind: "file";
+      source: "workspace" | "upload" | "output";
+      workspaceId?: string | null;
+      path: string;
+      filename?: string | null;
+      title?: string | null;
+      contentType?: string | null;
+    }
+  | {
+      kind: "url";
+      url: string;
+      title?: string | null;
+    };
+
+export interface DesktopPreviewItem {
   id: string;
   title: string;
-  description: string | null;
-  icon: string | null;
-  pluginId: string | null;
-  autoOpen: "never" | "new-thread" | "all-threads";
-  render: DesktopPluginSurfaceRender;
-  hostData?: DesktopPluginHostPanelData | null;
+  target: DesktopPreviewTarget;
+  src: string | null;
+  contentType: string | null;
 }
 
-export interface DesktopThreadPanelState {
-  panelId: string | null;
+export interface DesktopThreadPreviewState {
   visible: boolean;
+  activeItemId: string | null;
+  items: DesktopPreviewItem[];
 }
 
 export interface DesktopTab {
@@ -253,7 +257,7 @@ export interface DesktopSnapshot {
   activeTabId: string | null;
   activeThreadId: string | null;
   activeViewId: string | null;
-  threadPanelStateById: Record<string, DesktopThreadPanelState>;
+  threadPreviewStateById: Record<string, DesktopThreadPreviewState>;
   provider: DesktopProvider;
   availableProviders: DesktopProviderOption[];
   model: DesktopModel;
@@ -261,7 +265,6 @@ export interface DesktopSnapshot {
   auth: DesktopAuthState;
   runtimeStatus: DesktopRuntimeStatus;
   views: DesktopView[];
-  panels: DesktopPanel[];
   plugins: DesktopPluginRecord[];
   pendingPermissionRequest: DesktopPermissionRequest | null;
 }
@@ -294,13 +297,34 @@ export type DesktopClientEvent =
       tabId: string;
     }
   | {
-      type: "open_thread_panel";
+      type: "preview_open_item";
       threadId: string;
-      panelId: string;
+      item: DesktopPreviewTarget;
     }
   | {
-      type: "close_thread_panel";
+      type: "preview_set_items";
       threadId: string;
+      items: DesktopPreviewTarget[];
+      activeItemId?: string | null;
+    }
+  | {
+      type: "preview_select_item";
+      threadId: string;
+      itemId: string;
+    }
+  | {
+      type: "preview_close_item";
+      threadId: string;
+      itemId: string;
+    }
+  | {
+      type: "preview_clear";
+      threadId: string;
+    }
+  | {
+      type: "preview_set_visibility";
+      threadId: string;
+      visible: boolean;
     }
   | {
       type: "send_message";
