@@ -15,6 +15,7 @@ import {
 import { resolve } from "node:path";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type {
+  AuthorizationServerMetadata,
   OAuthClientInformationMixed,
   OAuthClientMetadata,
   OAuthTokens,
@@ -35,6 +36,17 @@ export interface HostMcpOAuthConfig {
   tokenEndpointAuthMethod: string | null;
 }
 
+export function createDefaultHostMcpOAuthConfig(): HostMcpOAuthConfig {
+  return {
+    clientId: null,
+    clientMetadataUrl: null,
+    clientName: null,
+    clientSecret: null,
+    clientUri: null,
+    scope: null,
+    tokenEndpointAuthMethod: "none",
+  };
+}
 export type HostMcpBrowserOpener = (url: string) => Promise<void> | void;
 
 interface PersistedHostMcpOAuthState {
@@ -74,6 +86,25 @@ function normalizeOptionalString(value: string | null | undefined): string | nul
   return normalized ? normalized : null;
 }
 
+function isHttpsMetadataUrl(value: string | null | undefined): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.pathname !== "/";
+  } catch {
+    return false;
+  }
+}
+
+function normalizeTokenEndpointAuthMethod(
+  value: string | null | undefined,
+): string | null {
+  const normalized = normalizeOptionalString(value);
+  return normalized ?? null;
+}
 function getOAuthStateDirectory(dataDirectory: string): string {
   return resolve(
     dataDirectory,
@@ -86,6 +117,12 @@ function getOAuthStatePath(dataDirectory: string, serverId: string): string {
   return resolve(getOAuthStateDirectory(dataDirectory), `${serverId}.json`);
 }
 
+export function clearPersistedHostMcpOAuthState(
+  dataDirectory: string,
+  serverId: string,
+): void {
+  rmSync(getOAuthStatePath(dataDirectory, serverId), { force: true });
+}
 function createAuthorizationResultHtml(title: string, body: string): string {
   return `<!doctype html>
 <html lang="en">
@@ -441,7 +478,8 @@ export class PersistedHostMcpOAuthProvider implements OAuthClientProvider {
       options.dataDirectory,
       options.serverId,
     );
-    this.clientMetadataUrl = options.oauth.clientMetadataUrl ?? undefined;
+    this.clientMetadataUrl = this.resolveClientMetadataUrl();
+    this.addClientAuthentication = this.addClientAuthentication.bind(this);
   }
 
   get redirectUrl(): string {
@@ -449,12 +487,18 @@ export class PersistedHostMcpOAuthProvider implements OAuthClientProvider {
   }
 
   get clientMetadata(): OAuthClientMetadata {
+    const tokenEndpointAuthMethod =
+      normalizeTokenEndpointAuthMethod(
+        this.options.oauth.tokenEndpointAuthMethod,
+      ) ??
+      (this.options.oauth.clientSecret ? "client_secret_post" : "none");
     const metadata: OAuthClientMetadata = {
       client_name:
         this.options.oauth.clientName ?? `acon host MCP ${this.options.serverId}`,
       grant_types: ["authorization_code", "refresh_token"],
       redirect_uris: [this.options.redirectUrl],
       response_types: ["code"],
+      token_endpoint_auth_method: tokenEndpointAuthMethod,
     };
 
     if (this.options.oauth.clientUri) {
@@ -462,10 +506,6 @@ export class PersistedHostMcpOAuthProvider implements OAuthClientProvider {
     }
     if (this.options.oauth.scope) {
       metadata.scope = this.options.oauth.scope;
-    }
-    if (this.options.oauth.tokenEndpointAuthMethod) {
-      metadata.token_endpoint_auth_method =
-        this.options.oauth.tokenEndpointAuthMethod;
     }
 
     return metadata;
@@ -516,6 +556,53 @@ export class PersistedHostMcpOAuthProvider implements OAuthClientProvider {
     );
   }
 
+  async addClientAuthentication(
+    headers: Headers,
+    params: URLSearchParams,
+    _url: string | URL,
+    _metadata?: AuthorizationServerMetadata,
+  ): Promise<void> {
+    const clientInformation = this.clientInformation();
+    if (!clientInformation?.client_id) {
+      return;
+    }
+
+    const configuredMethod =
+      normalizeTokenEndpointAuthMethod(
+        "token_endpoint_auth_method" in clientInformation
+          ? clientInformation.token_endpoint_auth_method
+          : null,
+      ) ??
+      normalizeTokenEndpointAuthMethod(
+        this.options.oauth.tokenEndpointAuthMethod,
+      ) ??
+      (clientInformation.client_secret ? "client_secret_post" : "none");
+
+    params.set("client_id", clientInformation.client_id);
+
+    if (configuredMethod === "client_secret_basic") {
+      if (!clientInformation.client_secret) {
+        throw new Error(
+          `Host MCP server ${this.options.serverId} requires a client_secret for client_secret_basic authentication.`,
+        );
+      }
+
+      const credentials = Buffer.from(
+        `${clientInformation.client_id}:${clientInformation.client_secret}`,
+        "utf8",
+      ).toString("base64");
+      headers.set("Authorization", `Basic ${credentials}`);
+      return;
+    }
+
+    if (configuredMethod === "none") {
+      return;
+    }
+
+    if (clientInformation.client_secret) {
+      params.set("client_secret", clientInformation.client_secret);
+    }
+  }
   saveCodeVerifier(codeVerifier: string): void {
     const state = this.store.load();
     this.store.save({
@@ -567,5 +654,17 @@ export class PersistedHostMcpOAuthProvider implements OAuthClientProvider {
       this.options.serverId,
       timeoutMs,
     );
+  }
+
+  private resolveClientMetadataUrl(): string | undefined {
+    if (isHttpsMetadataUrl(this.options.oauth.clientMetadataUrl)) {
+      return this.options.oauth.clientMetadataUrl;
+    }
+
+    if (isHttpsMetadataUrl(this.options.oauth.clientUri)) {
+      return this.options.oauth.clientUri;
+    }
+
+    return undefined;
   }
 }

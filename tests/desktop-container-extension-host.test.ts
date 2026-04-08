@@ -282,10 +282,6 @@ describe("CamelAIExtensionHost", () => {
               headers: {
                 "x-test": "1",
               },
-              oauth: {
-                clientName: "Acon",
-                scope: "tools.read",
-              },
               name: "Remote Server",
               version: "1.0.0",
             },

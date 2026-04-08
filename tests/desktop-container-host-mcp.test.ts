@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { z } from "zod";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { HostMcpRegistry, createRemoteProxyHostMcpServer } from "../desktop-container/backend/host-mcp";
 import {
   HostMcpOAuthManager,
@@ -558,6 +559,209 @@ describe("host MCP remote proxy", () => {
     expect(secondProvider.tokens()).toBeUndefined();
     expect(secondProvider.clientInformation()).toEqual({
       client_id: "client-123",
+    });
+
+    manager.dispose();
+  });
+
+  it("defaults OAuth registration to a public client and falls back clientMetadataUrl to clientUri", async () => {
+    scratchDirectory = mkdtempSync(join(tmpdir(), "acon-host-mcp-oauth-"));
+    const manager = new HostMcpOAuthManager({
+      browserOpener: vi.fn(async () => {}),
+    });
+    const provider = new PersistedHostMcpOAuthProvider({
+      dataDirectory: scratchDirectory,
+      manager,
+      oauth: {
+        clientId: null,
+        clientMetadataUrl: null,
+        clientName: "Acon OAuth Test",
+        clientSecret: null,
+        clientUri: "https://example.com/oauth/acon-client.json",
+        scope: "tools.read",
+        tokenEndpointAuthMethod: null,
+      },
+      redirectUrl: await manager.getRedirectUrl("oauth-public-client"),
+      serverId: "oauth-public-client",
+    });
+
+    expect(provider.clientMetadataUrl).toBe(
+      "https://example.com/oauth/acon-client.json",
+    );
+    expect(provider.clientMetadata).toEqual(
+      expect.objectContaining({
+        client_name: "Acon OAuth Test",
+        token_endpoint_auth_method: "none",
+      }),
+    );
+
+    manager.dispose();
+  });
+
+  it("includes client_id in token requests even for client_secret_basic auth", async () => {
+    scratchDirectory = mkdtempSync(join(tmpdir(), "acon-host-mcp-oauth-"));
+    const manager = new HostMcpOAuthManager({
+      browserOpener: vi.fn(async () => {}),
+    });
+    const provider = new PersistedHostMcpOAuthProvider({
+      dataDirectory: scratchDirectory,
+      manager,
+      oauth: {
+        clientId: "client-123",
+        clientMetadataUrl: null,
+        clientName: "Acon OAuth Test",
+        clientSecret: "secret-123",
+        clientUri: null,
+        scope: "tools.read",
+        tokenEndpointAuthMethod: "client_secret_basic",
+      },
+      redirectUrl: await manager.getRedirectUrl("oauth-basic-client"),
+      serverId: "oauth-basic-client",
+    });
+
+    const headers = new Headers();
+    const params = new URLSearchParams();
+    await provider.addClientAuthentication(
+      headers,
+      params,
+      "https://auth.example.com/token",
+    );
+
+    expect(params.get("client_id")).toBe("client-123");
+    expect(params.get("client_secret")).toBe(null);
+    expect(headers.get("Authorization")).toBe(
+      `Basic ${Buffer.from("client-123:secret-123", "utf8").toString("base64")}`,
+    );
+
+    manager.dispose();
+  });
+
+  it("does not send client_secret for dynamically registered public clients during code exchange", async () => {
+    scratchDirectory = mkdtempSync(join(tmpdir(), "acon-host-mcp-oauth-"));
+    const manager = new HostMcpOAuthManager({
+      browserOpener: vi.fn(async () => {}),
+    });
+    const provider = new PersistedHostMcpOAuthProvider({
+      dataDirectory: scratchDirectory,
+      manager,
+      oauth: {
+        clientId: null,
+        clientMetadataUrl: null,
+        clientName: "Acon OAuth Test",
+        clientSecret: null,
+        clientUri: null,
+        scope: "tools.read",
+        tokenEndpointAuthMethod: null,
+      },
+      redirectUrl: await manager.getRedirectUrl("oauth-public-dynamic-client"),
+      serverId: "oauth-public-dynamic-client",
+    });
+
+    let tokenRequestBody = "";
+    const fetchFn: typeof fetch = vi.fn(async (input, init) => {
+      const url =
+        input instanceof URL
+          ? input
+          : new URL(typeof input === "string" ? input : input.url);
+
+      if (url.pathname.includes(".well-known/oauth-protected-resource")) {
+        return new Response("not found", {
+          status: 404,
+          headers: {
+            "content-type": "text/plain",
+          },
+        });
+      }
+
+      if (url.pathname === "/.well-known/oauth-authorization-server") {
+        return new Response(
+          JSON.stringify({
+            authorization_endpoint: "https://auth.example.com/authorize",
+            code_challenge_methods_supported: ["S256"],
+            grant_types_supported: ["authorization_code", "refresh_token"],
+            issuer: "https://auth.example.com",
+            registration_endpoint: "https://auth.example.com/register",
+            response_types_supported: ["code"],
+            token_endpoint: "https://auth.example.com/token",
+            token_endpoint_auth_methods_supported: [
+              "client_secret_basic",
+              "client_secret_post",
+              "none",
+            ],
+          }),
+          {
+            headers: {
+              "content-type": "application/json",
+            },
+            status: 200,
+          },
+        );
+      }
+
+      if (url.pathname === "/register") {
+        return new Response(
+          JSON.stringify({
+            client_id: "dynamic-client-123",
+            client_id_issued_at: 1,
+            client_name: "Acon OAuth Test",
+            client_secret: "dynamic-secret-123",
+            client_secret_expires_at: 0,
+            grant_types: ["authorization_code", "refresh_token"],
+            redirect_uris: [provider.redirectUrl],
+            response_types: ["code"],
+            token_endpoint_auth_method: "none",
+          }),
+          {
+            headers: {
+              "content-type": "application/json",
+            },
+            status: 200,
+          },
+        );
+      }
+
+      if (url.pathname === "/token") {
+        tokenRequestBody = String(init?.body ?? "");
+        expect(tokenRequestBody).toContain("client_id=dynamic-client-123");
+        expect(tokenRequestBody).not.toContain("client_secret=");
+        return new Response(
+          JSON.stringify({
+            access_token: "access-123",
+            refresh_token: "refresh-123",
+            token_type: "Bearer",
+          }),
+          {
+            headers: {
+              "content-type": "application/json",
+            },
+            status: 200,
+          },
+        );
+      }
+
+      throw new Error(`Unexpected fetch to ${url.toString()}`);
+    });
+
+    expect(
+      await auth(provider, {
+        fetchFn,
+        serverUrl: "https://auth.example.com/mcp",
+      }),
+    ).toBe("REDIRECT");
+    await fetch(`${provider.redirectUrl}?code=code-123`);
+
+    expect(
+      await auth(provider, {
+        authorizationCode: "code-123",
+        fetchFn,
+        serverUrl: "https://auth.example.com/mcp",
+      }),
+    ).toBe("AUTHORIZED");
+    expect(tokenRequestBody).toContain("code=code-123");
+    expect(provider.tokens()).toEqual({
+      access_token: "access-123",
+      refresh_token: "refresh-123",
+      token_type: "Bearer",
     });
 
     manager.dispose();
