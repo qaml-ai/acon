@@ -106,7 +106,6 @@ This environment is for \`acon\`, the standalone camelAI desktop app.
  *   finalText: string;
  *   stopReason: string | null;
  *   cancelled: boolean;
- *   sawThoughtChunk: boolean;
  *   waiters: Array<{
  *     resolve: (value: { sessionId: string; finalText: string; stopReason: string | null }) => void;
  *     reject: (error: Error) => void;
@@ -119,7 +118,6 @@ This environment is for \`acon\`, the standalone camelAI desktop app.
  *   finalText: string;
  *   turnId: string | null;
  *   cancelled: boolean;
- *   sawThoughtChunk: boolean;
  *   waiters: Array<{
  *     resolve: (value: { sessionId: string; finalText: string; stopReason: string | null }) => void;
  *     reject: (error: Error) => void;
@@ -163,10 +161,6 @@ function toTextContent(text) {
     type: "text",
     text,
   };
-}
-
-function joinTextParts(parts) {
-  return parts.filter((part) => typeof part === "string" && part).join("");
 }
 
 function emitSessionRuntimeEvent(sessionName, event) {
@@ -734,50 +728,6 @@ function emitCodexSessionUpdate(session, update) {
   emitAcpSessionUpdate(session.sessionName, session.threadId, update);
 }
 
-function emitCodexReasoningFallback(session, item) {
-  if (
-    !item ||
-    typeof item !== "object" ||
-    item.type !== "reasoning" ||
-    !session.activePrompt ||
-    session.activePrompt.sawThoughtChunk
-  ) {
-    return;
-  }
-
-  const summaryText = Array.isArray(item.summary)
-    ? joinTextParts(
-        item.summary.map((entry) =>
-          entry && typeof entry === "object" && typeof entry.text === "string"
-            ? entry.text
-            : "",
-        ),
-      )
-    : "";
-  const contentText = Array.isArray(item.content)
-    ? joinTextParts(
-        item.content.map((entry) =>
-          entry &&
-          typeof entry === "object" &&
-          (entry.type === "reasoning_text" || entry.type === "text") &&
-          typeof entry.text === "string"
-            ? entry.text
-            : "",
-        ),
-      )
-    : "";
-  const text = summaryText || contentText;
-  if (!text) {
-    return;
-  }
-
-  session.activePrompt.sawThoughtChunk = true;
-  emitCodexSessionUpdate(session, {
-    sessionUpdate: "agent_thought_chunk",
-    content: toTextContent(text),
-  });
-}
-
 function resolveClaudeToolTitle(toolUse) {
   return maybeString(toolUse.name) ?? "tool";
 }
@@ -814,9 +764,6 @@ function emitClaudeContentUpdate(session, chunk) {
     case "thinking":
     case "thinking_delta":
       if (typeof chunk.thinking === "string" && chunk.thinking) {
-        if (session.activePrompt) {
-          session.activePrompt.sawThoughtChunk = true;
-        }
         emitAcpSessionUpdate(session.sessionName, session.sessionId, {
           sessionUpdate: "agent_thought_chunk",
           content: toTextContent(chunk.thinking),
@@ -943,9 +890,6 @@ function handleCodexNotification(message) {
       method === "item/reasoning/summaryTextDelta" &&
       typeof params.delta === "string"
     ) {
-      if (session.activePrompt) {
-        session.activePrompt.sawThoughtChunk = true;
-      }
       emitCodexSessionUpdate(session, {
         sessionUpdate: "agent_thought_chunk",
         content: toTextContent(params.delta),
@@ -956,9 +900,6 @@ function handleCodexNotification(message) {
       method === "item/reasoning/textDelta" &&
       typeof params.delta === "string"
     ) {
-      if (session.activePrompt) {
-        session.activePrompt.sawThoughtChunk = true;
-      }
       emitCodexSessionUpdate(session, {
         sessionUpdate: "agent_thought_chunk",
         content: toTextContent(params.delta),
@@ -966,17 +907,10 @@ function handleCodexNotification(message) {
     }
 
     if (method === "item/reasoning/summaryPartAdded") {
-      if (session.activePrompt) {
-        session.activePrompt.sawThoughtChunk = true;
-      }
       emitCodexSessionUpdate(session, {
         sessionUpdate: "agent_thought_chunk",
         content: toTextContent("\n\n"),
       });
-    }
-
-    if (method === "rawResponseItem/completed") {
-      emitCodexReasoningFallback(session, params.item);
     }
 
     if (
@@ -1066,15 +1000,6 @@ function handleCodexNotification(message) {
       isCodexToolItem(params.item)
     ) {
       emitCodexToolCallUpdated(session, params.item);
-    }
-
-    if (
-      method === "item/completed" &&
-      params.item &&
-      typeof params.item === "object" &&
-      params.item.type === "reasoning"
-    ) {
-      emitCodexReasoningFallback(session, params.item);
     }
 
     if (
@@ -1325,19 +1250,6 @@ function emitClaudeRuntimeEvent(session, message) {
         return;
       }
       for (const chunk of assistantMessage.content) {
-        if (
-          message.type === "assistant" &&
-          chunk &&
-          typeof chunk === "object" &&
-          chunk.type === "thinking" &&
-          typeof chunk.thinking === "string" &&
-          chunk.thinking &&
-          session.activePrompt &&
-          !session.activePrompt.sawThoughtChunk
-        ) {
-          emitClaudeContentUpdate(session, chunk);
-          continue;
-        }
         if (
           chunk &&
           typeof chunk === "object" &&
@@ -1629,7 +1541,6 @@ async function promptClaudeSession(session, content) {
       finalText: "",
       stopReason: null,
       cancelled: false,
-      sawThoughtChunk: false,
       waiters: [],
     };
     if (!session.activePrompt) {
@@ -1695,7 +1606,6 @@ async function promptCodexSession(session, content) {
           finalText: "",
           turnId: null,
           cancelled: false,
-          sawThoughtChunk: false,
           waiters: [{ resolve, reject }],
         };
         try {
@@ -1741,7 +1651,6 @@ async function promptCodexSession(session, content) {
       finalText: "",
       turnId: null,
       cancelled: false,
-      sawThoughtChunk: false,
       waiters: [{ resolve, reject }],
     };
     session.activePrompt = promptState;
