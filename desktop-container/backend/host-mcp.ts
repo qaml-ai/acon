@@ -1,4 +1,12 @@
 import {
+  UnauthorizedError,
+  type OAuthClientProvider,
+} from "@modelcontextprotocol/sdk/client/auth.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import {
+  SSEClientTransport,
+} from "@modelcontextprotocol/sdk/client/sse.js";
+import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
   McpError,
@@ -7,14 +15,20 @@ import {
   isJSONRPCRequest,
   isJSONRPCResultResponse,
 } from "@modelcontextprotocol/sdk/types.js";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
   StdioClientTransport,
   type StdioServerParameters,
 } from "@modelcontextprotocol/sdk/client/stdio.js";
+import {
+  StreamableHTTPClientTransport,
+} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import {
+  HostMcpOAuthManager,
+  PersistedHostMcpOAuthProvider,
+  type HostMcpOAuthConfig,
+} from "./host-mcp-oauth";
 
 export interface HostMcpSessionServer {
   connect(transport: Transport): Promise<void>;
@@ -47,19 +61,30 @@ export interface HostMcpProxyServerInfo {
   version?: string;
 }
 
-export function createStdioProxyHostMcpServer(
-  serverParameters: StdioServerParameters,
-  serverInfo: HostMcpProxyServerInfo = {},
-): HostMcpSessionServer {
-  const client = new Client({
-    name: serverInfo.name?.trim() || "acon-host-stdio-proxy-client",
-    version: serverInfo.version?.trim() || "1.0.0",
-  });
-  const clientTransport = new StdioClientTransport(serverParameters);
-  const startPromise = client.connect(clientTransport);
+export type HostMcpRemoteTransport = "streamable-http" | "sse";
+
+export interface HostMcpRemoteProxyServerParameters {
+  authTimeoutMs?: number;
+  dataDirectory?: string;
+  headers?: Record<string, string>;
+  oauth?: HostMcpOAuthConfig | null;
+  oauthManager?: HostMcpOAuthManager | null;
+  transport?: HostMcpRemoteTransport;
+  url: string | URL;
+}
+
+interface HostMcpClientTransport extends Transport {
+  close(): Promise<void>;
+  finishAuth?(authorizationCode: string): Promise<void>;
+}
+
+function createToolProxyServer(
+  serverInfo: HostMcpProxyServerInfo,
+  start: () => Promise<Client>,
+): Server {
   const server = new Server(
     {
-      name: serverInfo.name?.trim() || "acon-host-stdio-proxy",
+      name: serverInfo.name?.trim() || "acon-host-proxy",
       version: serverInfo.version?.trim() || "1.0.0",
     },
     {
@@ -72,12 +97,30 @@ export function createStdioProxyHostMcpServer(
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async (request) => {
-    await startPromise;
+    const client = await start();
     return await client.listTools(request.params);
   });
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    await startPromise;
+    const client = await start();
     return await client.callTool(request.params);
+  });
+
+  return server;
+}
+
+export function createStdioProxyHostMcpServer(
+  serverParameters: StdioServerParameters,
+  serverInfo: HostMcpProxyServerInfo = {},
+): HostMcpSessionServer {
+  const client = new Client({
+    name: serverInfo.name?.trim() || "acon-host-stdio-proxy-client",
+    version: serverInfo.version?.trim() || "1.0.0",
+  });
+  const clientTransport = new StdioClientTransport(serverParameters);
+  const startPromise = client.connect(clientTransport);
+  const server = createToolProxyServer(serverInfo, async () => {
+    await startPromise;
+    return client;
   });
 
   return {
@@ -86,6 +129,187 @@ export function createStdioProxyHostMcpServer(
     },
     async close(): Promise<void> {
       await Promise.allSettled([server.close(), client.close(), clientTransport.close()]);
+    },
+  };
+}
+
+function createRemoteTransport(
+  transport: HostMcpRemoteTransport,
+  url: URL,
+  options: {
+    authProvider?: OAuthClientProvider;
+    requestInit?: RequestInit;
+  },
+): HostMcpClientTransport {
+  if (transport === "sse") {
+    return new SSEClientTransport(url, options);
+  }
+
+  return new StreamableHTTPClientTransport(url, options);
+}
+
+async function connectRemoteClientWithOAuthRetry(options: {
+  authTimeoutMs?: number;
+  authProvider?: PersistedHostMcpOAuthProvider;
+  transport: HostMcpClientTransport;
+  transportFactory: () => HostMcpClientTransport;
+  client: Client;
+}): Promise<HostMcpClientTransport> {
+  try {
+    await options.client.connect(options.transport);
+    return options.transport;
+  } catch (error) {
+    if (
+      !(error instanceof UnauthorizedError) ||
+      !options.authProvider ||
+      typeof options.transport.finishAuth !== "function"
+    ) {
+      await Promise.allSettled([options.transport.close()]);
+      throw error;
+    }
+
+    const authorizationCode =
+      await options.authProvider.waitForAuthorizationCode(options.authTimeoutMs);
+    await options.transport.finishAuth(authorizationCode);
+    await Promise.allSettled([options.transport.close()]);
+
+    const retryTransport = options.transportFactory();
+    try {
+      await options.client.connect(retryTransport);
+      return retryTransport;
+    } catch (retryError) {
+      await Promise.allSettled([retryTransport.close()]);
+      throw retryError;
+    }
+  }
+}
+
+async function connectRemoteProxyClient(options: {
+  authTimeoutMs?: number;
+  dataDirectory?: string;
+  oauthManager?: HostMcpOAuthManager | null;
+  oauth?: HostMcpOAuthConfig | null;
+  requestInit?: RequestInit;
+  serverId: string;
+  serverInfo: HostMcpProxyServerInfo;
+  transport: HostMcpRemoteTransport;
+  url: URL;
+}): Promise<{
+  client: Client;
+  transport: HostMcpClientTransport;
+}> {
+  if (options.oauth && (!options.oauthManager || !options.dataDirectory)) {
+    throw new Error(
+      `Remote host MCP server ${options.serverId} requires a host OAuth manager and data directory.`,
+    );
+  }
+
+  const oauthProvider =
+    options.oauth && options.oauthManager && options.dataDirectory
+      ? new PersistedHostMcpOAuthProvider({
+          dataDirectory: options.dataDirectory,
+          manager: options.oauthManager,
+          oauth: options.oauth,
+          redirectUrl: await options.oauthManager.getRedirectUrl(options.serverId),
+          serverId: options.serverId,
+        })
+      : null;
+
+  const tryConnect = async (
+    transportType: HostMcpRemoteTransport,
+  ): Promise<{
+    client: Client;
+    transport: HostMcpClientTransport;
+  }> => {
+    const client = new Client({
+      name:
+        options.serverInfo.name?.trim() || `acon-host-${transportType}-proxy-client`,
+      version: options.serverInfo.version?.trim() || "1.0.0",
+    });
+    try {
+      const transportFactory = () =>
+        createRemoteTransport(transportType, options.url, {
+          authProvider: oauthProvider ?? undefined,
+          requestInit: options.requestInit,
+        });
+      const transport = await connectRemoteClientWithOAuthRetry({
+        authProvider: oauthProvider ?? undefined,
+        authTimeoutMs: options.authTimeoutMs,
+        client,
+        transport: transportFactory(),
+        transportFactory,
+      });
+      return {
+        client,
+        transport,
+      };
+    } catch (error) {
+      await Promise.allSettled([client.close()]);
+      throw error;
+    }
+  };
+
+  if (options.transport === "sse") {
+    return await tryConnect("sse");
+  }
+
+  try {
+    return await tryConnect("streamable-http");
+  } catch (error) {
+    if (error instanceof UnauthorizedError) {
+      throw error;
+    }
+    return await tryConnect("sse");
+  }
+}
+
+export function createRemoteProxyHostMcpServer(
+  parameters: HostMcpRemoteProxyServerParameters & {
+    serverId: string;
+  },
+  serverInfo: HostMcpProxyServerInfo = {},
+): HostMcpSessionServer {
+  const url =
+    parameters.url instanceof URL
+      ? parameters.url
+      : new URL(parameters.url);
+  const requestInit =
+    parameters.headers && Object.keys(parameters.headers).length > 0
+      ? { headers: parameters.headers }
+      : undefined;
+
+  let client: Client | null = null;
+  let clientTransport: HostMcpClientTransport | null = null;
+  const startPromise = (async () => {
+    const connection = await connectRemoteProxyClient({
+      authTimeoutMs: parameters.authTimeoutMs,
+      dataDirectory: parameters.dataDirectory,
+      oauth: parameters.oauth,
+      oauthManager: parameters.oauthManager,
+      requestInit,
+      serverId: parameters.serverId,
+      serverInfo,
+      transport: parameters.transport ?? "streamable-http",
+      url,
+    });
+    client = connection.client;
+    clientTransport = connection.transport;
+    return connection.client;
+  })();
+  const server = createToolProxyServer(serverInfo, async () => {
+    return await startPromise;
+  });
+
+  return {
+    async connect(transport: Transport): Promise<void> {
+      await server.connect(transport);
+    },
+    async close(): Promise<void> {
+      await Promise.allSettled([
+        server.close(),
+        client?.close() ?? Promise.resolve(),
+        clientTransport?.close() ?? Promise.resolve(),
+      ]);
     },
   };
 }

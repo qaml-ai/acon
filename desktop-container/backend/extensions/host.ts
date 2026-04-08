@@ -30,6 +30,7 @@ import type {
   CamelAIExtensionModule,
   CamelAIHostMcpServerRegistration,
   CamelAIInstallHostMcpServerResult,
+  CamelAIInstallHttpHostMcpServerOptions,
   CamelAIInstallStdioHostMcpServerOptions,
   CamelAIManifest,
   CamelAIPersistedHostMcpServerRecord,
@@ -90,17 +91,10 @@ export interface CamelAIExtensionHostOptions {
     pluginId: string,
     plugin: DiscoveredCamelAIExtension,
   ) => boolean;
-}
-
-export interface CamelAIExtensionHostOptions {
-  registerHostMcpServer?: (registration: CamelAIHostMcpServerRegistration) => void;
-  unregisterHostMcpServer?: (serverId: string) => void;
-  listInstalledHostMcpServers?: () => CamelAIPersistedHostMcpServerRecord[];
-  installStdioHostMcpServer?: (
-    server: CamelAIInstallStdioHostMcpServerOptions,
+  installHttpHostMcpServer?: (
+    server: CamelAIInstallHttpHostMcpServerOptions,
     workspaceDirectory: string,
   ) => CamelAIInstallHostMcpServerResult;
-  uninstallInstalledHostMcpServer?: (serverId: string) => boolean;
 }
 
 function isDirectory(path: string): boolean {
@@ -632,6 +626,16 @@ export class CamelAIExtensionHost {
           throw new Error("Host MCP installation is unavailable.");
         }
         return this.options.installStdioHostMcpServer(
+          server,
+          context.workspaceDirectory,
+        );
+      },
+      installHttpHostMcpServer: (server) => {
+        this.assertPluginPermission(record, "host-mcp");
+        if (!this.options.installHttpHostMcpServer) {
+          throw new Error("Host MCP installation is unavailable.");
+        }
+        return this.options.installHttpHostMcpServer(
           server,
           context.workspaceDirectory,
         );

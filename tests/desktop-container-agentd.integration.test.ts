@@ -1,5 +1,6 @@
 // @vitest-environment node
 
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -7,6 +8,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { z } from "zod";
 import { afterEach, describe, expect, it } from "vitest";
 import { requireDesktopProvider } from "../desktop-container/backend/providers";
 import type {
@@ -48,6 +52,7 @@ const HOST_MCP_STDIO_TEST_MODULE_PATH = resolve(
 const HOST_MCP_STDIO_TEST_SERVER_ID = "integration-stdio-host-tools";
 const HOST_MCP_MANAGER_SERVER_ID = "host-mcp-manager";
 const GUEST_INSTALLED_HOST_MCP_STDIO_SERVER_ID = "guest-installed-stdio-host-tools";
+const GUEST_INSTALLED_HOST_MCP_HTTP_SERVER_ID = "guest-installed-http-host-tools";
 const HOST_MCP_ERROR_TEST_MODULE_PATH = resolve(
   ROOT_DIR,
   "tests/fixtures/host-mcp-error-test-module.ts",
@@ -669,6 +674,143 @@ async function withHostStreamingRpcTestServer<T>(
 
     return await run(`http://127.0.0.1:${address.port}/bridge-stream`);
   } finally {
+    await new Promise<void>((resolvePromise, rejectPromise) => {
+      server.close((error) => {
+        if (error) {
+          rejectPromise(error);
+          return;
+        }
+        resolvePromise();
+      });
+    });
+  }
+}
+
+function createRemoteEchoServer(): McpServer {
+  const server = new McpServer({
+    name: "integration-remote-http-server",
+    version: "1.0.0",
+  });
+
+  server.registerTool(
+    "remote_echo",
+    {
+      description: "Echo a string through a remote HTTP MCP server.",
+      inputSchema: z.object({
+        text: z.string(),
+      }),
+      outputSchema: z.object({
+        echoedText: z.string(),
+        transport: z.literal("streamable-http"),
+      }),
+    },
+    async ({ text }) => ({
+      content: [
+        {
+          type: "text",
+          text: `streamable-http:${text}`,
+        },
+      ],
+      structuredContent: {
+        echoedText: text,
+        transport: "streamable-http",
+      },
+    }),
+  );
+
+  return server;
+}
+
+async function readJsonBody(request: AsyncIterable<Buffer | string>): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+
+  const body = Buffer.concat(chunks).toString("utf8").trim();
+  return body ? (JSON.parse(body) as unknown) : null;
+}
+
+async function withHostRemoteStreamableMcpServer<T>(
+  run: (url: string) => Promise<T>,
+): Promise<T> {
+  const transports = new Map<string, StreamableHTTPServerTransport>();
+  const sessions = new Map<string, McpServer>();
+  const server = createServer(async (request, response) => {
+    const requestUrl = new URL(request.url || "/", "http://127.0.0.1");
+    if (requestUrl.pathname !== "/mcp") {
+      response.writeHead(404).end();
+      return;
+    }
+
+    if (request.method !== "POST") {
+      response.writeHead(405, { Allow: "POST" }).end("Method Not Allowed");
+      return;
+    }
+
+    const body = await readJsonBody(request);
+    const existingSessionId =
+      typeof request.headers["mcp-session-id"] === "string"
+        ? request.headers["mcp-session-id"]
+        : null;
+    let transport = existingSessionId ? transports.get(existingSessionId) ?? null : null;
+
+    if (!transport) {
+      if (
+        !body ||
+        typeof body !== "object" ||
+        Array.isArray(body) ||
+        (body as { method?: unknown }).method !== "initialize"
+      ) {
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            error: {
+              code: -32000,
+              message: "Bad Request: No valid session ID provided",
+            },
+            id: null,
+            jsonrpc: "2.0",
+          }),
+        );
+        return;
+      }
+
+      transport = new StreamableHTTPServerTransport({
+        enableJsonResponse: true,
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (sessionId) => {
+          transports.set(sessionId, transport!);
+        },
+      });
+      const sessionServer = createRemoteEchoServer();
+      await sessionServer.connect(transport);
+      sessions.set(transport.sessionId, sessionServer);
+      transport.onclose = () => {
+        transports.delete(transport!.sessionId);
+        sessions.delete(transport!.sessionId);
+      };
+    }
+
+    await transport.handleRequest(request, response, body);
+  });
+
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    server.once("error", rejectPromise);
+    server.listen(0, "127.0.0.1", () => resolvePromise());
+  });
+
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Remote HTTP MCP test server did not expose a TCP port.");
+    }
+
+    return await run(`http://127.0.0.1:${address.port}/mcp`);
+  } finally {
+    for (const sessionServer of sessions.values()) {
+      await sessionServer.close();
+    }
     await new Promise<void>((resolvePromise, rejectPromise) => {
       server.close((error) => {
         if (error) {
@@ -1336,6 +1478,7 @@ integrationDescribe("desktop-container agent runtime integration", () => {
               const toolList = await client.listTools();
               expect(toolList.tools.map((tool) => tool.name)).toEqual(
                 expect.arrayContaining([
+                  "install_http_server",
                   "install_stdio_server",
                   "list_installed_servers",
                   "uninstall_server",
@@ -1402,6 +1545,95 @@ integrationDescribe("desktop-container agent runtime integration", () => {
               });
             },
           );
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+  }
+
+  for (const providerCase of providerCases) {
+    it(
+      `lets ${providerCase.label} install a remote host MCP server from inside the guest`,
+      { timeout: INTEGRATION_TIMEOUT_MS },
+      async () => {
+        const harness = new DesktopBackendHarness(providerCase.id);
+
+        try {
+          harness.send({
+            type: "set_provider",
+            provider: providerCase.id,
+          });
+          await harness.waitForProvider(providerCase.id);
+          await harness.waitForRuntimeReady(providerCase.id);
+
+          await withHostRemoteStreamableMcpServer(async (url) => {
+            await withContainerHostMcpClient(
+              harness.userDataDir,
+              providerCase.id,
+              HOST_MCP_MANAGER_SERVER_ID,
+              async (client) => {
+                const installed = await client.callTool({
+                  name: "install_http_server",
+                  arguments: {
+                    id: GUEST_INSTALLED_HOST_MCP_HTTP_SERVER_ID,
+                    transport: "streamable-http",
+                    url,
+                    name: "Guest Installed Remote Host Tools",
+                    version: "1.0.0",
+                  },
+                });
+
+                expect(installed.isError).not.toBe(true);
+                expect(installed.structuredContent).toEqual(
+                  expect.objectContaining({
+                    id: GUEST_INSTALLED_HOST_MCP_HTTP_SERVER_ID,
+                    replaced: false,
+                    transport: "streamable-http",
+                    url,
+                  }),
+                );
+              },
+            );
+
+            const serversResult = await runContainerCommand(
+              harness.userDataDir,
+              providerCase.id,
+              ["acon-mcp", "servers"],
+            );
+            expect(serversResult.stdout.trim().split("\n")).toContain(
+              GUEST_INSTALLED_HOST_MCP_HTTP_SERVER_ID,
+            );
+
+            await withContainerHostMcpClient(
+              harness.userDataDir,
+              providerCase.id,
+              GUEST_INSTALLED_HOST_MCP_HTTP_SERVER_ID,
+              async (client) => {
+                const toolList = await client.listTools();
+                expect(toolList.tools.map((tool) => tool.name)).toContain("remote_echo");
+
+                const result = await client.callTool({
+                  name: "remote_echo",
+                  arguments: {
+                    text: providerCase.token,
+                  },
+                });
+
+                expect(result.isError).not.toBe(true);
+                expect(result.structuredContent).toEqual({
+                  echoedText: providerCase.token,
+                  transport: "streamable-http",
+                });
+
+                const firstContent = result.content[0];
+                expect(firstContent?.type).toBe("text");
+                expect(firstContent && "text" in firstContent ? firstContent.text : "").toContain(
+                  providerCase.token,
+                );
+              },
+            );
+          });
         } finally {
           await harness.dispose();
         }

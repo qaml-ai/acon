@@ -4,22 +4,56 @@ import type { CamelAIExtensionModule } from "../../../sdk";
 
 const HOST_MCP_MANAGER_ID = "host-mcp-manager";
 
-const listInstalledServersOutputSchema = z.object({
-  servers: z.array(
-    z.object({
-      id: z.string(),
-      transport: z.literal("stdio"),
-      command: z.string(),
-      args: z.array(z.string()),
-      cwd: z.string().nullable(),
-      env: z.record(z.string(), z.string()),
-      name: z.string().nullable(),
-      version: z.string().nullable(),
-    }),
-  ),
+const oauthConfigSchema = z.object({
+  clientId: z.string().nullable().optional(),
+  clientSecret: z.string().nullable().optional(),
+  clientName: z.string().nullable().optional(),
+  clientUri: z.string().nullable().optional(),
+  clientMetadataUrl: z.string().nullable().optional(),
+  scope: z.string().nullable().optional(),
+  tokenEndpointAuthMethod: z.string().nullable().optional(),
 });
 
-const installServerInputSchema = z.object({
+const installedStdioServerSchema = z.object({
+  id: z.string(),
+  transport: z.literal("stdio"),
+  command: z.string(),
+  args: z.array(z.string()),
+  cwd: z.string().nullable(),
+  env: z.record(z.string(), z.string()),
+  name: z.string().nullable(),
+  version: z.string().nullable(),
+});
+
+const installedHttpServerSchema = z.object({
+  id: z.string(),
+  transport: z.enum(["streamable-http", "sse"]),
+  url: z.string(),
+  headers: z.record(z.string(), z.string()),
+  oauth: oauthConfigSchema.nullable(),
+  name: z.string().nullable(),
+  version: z.string().nullable(),
+});
+
+const installedServerSchema = z.object({
+  id: z.string(),
+  transport: z.enum(["stdio", "streamable-http", "sse"]),
+  command: z.string().optional(),
+  args: z.array(z.string()).optional(),
+  cwd: z.string().nullable().optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  url: z.string().optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+  oauth: oauthConfigSchema.nullable().optional(),
+  name: z.string().nullable(),
+  version: z.string().nullable(),
+});
+
+const listInstalledServersOutputSchema = z.object({
+  servers: z.array(installedServerSchema),
+});
+
+const installStdioServerInputSchema = z.object({
   id: z.string(),
   command: z.string(),
   args: z.array(z.string()).optional(),
@@ -29,15 +63,17 @@ const installServerInputSchema = z.object({
   version: z.string().nullable().optional(),
 });
 
-const installServerOutputSchema = z.object({
+const installHttpServerInputSchema = z.object({
   id: z.string(),
-  transport: z.literal("stdio"),
-  command: z.string(),
-  args: z.array(z.string()),
-  cwd: z.string().nullable(),
-  env: z.record(z.string(), z.string()),
-  name: z.string().nullable(),
-  version: z.string().nullable(),
+  transport: z.enum(["streamable-http", "sse"]).optional(),
+  url: z.string(),
+  headers: z.record(z.string(), z.string()).optional(),
+  oauth: oauthConfigSchema.nullable().optional(),
+  name: z.string().nullable().optional(),
+  version: z.string().nullable().optional(),
+});
+
+const installServerOutputSchema = installedServerSchema.extend({
   configPath: z.string(),
   replaced: z.boolean(),
 });
@@ -92,11 +128,35 @@ const extension: CamelAIExtensionModule = {
           {
             description:
               "Install or replace a stdio MCP server in the desktop app host registry so the guest can use it through acon-mcp.",
-            inputSchema: installServerInputSchema,
+            inputSchema: installStdioServerInputSchema,
             outputSchema: installServerOutputSchema,
           },
           async (input) => {
             const installed = api.installStdioHostMcpServer(input);
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: installed.replaced
+                    ? `Updated host MCP server ${installed.id}.`
+                    : `Installed host MCP server ${installed.id}.`,
+                },
+              ],
+              structuredContent: installed,
+            };
+          },
+        );
+
+        server.registerTool(
+          "install_http_server",
+          {
+            description:
+              "Install or replace a remote HTTP MCP server in the desktop app host registry. Supports Streamable HTTP and legacy SSE, with optional host-managed OAuth.",
+            inputSchema: installHttpServerInputSchema,
+            outputSchema: installServerOutputSchema,
+          },
+          async (input) => {
+            const installed = api.installHttpHostMcpServer(input);
             return {
               content: [
                 {
