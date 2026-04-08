@@ -234,7 +234,6 @@ export interface CamelAIInstallHttpHostMcpServerOptions {
   url: string;
   transport?: "streamable-http" | "sse";
   headers?: Record<string, string>;
-  oauth?: Partial<CamelAIHostMcpOAuthConfig> | null;
   name?: string | null;
   version?: string | null;
 }

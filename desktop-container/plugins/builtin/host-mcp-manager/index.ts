@@ -68,7 +68,6 @@ const installHttpServerInputSchema = z.object({
   transport: z.enum(["streamable-http", "sse"]).optional(),
   url: z.string(),
   headers: z.record(z.string(), z.string()).optional(),
-  oauth: oauthConfigSchema.nullable().optional(),
   name: z.string().nullable().optional(),
   version: z.string().nullable().optional(),
 });
@@ -151,7 +150,7 @@ const extension: CamelAIExtensionModule = {
           "install_http_server",
           {
             description:
-              "Install or replace a remote HTTP MCP server in the desktop app host registry. Supports Streamable HTTP and legacy SSE, with optional host-managed OAuth.",
+              "Install or replace a remote HTTP MCP server in the desktop app host registry. Supports Streamable HTTP and legacy SSE, with host-managed OAuth handled automatically.",
             inputSchema: installHttpServerInputSchema,
             outputSchema: installServerOutputSchema,
           },

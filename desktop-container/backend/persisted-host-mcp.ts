@@ -15,6 +15,8 @@ import {
   type HostMcpServerRegistration,
 } from "./host-mcp";
 import {
+  clearPersistedHostMcpOAuthState,
+  createDefaultHostMcpOAuthConfig,
   type HostMcpOAuthConfig,
   type HostMcpOAuthManager,
 } from "./host-mcp-oauth";
@@ -62,7 +64,6 @@ export interface PersistedHostMcpHttpInstallOptions {
   headers?: Record<string, string>;
   id: string;
   name?: string | null;
-  oauth?: Partial<HostMcpOAuthConfig> | null;
   transport?: HostMcpRemoteTransport;
   url: string;
   version?: string | null;
@@ -365,6 +366,7 @@ export function installPersistedHostMcpHttpServer(options: {
     ...options,
     server: {
       ...options.server,
+      oauth: createDefaultHostMcpOAuthConfig(),
       transport: options.server.transport ?? "streamable-http",
     },
   });
@@ -381,6 +383,7 @@ export function uninstallPersistedHostMcpServer(options: {
   }
 
   rmSync(configPath, { force: true });
+  clearPersistedHostMcpOAuthState(options.dataDirectory, serverId);
   return true;
 }
 
