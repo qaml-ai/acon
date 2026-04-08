@@ -1,9 +1,8 @@
 // @vitest-environment node
 
-import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -194,26 +193,61 @@ function seedDesktopState(
   );
 }
 
-function getSessionIds(events: RuntimeEventRecord[]): string[] {
-  return [...new Set(events.flatMap((record) => {
-    const event = record.event as {
-      params?: {
-        sessionId?: unknown;
-      };
-    };
-    return typeof event?.params?.sessionId === "string"
-      ? [event.params.sessionId]
-      : [];
-  }))];
+function readPersistedDesktopState(userDataDir: string): {
+  providerStateByThread?: Partial<Record<string, Partial<Record<DesktopProvider, { sessionId?: string | null }>>>>;
+  modelsByProvider?: Partial<Record<DesktopProvider, string>>;
+} {
+  return JSON.parse(
+    readFileSync(resolve(userDataDir, "data", "state.json"), "utf8"),
+  ) as {
+    providerStateByThread?: Partial<Record<string, Partial<Record<DesktopProvider, { sessionId?: string | null }>>>>;
+    modelsByProvider?: Partial<Record<DesktopProvider, string>>;
+  };
+}
+
+function getPersistedProviderSessionId(
+  userDataDir: string,
+  providerId: DesktopProvider,
+  threadId: string,
+): string | null {
+  return (
+    readPersistedDesktopState(userDataDir).providerStateByThread?.[threadId]?.[providerId]
+      ?.sessionId ?? null
+  );
 }
 
 function getSharedContainerName(userDataDir: string): string {
-  const runtimeDirectory = resolve(userDataDir, "runtime");
-  const hash = createHash("sha1")
-    .update(`${runtimeDirectory}:${ROOT_DIR}:shared`)
-    .digest("hex")
-    .slice(0, 12);
-  return `acon-acpx-${hash}`;
+  const logPath = resolve(userDataDir, "data", "logs", "desktop-backend.log");
+  if (!existsSync(logPath)) {
+    throw new Error(`Desktop backend log not found at ${logPath}.`);
+  }
+
+  const lines = readFileSync(logPath, "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .reverse();
+  for (const line of lines) {
+    try {
+      const entry = JSON.parse(line) as {
+        component?: unknown;
+        event?: unknown;
+        containerName?: unknown;
+      };
+      if (
+        entry.component === "desktop-runtime" &&
+        typeof entry.containerName === "string" &&
+        typeof entry.event === "string" &&
+        entry.event.startsWith("shared_container:")
+      ) {
+        return entry.containerName;
+      }
+    } catch {
+      // Ignore malformed lines.
+    }
+  }
+
+  throw new Error(`Could not determine shared container name from ${logPath}.`);
 }
 
 function getSessionName(providerId: DesktopProvider, threadId: string): string {
@@ -240,52 +274,6 @@ function inspectContainerStatus(containerName: string): string | null {
   } catch {
     return null;
   }
-}
-
-function readAcpSessionModel(
-  userDataDir: string,
-  providerId: DesktopProvider,
-  threadId: string,
-): string | null {
-  const containerName = getSharedContainerName(userDataDir);
-  const providerDataRoot = `/data/providers/${providerId}`;
-  const providerHome = `${providerDataRoot}/home`;
-  const providerEnv =
-    providerId === "codex"
-      ? ["--env", `CODEX_HOME=${providerHome}/.codex`]
-      : ["--env", `CLAUDE_CONFIG_DIR=${providerHome}/.claude`];
-  const result = spawnSync(
-    CONTAINER_COMMAND,
-    [
-      "exec",
-      "--workdir",
-      "/workspace",
-      "--env",
-      `DESKTOP_DATA_ROOT=${providerDataRoot}`,
-      "--env",
-      `HOME=${providerHome}`,
-      ...providerEnv,
-      containerName,
-      "sh",
-      "-lc",
-      `exec acpx --json-strict --format json --approve-all --cwd /workspace ${providerId} status --session ${getSessionName(providerId, threadId)}`,
-    ],
-    {
-      cwd: ROOT_DIR,
-      encoding: "utf8",
-    },
-  );
-
-  if (result.status !== 0) {
-    throw new Error(
-      result.stderr.trim() ||
-        result.stdout.trim() ||
-        `Failed to inspect ACPX session model for ${providerId}/${threadId}.`,
-    );
-  }
-
-  const parsed = JSON.parse(result.stdout.trim()) as { model?: unknown };
-  return typeof parsed.model === "string" ? parsed.model : null;
 }
 
 async function callContainerBridgeMethod<TResult>(
@@ -883,7 +871,7 @@ class DesktopBackendHarness {
 
 const integrationDescribe = SKIP_REASON ? describe.skip : describe;
 
-integrationDescribe("desktop-container ACPX integration", () => {
+integrationDescribe("desktop-container agent runtime integration", () => {
   afterEach(() => {
     // No shared global cleanup. Each test owns its harness lifecycle.
   });
@@ -1004,7 +992,7 @@ integrationDescribe("desktop-container ACPX integration", () => {
 
   for (const providerCase of providerCases) {
     it(
-      `bridges ${providerCase.label} container RPC calls to a host-only loopback HTTP service`,
+      `routes ${providerCase.label} container RPC calls over the host RPC socket to a host-only loopback HTTP service`,
       { timeout: INTEGRATION_TIMEOUT_MS },
       async () => {
         const harness = new DesktopBackendHarness(providerCase.id);
@@ -1020,13 +1008,11 @@ integrationDescribe("desktop-container ACPX integration", () => {
 
           const pingResult = await callContainerBridgeMethod<{
             ok: boolean;
-            provider: string;
             params?: {
               threadId?: string;
             };
           }>(harness.userDataDir, providerCase.id, "ping", { threadId });
           expect(pingResult.ok).toBe(true);
-          expect(pingResult.provider).toBe(providerCase.id);
           expect(pingResult.params?.threadId).toBe(threadId);
 
           await withHostLocalRpcTestServer(async (url) => {
@@ -1114,7 +1100,7 @@ integrationDescribe("desktop-container ACPX integration", () => {
 
   for (const providerCase of providerCases) {
     it(
-      `exposes ${providerCase.label} host MCP servers inside the container over the RPC bridge`,
+      `exposes ${providerCase.label} host MCP servers inside the container over the host RPC socket`,
       { timeout: INTEGRATION_TIMEOUT_MS },
       async () => {
         const harness = new DesktopBackendHarness(providerCase.id, {
@@ -1167,7 +1153,7 @@ integrationDescribe("desktop-container ACPX integration", () => {
 
   for (const providerCase of providerCases) {
     it(
-      `exposes ${providerCase.label} host stdio MCP servers inside the container over the RPC bridge`,
+      `exposes ${providerCase.label} host stdio MCP servers inside the container over the host RPC socket`,
       { timeout: INTEGRATION_TIMEOUT_MS },
       async () => {
         const harness = new DesktopBackendHarness(providerCase.id, {
@@ -1267,7 +1253,7 @@ integrationDescribe("desktop-container ACPX integration", () => {
     const providerTest = provider.getAuthState().available ? it : it.skip;
 
     providerTest(
-      `keeps one ${providerCase.label} ACPX session alive across two turns`,
+      `keeps one ${providerCase.label} provider session alive across two turns`,
       { timeout: INTEGRATION_TIMEOUT_MS },
       async () => {
         const harness = new DesktopBackendHarness(providerCase.id);
@@ -1296,18 +1282,13 @@ integrationDescribe("desktop-container ACPX integration", () => {
           expect(firstTurn.message.status).toBe("done");
           expect(firstTurn.errorEvents).toHaveLength(0);
           expect(/stored/i.test(firstTurn.text)).toBe(true);
-          expect(
-            firstTurn.runtimeEvents.some(
-              (record) =>
-                (record.event as { method?: unknown })?.method === "session/update",
-            ),
-          ).toBe(true);
-
-          const firstSessionIds = getSessionIds(firstTurn.runtimeEvents);
-          expect(firstSessionIds.length).toBeGreaterThan(0);
-          if (providerCase.id === "claude") {
-            expect(readAcpSessionModel(harness.userDataDir, "claude", threadId)).toBe("opus");
-          }
+          expect(firstTurn.runtimeEvents.length).toBeGreaterThan(0);
+          const firstSessionId = getPersistedProviderSessionId(
+            harness.userDataDir,
+            providerCase.id,
+            threadId,
+          );
+          expect(firstSessionId).toBeTruthy();
 
           const secondTurn = await harness.sendMessageAndWait(
             threadId,
@@ -1318,14 +1299,14 @@ integrationDescribe("desktop-container ACPX integration", () => {
           expect(secondTurn.errorEvents).toHaveLength(0);
           expect(secondTurn.text).toContain(providerCase.token);
 
-          const secondSessionIds = getSessionIds(secondTurn.runtimeEvents);
-          expect(secondSessionIds).toContain(firstSessionIds[0]);
+          expect(secondTurn.runtimeEvents.length).toBeGreaterThan(0);
           expect(
-            secondTurn.runtimeEvents.some(
-              (record) =>
-                (record.event as { method?: unknown })?.method === "session/update",
+            getPersistedProviderSessionId(
+              harness.userDataDir,
+              providerCase.id,
+              threadId,
             ),
-          ).toBe(true);
+          ).toBe(firstSessionId);
 
           const containerStartCount = harness.runtimeStates.filter(
             (entry) => entry.detail === SHARED_CONTAINER_START_DETAIL,

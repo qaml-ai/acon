@@ -28,11 +28,33 @@ import type { HostMcpServerRegistration } from "./host-mcp";
 
 type Listener = (event: DesktopServerEvent) => void;
 
+interface ActiveThreadRun {
+  stopRequested: boolean;
+}
+
+const INTERRUPTED_MESSAGE_TEXT = "[Request interrupted by user]";
+
+function extractProviderSessionIdFromRuntimeEvent(
+  _providerId: "claude" | "codex",
+  event: unknown,
+): string | null {
+  if (!event || typeof event !== "object") {
+    return null;
+  }
+
+  const sessionId = (event as {
+    params?: {
+      sessionId?: unknown;
+    };
+  }).params?.sessionId;
+  return typeof sessionId === "string" && sessionId.trim() ? sessionId.trim() : null;
+}
+
 export class DesktopService {
   private readonly store = new DesktopStore();
   private readonly runtimeManager: RuntimeManager;
   private readonly extensionHost = new CamelAIExtensionHost();
-  private readonly activeThreads = new Set<string>();
+  private readonly activeThreadRuns = new Map<string, ActiveThreadRun>();
   private readonly listeners = new Set<Listener>();
   private runtimeStatus: DesktopRuntimeStatus;
   private runtimeStartupPromise: Promise<void> | null = null;
@@ -73,7 +95,7 @@ export class DesktopService {
   dispose(): void {
     this.runtimeManager.dispose();
     this.listeners.clear();
-    this.activeThreads.clear();
+    this.activeThreadRuns.clear();
   }
 
   registerHostMcpServer(registration: HostMcpServerRegistration): void {
@@ -239,7 +261,11 @@ export class DesktopService {
         return;
       }
       case "send_message": {
-        void this.handleSendMessage(event.threadId, event.content);
+        void this.sendThreadTurn(event.threadId, event.content);
+        return;
+      }
+      case "stop_thread": {
+        void this.stopThread(event.threadId);
         return;
       }
       case "ping": {
@@ -422,19 +448,7 @@ export class DesktopService {
     });
   }
 
-  private async handleSendMessage(
-    threadId: string,
-    content: string,
-  ): Promise<void> {
-    if (this.activeThreads.has(threadId)) {
-      this.broadcast({
-        type: "error",
-        threadId,
-        message: "A response is already streaming for this thread.",
-      });
-      return;
-    }
-
+  private async sendThreadTurn(threadId: string, content: string): Promise<void> {
     const trimmed = content.trim();
     if (!trimmed) {
       this.broadcast({
@@ -458,9 +472,59 @@ export class DesktopService {
       });
       return;
     }
-    const promptContent = promptUpdate.content;
+    if (this.activeThreadRuns.has(threadId)) {
+      this.broadcast({
+        type: "error",
+        threadId,
+        message: "This thread already has an active turn. Wait for it to finish or stop it first.",
+      });
+      return;
+    }
 
-    this.activeThreads.add(threadId);
+    const promptContent = promptUpdate.content;
+    this.store.appendMessage(threadId, "user", promptContent, "done");
+    this.emitSnapshot();
+    const activeRun: ActiveThreadRun = {
+      stopRequested: false,
+    };
+    this.activeThreadRuns.set(threadId, activeRun);
+    try {
+      await this.processThreadTurn(threadId, promptContent, activeRun);
+    } finally {
+      this.activeThreadRuns.delete(threadId);
+    }
+  }
+
+  private async stopThread(threadId: string): Promise<void> {
+    const activeRun = this.activeThreadRuns.get(threadId);
+    if (!activeRun || activeRun.stopRequested) {
+      return;
+    }
+
+    activeRun.stopRequested = true;
+    const provider = requireDesktopProvider(this.store.getThreadProvider(threadId));
+    const model = this.getCurrentModel(provider);
+    try {
+      await this.runtimeManager.cancelPrompt({
+        provider,
+        threadId,
+        model,
+      });
+    } catch (error) {
+      activeRun.stopRequested = false;
+      this.broadcast({
+        type: "error",
+        threadId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async processThreadTurn(
+    threadId: string,
+    content: string,
+    activeRun: ActiveThreadRun,
+  ): Promise<void> {
     const turnId = randomUUID();
     let assistantId: string | null = null;
     const provider = requireDesktopProvider(
@@ -473,7 +537,6 @@ export class DesktopService {
     );
 
     try {
-      this.store.appendMessage(threadId, "user", promptContent, "done");
       const assistant = this.store.appendMessage(
         threadId,
         "assistant",
@@ -504,7 +567,7 @@ export class DesktopService {
         {
           type: "turn_start",
           threadId,
-          content: promptContent,
+          content,
         },
         this.getExtensionActivationContext(),
       );
@@ -513,7 +576,7 @@ export class DesktopService {
       const result = await this.runtimeManager.streamPrompt({
         provider,
         threadId,
-        content: promptContent,
+        content,
         model,
         sessionId: providerSessionId,
         onSessionId: (sessionId) => {
@@ -522,6 +585,13 @@ export class DesktopService {
         onRuntimeEvent: (event) => {
           if (!assistantId) {
             return;
+          }
+          const runtimeSessionId = extractProviderSessionIdFromRuntimeEvent(
+            provider.id,
+            event,
+          );
+          if (runtimeSessionId) {
+            this.store.setProviderSessionId(threadId, provider.id, runtimeSessionId);
           }
           this.broadcast({
             type: "runtime_event",
@@ -552,7 +622,7 @@ export class DesktopService {
         {
           type: "turn_end",
           threadId,
-          content: promptContent,
+          content,
           response: result.finalText,
         },
         this.getExtensionActivationContext(),
@@ -568,9 +638,13 @@ export class DesktopService {
         threadId,
         assistant.id,
         "done",
-        result.finalText.trim() && persistedAssistantText.length === 0
-          ? result.finalText
-          : undefined,
+        result.finalText.trim()
+          ? persistedAssistantText.length === 0
+            ? result.finalText
+            : undefined
+          : result.stopReason && persistedAssistantText.length === 0
+            ? INTERRUPTED_MESSAGE_TEXT
+            : undefined,
       );
 
       logDesktop("desktop-service", "send_message:completed", {
@@ -580,6 +654,7 @@ export class DesktopService {
         assistantId,
         finalTextLength: result.finalText.length,
         model: result.model,
+        stopReason: result.stopReason,
       });
       this.emitSnapshot();
     } catch (error) {
@@ -588,27 +663,37 @@ export class DesktopService {
         threadId,
         provider: provider.id,
         assistantId,
+        stopRequested: activeRun.stopRequested,
         error,
       });
       if (assistantId) {
         const detail = error instanceof Error ? error.message : String(error);
-        this.store.finalizeMessage(
-          threadId,
-          assistantId,
-          "error",
-          `Error: ${detail}`,
-        );
+        if (activeRun.stopRequested) {
+          this.store.finalizeMessage(
+            threadId,
+            assistantId,
+            "done",
+            INTERRUPTED_MESSAGE_TEXT,
+          );
+        } else {
+          this.store.finalizeMessage(
+            threadId,
+            assistantId,
+            "error",
+            `Error: ${detail}`,
+          );
+        }
         this.emitSnapshot();
-        this.broadcast({
-          type: "error",
-          threadId,
-          message: detail,
-        });
+        if (!activeRun.stopRequested) {
+          this.broadcast({
+            type: "error",
+            threadId,
+            message: detail,
+          });
+        }
       } else {
         this.appendErrorMessage(threadId, error);
       }
-    } finally {
-      this.activeThreads.delete(threadId);
     }
   }
 }

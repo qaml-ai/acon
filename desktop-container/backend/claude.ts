@@ -7,6 +7,7 @@ import { claudeProvider as legacyClaudeProvider } from "../../desktop/backend/an
 import type { DesktopProviderDefinition } from "./provider-types";
 
 const DEFAULT_CLAUDE_IMAGE =
+  process.env.DESKTOP_CONTAINER_AGENT_IMAGE?.trim() ||
   process.env.DESKTOP_CONTAINER_ACPX_IMAGE?.trim() ||
   process.env.DESKTOP_CONTAINER_CLAUDE_IMAGE?.trim() ||
   process.env.DESKTOP_CONTAINER_CODEX_IMAGE?.trim() ||
@@ -36,7 +37,7 @@ function getClaudeAuthState(): DesktopAuthState {
 export const claudeProvider: DesktopProviderDefinition = {
   id: "claude",
   label: "Claude",
-  transport: "container-acpx",
+  transport: "container-agentd",
   option: {
     id: "claude",
     label: "Claude",
@@ -56,19 +57,5 @@ export const claudeProvider: DesktopProviderDefinition = {
   },
   getImageName() {
     return DEFAULT_CLAUDE_IMAGE;
-  },
-  buildRuntimeEnv(model) {
-    const env: Record<string, string> = {
-      DESKTOP_PROVIDER: "claude",
-      DESKTOP_MODEL: model,
-      DESKTOP_ANTHROPIC_MODEL: model,
-    };
-
-    const anthropicApiKey = process.env.ANTHROPIC_API_KEY?.trim();
-    if (anthropicApiKey) {
-      env.ANTHROPIC_API_KEY = anthropicApiKey;
-    }
-
-    return env;
   },
 };

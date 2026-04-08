@@ -7,6 +7,7 @@ import { codexProvider as legacyCodexProvider } from "../../desktop/backend/code
 import type { DesktopProviderDefinition } from "./provider-types";
 
 const DEFAULT_CODEX_IMAGE =
+  process.env.DESKTOP_CONTAINER_AGENT_IMAGE?.trim() ||
   process.env.DESKTOP_CONTAINER_ACPX_IMAGE?.trim() ||
   process.env.DESKTOP_CONTAINER_CODEX_IMAGE?.trim() ||
   process.env.DESKTOP_CONTAINER_CLAUDE_IMAGE?.trim() ||
@@ -30,7 +31,7 @@ function getCodexAuthState(): DesktopAuthState {
 export const codexProvider: DesktopProviderDefinition = {
   id: "codex",
   label: "Codex",
-  transport: "container-acpx",
+  transport: "container-agentd",
   option: {
     id: "codex",
     label: "Codex",
@@ -49,19 +50,5 @@ export const codexProvider: DesktopProviderDefinition = {
   },
   getImageName() {
     return DEFAULT_CODEX_IMAGE;
-  },
-  buildRuntimeEnv(model) {
-    const env: Record<string, string> = {
-      DESKTOP_PROVIDER: "codex",
-      DESKTOP_MODEL: model,
-      DESKTOP_CODEX_MODEL: model,
-    };
-
-    const openAiApiKey = process.env.OPENAI_API_KEY?.trim();
-    if (openAiApiKey) {
-      env.OPENAI_API_KEY = openAiApiKey;
-    }
-
-    return env;
   },
 };
