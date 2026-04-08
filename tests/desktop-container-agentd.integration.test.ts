@@ -46,6 +46,8 @@ const HOST_MCP_STDIO_TEST_MODULE_PATH = resolve(
   "tests/fixtures/host-mcp-stdio-test-module.ts",
 );
 const HOST_MCP_STDIO_TEST_SERVER_ID = "integration-stdio-host-tools";
+const HOST_MCP_MANAGER_SERVER_ID = "host-mcp-manager";
+const GUEST_INSTALLED_HOST_MCP_STDIO_SERVER_ID = "guest-installed-stdio-host-tools";
 const HOST_MCP_ERROR_TEST_MODULE_PATH = resolve(
   ROOT_DIR,
   "tests/fixtures/host-mcp-error-test-module.ts",
@@ -1302,6 +1304,102 @@ integrationDescribe("desktop-container agent runtime integration", () => {
               expect(firstContent && "text" in firstContent ? firstContent.text : "").toContain(
                 "stdio",
               );
+            },
+          );
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+  }
+
+  for (const providerCase of providerCases) {
+    it(
+      `lets ${providerCase.label} install a host MCP server from inside the guest`,
+      { timeout: INTEGRATION_TIMEOUT_MS },
+      async () => {
+        const harness = new DesktopBackendHarness(providerCase.id);
+
+        try {
+          harness.send({
+            type: "set_provider",
+            provider: providerCase.id,
+          });
+          await harness.waitForProvider(providerCase.id);
+          await harness.waitForRuntimeReady(providerCase.id);
+
+          await withContainerHostMcpClient(
+            harness.userDataDir,
+            providerCase.id,
+            HOST_MCP_MANAGER_SERVER_ID,
+            async (client) => {
+              const toolList = await client.listTools();
+              expect(toolList.tools.map((tool) => tool.name)).toEqual(
+                expect.arrayContaining([
+                  "install_stdio_server",
+                  "list_installed_servers",
+                  "uninstall_server",
+                ]),
+              );
+
+              const installed = await client.callTool({
+                name: "install_stdio_server",
+                arguments: {
+                  id: GUEST_INSTALLED_HOST_MCP_STDIO_SERVER_ID,
+                  command: process.execPath,
+                  args: [
+                    "--import",
+                    "tsx/esm",
+                    resolve(process.cwd(), "tests/fixtures/simple-stdio-mcp-server.ts"),
+                  ],
+                  cwd: process.cwd(),
+                  name: "Guest Installed Host Tools",
+                  version: "1.0.0",
+                },
+              });
+
+              expect(installed.isError).not.toBe(true);
+              expect(installed.structuredContent).toEqual(
+                expect.objectContaining({
+                  id: GUEST_INSTALLED_HOST_MCP_STDIO_SERVER_ID,
+                  replaced: false,
+                  command: process.execPath,
+                }),
+              );
+            },
+          );
+
+          const serversResult = await runContainerCommand(
+            harness.userDataDir,
+            providerCase.id,
+            ["acon-mcp", "servers"],
+          );
+          expect(serversResult.stdout.trim().split("\n")).toContain(
+            GUEST_INSTALLED_HOST_MCP_STDIO_SERVER_ID,
+          );
+
+          await withContainerHostMcpClient(
+            harness.userDataDir,
+            providerCase.id,
+            GUEST_INSTALLED_HOST_MCP_STDIO_SERVER_ID,
+            async (client) => {
+              const toolList = await client.listTools();
+              expect(toolList.tools.map((tool) => tool.name)).toContain("stdio_echo");
+
+              const result = await client.callTool({
+                name: "stdio_echo",
+                arguments: {
+                  provider: providerCase.id,
+                  text: providerCase.token,
+                },
+              });
+
+              expect(result.isError).not.toBe(true);
+              expect(result.structuredContent).toEqual({
+                echoedText: providerCase.token,
+                provider: providerCase.id,
+                transport: "stdio",
+              });
             },
           );
         } finally {

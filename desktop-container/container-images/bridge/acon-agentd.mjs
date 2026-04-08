@@ -352,6 +352,7 @@ class CodexAppServerClient {
       const child = spawn(
         "codex",
         [
+          "--dangerously-bypass-approvals-and-sandbox",
           "app-server",
           "--listen",
           "stdio://",
@@ -1176,7 +1177,7 @@ function createClaudeArgs(session) {
     "--disallowedTools",
     "AskUserQuestion",
     "--permission-mode",
-    "acceptEdits",
+    "bypassPermissions",
     "--model",
     session.model,
   ];

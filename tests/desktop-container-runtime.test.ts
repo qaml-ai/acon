@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -52,6 +52,36 @@ describe("ContainerRuntimeManager", () => {
       "Run \\`acon-mcp <server-id>\\` to expose that server over stdio for MCP clients in the container.",
     );
     expect(daemonSource).toContain("MCP tools are external integrations.");
+    expect(daemonSource).toContain('"--dangerously-bypass-approvals-and-sandbox"');
+    expect(daemonSource).toContain('"bypassPermissions"');
+  });
+
+  it("bootstraps the host RPC directory before dropping root", () => {
+    const entrypointSource = readFileSync(
+      resolve(
+        process.cwd(),
+        "desktop-container/container-images/acpx-shared/entrypoint.sh",
+      ),
+      "utf8",
+    );
+
+    expect(entrypointSource).toContain("mkdir -p /data/providers /workspace /data/host-rpc");
+    expect(entrypointSource).toContain('ACON_UID=1000');
+    expect(entrypointSource).toContain('ACON_GID=1000');
+    expect(entrypointSource).toContain('chown "${ACON_UID}:${ACON_GID}" /data/host-rpc');
+  });
+
+  it("uses the shared image's fixed uid/gid for the container runtime user", () => {
+    const containerfileSource = readFileSync(
+      resolve(
+        process.cwd(),
+        "desktop-container/container-images/acpx-shared/Containerfile",
+      ),
+      "utf8",
+    );
+
+    expect(containerfileSource).not.toContain("groupadd --gid 1000");
+    expect(containerfileSource).not.toContain("useradd --uid 1000");
   });
 
   it("restarts the provider container after a recoverable daemon startup failure", async () => {
@@ -142,6 +172,7 @@ describe("ContainerRuntimeManager", () => {
       );
       expect(firstState.id).toBe("default");
       expect(existsSync(firstState.rootPath)).toBe(true);
+      expect(statSync(firstState.rootPath).mode & 0o777).toBe(0o777);
       expect(readFileSync(firstState.metadataPath, "utf8")).toContain('"seedMode": "empty"');
     } finally {
       if (previousDataDirectory === undefined) {

@@ -128,6 +128,43 @@ export interface CamelAIToolRegistration<TParams = unknown, TResult = unknown> {
   ) => Promise<TResult>;
 }
 
+export interface CamelAIHostMcpSessionServer {
+  connect(transport: any): Promise<void>;
+  close(): Promise<void>;
+}
+
+export interface CamelAIHostMcpServerRegistration {
+  id: string;
+  createServer: () => CamelAIHostMcpSessionServer;
+}
+
+export interface CamelAIPersistedHostMcpServerRecord {
+  id: string;
+  transport: "stdio";
+  command: string;
+  args: string[];
+  cwd: string | null;
+  env: Record<string, string>;
+  name: string | null;
+  version: string | null;
+}
+
+export interface CamelAIInstallHostMcpServerResult
+  extends CamelAIPersistedHostMcpServerRecord {
+  configPath: string;
+  replaced: boolean;
+}
+
+export interface CamelAIInstallStdioHostMcpServerOptions {
+  id: string;
+  command: string;
+  args?: string[];
+  cwd?: string | null;
+  env?: Record<string, string>;
+  name?: string | null;
+  version?: string | null;
+}
+
 export interface CamelAIBeforePromptEvent {
   type: "before_prompt";
   threadId: string;
@@ -204,6 +241,13 @@ export interface CamelAIPluginApi {
   registerPanel(id: string, panel: CamelAIPanelRegistration): void;
   registerCommand(id: string, command: CamelAICommandRegistration): void;
   registerTool(id: string, tool: CamelAIToolRegistration): void;
+  registerHostMcpServer(registration: CamelAIHostMcpServerRegistration): void;
+  unregisterHostMcpServer(serverId: string): void;
+  listInstalledHostMcpServers(): CamelAIPersistedHostMcpServerRecord[];
+  installStdioHostMcpServer(
+    server: CamelAIInstallStdioHostMcpServerOptions,
+  ): CamelAIInstallHostMcpServerResult;
+  uninstallInstalledHostMcpServer(serverId: string): boolean;
   threadState(threadId?: string | null): AgentExtensionThreadStateStore;
 }
 
