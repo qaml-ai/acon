@@ -35,10 +35,19 @@ const installedHttpServerSchema = z.object({
   version: z.string().nullable(),
 });
 
-const installedServerSchema = z.discriminatedUnion("transport", [
-  installedStdioServerSchema,
-  installedHttpServerSchema,
-]);
+const installedServerSchema = z.object({
+  id: z.string(),
+  transport: z.enum(["stdio", "streamable-http", "sse"]),
+  command: z.string().optional(),
+  args: z.array(z.string()).optional(),
+  cwd: z.string().nullable().optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  url: z.string().optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+  oauth: oauthConfigSchema.nullable().optional(),
+  name: z.string().nullable(),
+  version: z.string().nullable(),
+});
 
 const listInstalledServersOutputSchema = z.object({
   servers: z.array(installedServerSchema),
@@ -64,16 +73,10 @@ const installHttpServerInputSchema = z.object({
   version: z.string().nullable().optional(),
 });
 
-const installServerOutputSchema = z.discriminatedUnion("transport", [
-  installedStdioServerSchema.extend({
-    configPath: z.string(),
-    replaced: z.boolean(),
-  }),
-  installedHttpServerSchema.extend({
-    configPath: z.string(),
-    replaced: z.boolean(),
-  }),
-]);
+const installServerOutputSchema = installedServerSchema.extend({
+  configPath: z.string(),
+  replaced: z.boolean(),
+});
 
 const uninstallServerInputSchema = z.object({
   id: z.string(),
