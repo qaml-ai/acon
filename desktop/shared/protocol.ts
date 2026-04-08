@@ -227,6 +227,25 @@ export interface DesktopRuntimeStatus {
   imageReference?: string | null;
 }
 
+export interface DesktopPermissionRequestHostMcpMutation {
+  kind: "host_mcp_mutation";
+  id: string;
+  threadId: string | null;
+  pluginId: string;
+  harness: DesktopHarness;
+  action: "create" | "update" | "delete";
+  serverId: string;
+  transport: "stdio" | "streamable-http" | "sse";
+  command: string | null;
+  args: string[];
+  cwd: string | null;
+  url: string | null;
+  name: string | null;
+  version: string | null;
+}
+
+export type DesktopPermissionRequest = DesktopPermissionRequestHostMcpMutation;
+
 export interface DesktopSnapshot {
   threads: DesktopThread[];
   messagesByThread: Record<string, DesktopMessage[]>;
@@ -244,6 +263,7 @@ export interface DesktopSnapshot {
   views: DesktopView[];
   panels: DesktopPanel[];
   plugins: DesktopPluginRecord[];
+  pendingPermissionRequest: DesktopPermissionRequest | null;
 }
 
 export interface DesktopStartupDiagnostic {
@@ -309,12 +329,21 @@ export type DesktopClientEvent =
     }
   | {
       type: "ping";
+    }
+  | {
+      type: "respond_permission_request";
+      requestId: string;
+      decision: "approve" | "deny";
     };
 
 export type DesktopServerEvent =
   | {
       type: "snapshot";
       snapshot: DesktopSnapshot;
+    }
+  | {
+      type: "permission_request";
+      request: DesktopPermissionRequest;
     }
   | {
       type: "diagnostic";

@@ -28,6 +28,7 @@ import type {
   CamelAIEventHandler,
   CamelAIEventName,
   CamelAIExtensionModule,
+  CamelAIHostMcpMutationContext,
   CamelAIHostMcpServerRegistration,
   CamelAIInstallHostMcpServerResult,
   CamelAIInstallHttpHostMcpServerOptions,
@@ -84,17 +85,20 @@ export interface CamelAIExtensionHostOptions {
   listInstalledHostMcpServers?: () => CamelAIPersistedHostMcpServerRecord[];
   installStdioHostMcpServer?: (
     server: CamelAIInstallStdioHostMcpServerOptions,
-    workspaceDirectory: string,
-  ) => CamelAIInstallHostMcpServerResult;
-  uninstallInstalledHostMcpServer?: (serverId: string) => boolean;
+    context: CamelAIHostMcpMutationContext,
+  ) => Promise<CamelAIInstallHostMcpServerResult>;
+  uninstallInstalledHostMcpServer?: (
+    serverId: string,
+    context: Omit<CamelAIHostMcpMutationContext, "workspaceDirectory">,
+  ) => Promise<boolean>;
   isPluginEnabled?: (
     pluginId: string,
     plugin: DiscoveredCamelAIExtension,
   ) => boolean;
   installHttpHostMcpServer?: (
     server: CamelAIInstallHttpHostMcpServerOptions,
-    workspaceDirectory: string,
-  ) => CamelAIInstallHostMcpServerResult;
+    context: CamelAIHostMcpMutationContext,
+  ) => Promise<CamelAIInstallHostMcpServerResult>;
 }
 
 function isDirectory(path: string): boolean {
@@ -620,29 +624,39 @@ export class CamelAIExtensionHost {
         this.assertPluginPermission(record, "host-mcp");
         return this.options.listInstalledHostMcpServers?.() ?? [];
       },
-      installStdioHostMcpServer: (server) => {
+      installStdioHostMcpServer: async (server) => {
         this.assertPluginPermission(record, "host-mcp");
         if (!this.options.installStdioHostMcpServer) {
           throw new Error("Host MCP installation is unavailable.");
         }
-        return this.options.installStdioHostMcpServer(
-          server,
-          context.workspaceDirectory,
-        );
+        return await this.options.installStdioHostMcpServer(server, {
+          pluginId,
+          harness: context.harness,
+          threadId: context.activeThreadId,
+          workspaceDirectory: context.workspaceDirectory,
+        });
       },
-      installHttpHostMcpServer: (server) => {
+      installHttpHostMcpServer: async (server) => {
         this.assertPluginPermission(record, "host-mcp");
         if (!this.options.installHttpHostMcpServer) {
           throw new Error("Host MCP installation is unavailable.");
         }
-        return this.options.installHttpHostMcpServer(
-          server,
-          context.workspaceDirectory,
-        );
+        return await this.options.installHttpHostMcpServer(server, {
+          pluginId,
+          harness: context.harness,
+          threadId: context.activeThreadId,
+          workspaceDirectory: context.workspaceDirectory,
+        });
       },
-      uninstallInstalledHostMcpServer: (serverId) => {
+      uninstallInstalledHostMcpServer: async (serverId) => {
         this.assertPluginPermission(record, "host-mcp");
-        return this.options.uninstallInstalledHostMcpServer?.(serverId) ?? false;
+        return (
+          await this.options.uninstallInstalledHostMcpServer?.(serverId, {
+            pluginId,
+            harness: context.harness,
+            threadId: context.activeThreadId,
+          })
+        ) ?? false;
       },
       threadState: (threadId = context.activeThreadId) =>
         this.createThreadState(pluginId, threadId ?? null, context),

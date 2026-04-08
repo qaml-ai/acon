@@ -345,9 +345,19 @@ function createSnapshot(): DesktopSnapshot {
         description: "Provides the primary thread chat workbench view.",
         source: "builtin",
         enabled: true,
+        disableable: false,
         path: "/tmp/chat-core",
         main: "/tmp/chat-core/index.ts",
         webviews: [],
+        permissions: [],
+        settings: null,
+        compatibility: {
+          currentApiVersion: 1,
+          declaredApiVersion: 1,
+          minApiVersion: 1,
+          compatible: true,
+          reason: null,
+        },
         capabilities: {
           views: [
             {
@@ -380,9 +390,19 @@ function createSnapshot(): DesktopSnapshot {
         description: "Inspect the live extension runtime and installed extensions.",
         source: "builtin",
         enabled: true,
+        disableable: false,
         path: "/tmp/extension-lab",
         main: "/tmp/extension-lab/index.ts",
         webviews: [],
+        permissions: [],
+        settings: null,
+        compatibility: {
+          currentApiVersion: 1,
+          declaredApiVersion: 1,
+          minApiVersion: 1,
+          compatible: true,
+          reason: null,
+        },
         capabilities: {
           views: [
             {
@@ -415,6 +435,7 @@ function createSnapshot(): DesktopSnapshot {
         description: "Pins a stable random site to each chat thread's right preview pane.",
         source: "builtin",
         enabled: true,
+        disableable: false,
         path: "/tmp/random-site-preview",
         main: "/tmp/random-site-preview/index.ts",
         webviews: [
@@ -423,6 +444,15 @@ function createSnapshot(): DesktopSnapshot {
             entrypoint: "/tmp/random-site-preview/site/index.html",
           },
         ],
+        permissions: [],
+        settings: null,
+        compatibility: {
+          currentApiVersion: 1,
+          declaredApiVersion: 1,
+          minApiVersion: 1,
+          compatible: true,
+          reason: null,
+        },
         capabilities: {
           views: [],
           panels: [
@@ -454,9 +484,19 @@ function createSnapshot(): DesktopSnapshot {
         description: "Tracks thread-level extension state through runtime hooks.",
         source: "builtin",
         enabled: true,
+        disableable: false,
         path: "/tmp/thread-journal",
         main: "/tmp/thread-journal/index.ts",
         webviews: [],
+        permissions: [],
+        settings: null,
+        compatibility: {
+          currentApiVersion: 1,
+          declaredApiVersion: 1,
+          minApiVersion: 1,
+          compatible: true,
+          reason: null,
+        },
         capabilities: {
           views: [],
           panels: [],
@@ -488,6 +528,7 @@ function createSnapshot(): DesktopSnapshot {
         },
       },
     ],
+    pendingPermissionRequest: null,
   };
 }
 

@@ -131,7 +131,7 @@ const extension: CamelAIExtensionModule = {
             outputSchema: installServerOutputSchema,
           },
           async (input) => {
-            const installed = api.installStdioHostMcpServer(input);
+            const installed = await api.installStdioHostMcpServer(input);
             return {
               content: [
                 {
@@ -155,7 +155,7 @@ const extension: CamelAIExtensionModule = {
             outputSchema: installServerOutputSchema,
           },
           async (input) => {
-            const installed = api.installHttpHostMcpServer(input);
+            const installed = await api.installHttpHostMcpServer(input);
             return {
               content: [
                 {
@@ -183,7 +183,7 @@ const extension: CamelAIExtensionModule = {
               throw new Error("The host MCP manager cannot uninstall itself.");
             }
 
-            const removed = api.uninstallInstalledHostMcpServer(id);
+            const removed = await api.uninstallInstalledHostMcpServer(id);
             return {
               content: [
                 {

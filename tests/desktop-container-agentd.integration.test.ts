@@ -16,6 +16,7 @@ import { requireDesktopProvider } from "../desktop-container/backend/providers";
 import type {
   DesktopClientEvent,
   DesktopMessage,
+  DesktopPermissionRequest,
   DesktopProvider,
   DesktopServerEvent,
   DesktopSnapshot,
@@ -1074,6 +1075,33 @@ class DesktopBackendHarness {
     });
   }
 
+  async waitForPermissionRequest(
+    action: DesktopPermissionRequest["action"],
+    serverId: string,
+  ): Promise<DesktopPermissionRequest> {
+    return await this.waitFor(`permission request for ${action} ${serverId}`, () => {
+      const request = this.snapshot?.pendingPermissionRequest;
+      if (!request) {
+        return null;
+      }
+      if (request.action === action && request.serverId === serverId) {
+        return request;
+      }
+      return null;
+    });
+  }
+
+  respondToPermissionRequest(
+    requestId: string,
+    decision: "approve" | "deny",
+  ): void {
+    this.send({
+      type: "respond_permission_request",
+      requestId,
+      decision,
+    });
+  }
+
   async sendMessageAndWait(threadId: string, content: string): Promise<{
     message: DesktopMessage;
     text: string;
@@ -1485,7 +1513,7 @@ integrationDescribe("desktop-container agent runtime integration", () => {
                 ]),
               );
 
-              const installed = await client.callTool({
+              const installedPromise = client.callTool({
                 name: "install_stdio_server",
                 arguments: {
                   id: GUEST_INSTALLED_HOST_MCP_STDIO_SERVER_ID,
@@ -1500,6 +1528,12 @@ integrationDescribe("desktop-container agent runtime integration", () => {
                   version: "1.0.0",
                 },
               });
+              const installRequest = await harness.waitForPermissionRequest(
+                "create",
+                GUEST_INSTALLED_HOST_MCP_STDIO_SERVER_ID,
+              );
+              harness.respondToPermissionRequest(installRequest.id, "approve");
+              const installed = await installedPromise;
 
               expect(installed.isError).not.toBe(true);
               expect(installed.structuredContent).toEqual(
@@ -1545,6 +1579,41 @@ integrationDescribe("desktop-container agent runtime integration", () => {
               });
             },
           );
+
+          await withContainerHostMcpClient(
+            harness.userDataDir,
+            providerCase.id,
+            HOST_MCP_MANAGER_SERVER_ID,
+            async (client) => {
+              const uninstallPromise = client.callTool({
+                name: "uninstall_server",
+                arguments: {
+                  id: GUEST_INSTALLED_HOST_MCP_STDIO_SERVER_ID,
+                },
+              });
+              const uninstallRequest = await harness.waitForPermissionRequest(
+                "delete",
+                GUEST_INSTALLED_HOST_MCP_STDIO_SERVER_ID,
+              );
+              harness.respondToPermissionRequest(uninstallRequest.id, "approve");
+
+              const removed = await uninstallPromise;
+              expect(removed.isError).not.toBe(true);
+              expect(removed.structuredContent).toEqual({
+                id: GUEST_INSTALLED_HOST_MCP_STDIO_SERVER_ID,
+                removed: true,
+              });
+            },
+          );
+
+          const updatedServersResult = await runContainerCommand(
+            harness.userDataDir,
+            providerCase.id,
+            ["acon-mcp", "servers"],
+          );
+          expect(updatedServersResult.stdout.trim().split("\n")).not.toContain(
+            GUEST_INSTALLED_HOST_MCP_STDIO_SERVER_ID,
+          );
         } finally {
           await harness.dispose();
         }
@@ -1573,7 +1642,7 @@ integrationDescribe("desktop-container agent runtime integration", () => {
               providerCase.id,
               HOST_MCP_MANAGER_SERVER_ID,
               async (client) => {
-                const installed = await client.callTool({
+                const installedPromise = client.callTool({
                   name: "install_http_server",
                   arguments: {
                     id: GUEST_INSTALLED_HOST_MCP_HTTP_SERVER_ID,
@@ -1583,6 +1652,12 @@ integrationDescribe("desktop-container agent runtime integration", () => {
                     version: "1.0.0",
                   },
                 });
+                const installRequest = await harness.waitForPermissionRequest(
+                  "create",
+                  GUEST_INSTALLED_HOST_MCP_HTTP_SERVER_ID,
+                );
+                harness.respondToPermissionRequest(installRequest.id, "approve");
+                const installed = await installedPromise;
 
                 expect(installed.isError).not.toBe(true);
                 expect(installed.structuredContent).toEqual(

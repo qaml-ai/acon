@@ -847,6 +847,7 @@ export class DesktopStore {
       views,
       panels,
       plugins,
+      pendingPermissionRequest: null,
     };
   }
 }

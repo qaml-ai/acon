@@ -233,11 +233,11 @@ export interface CamelAIActivationApi {
   listInstalledHostMcpServers(): CamelAIPersistedHostMcpServerRecord[];
   installStdioHostMcpServer(
     server: CamelAIInstallStdioHostMcpServerOptions,
-  ): CamelAIInstallHostMcpServerResult;
+  ): Promise<CamelAIInstallHostMcpServerResult>;
   installHttpHostMcpServer(
     server: CamelAIInstallHttpHostMcpServerOptions,
-  ): CamelAIInstallHostMcpServerResult;
-  uninstallInstalledHostMcpServer(serverId: string): boolean;
+  ): Promise<CamelAIInstallHostMcpServerResult>;
+  uninstallInstalledHostMcpServer(serverId: string): Promise<boolean>;
   threadState(threadId?: string | null): CamelAIThreadStateStore;
 }
 
