@@ -87,6 +87,7 @@ describe("DesktopService", () => {
       panels: [],
       plugins: [],
     });
+    vi.spyOn(CamelAIExtensionHost.prototype, "refresh").mockResolvedValue(undefined);
     vi.spyOn(CamelAIExtensionHost.prototype, "applyBeforePrompt").mockImplementation(
       async (_threadId: string, content: string) => ({
         cancelled: false,
@@ -402,6 +403,39 @@ describe("DesktopService", () => {
       existsSync(resolve(serverDirectory, "workspace-server.json")),
     ).toBe(true);
 
+    const remoteInstalled = await service.installHttpHostMcpServer(
+      {
+        id: "remote-server",
+        transport: "streamable-http",
+        url: "https://example.com/mcp",
+        headers: {
+          "x-test": "1",
+        },
+        oauth: {
+          clientName: "Acon Test Client",
+          scope: "tools.read",
+        },
+      },
+      "/host/workspace",
+    );
+
+    expect(remoteInstalled).toEqual(
+      expect.objectContaining({
+        id: "remote-server",
+        transport: "streamable-http",
+        url: "https://example.com/mcp",
+        replaced: false,
+      }),
+    );
+    expect(registerHostMcpServer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "remote-server",
+      }),
+    );
+    expect(
+      existsSync(resolve(serverDirectory, "remote-server.json")),
+    ).toBe(true);
+
     expect(await service.uninstallInstalledHostMcpServer("workspace-server")).toBe(
       true,
     );
@@ -409,6 +443,78 @@ describe("DesktopService", () => {
     expect(
       existsSync(resolve(serverDirectory, "workspace-server.json")),
     ).toBe(false);
+
+    expect(await service.uninstallInstalledHostMcpServer("remote-server")).toBe(
+      true,
+    );
+    expect(unregisterHostMcpServer).toHaveBeenCalledWith("remote-server");
+    expect(
+      existsSync(resolve(serverDirectory, "remote-server.json")),
+    ).toBe(false);
+  });
+
+  it("persists plugin enabled state changes and refreshes the extension host", async () => {
+    vi.spyOn(CamelAIExtensionHost.prototype, "getSnapshot").mockReturnValue({
+      views: [],
+      panels: [],
+      plugins: [
+        {
+          id: "user-plugin",
+          name: "User Plugin",
+          version: "0.1.0",
+          description: null,
+          source: "user",
+          enabled: true,
+          disableable: true,
+          path: "/tmp/user-plugin",
+          main: "/tmp/user-plugin/index.mjs",
+          webviews: [],
+          permissions: [],
+          settings: null,
+          compatibility: {
+            currentApiVersion: 1,
+            declaredApiVersion: 1,
+            minApiVersion: 1,
+            compatible: true,
+            reason: null,
+          },
+          capabilities: {
+            views: [],
+            panels: [],
+            commands: [],
+            tools: [],
+          },
+          runtime: {
+            activated: true,
+            activationError: null,
+            subscribedEvents: [],
+            registeredViewIds: [],
+            registeredPanelIds: [],
+            registeredCommandIds: [],
+            registeredToolIds: [],
+          },
+        },
+      ],
+    });
+
+    const { runtime } = createRuntimeManagerStub();
+    const service = new DesktopService(runtime);
+
+    service.handleClientEvent({
+      type: "set_plugin_enabled",
+      pluginId: "user-plugin",
+      enabled: false,
+    });
+
+    await waitFor(() => {
+      const persisted = JSON.parse(
+        readFileSync(resolve(sandboxDataDir, "state.json"), "utf8"),
+      ) as {
+        pluginEnabledById?: Record<string, boolean>;
+      };
+      expect(persisted.pluginEnabledById?.["user-plugin"]).toBe(false);
+      expect(CamelAIExtensionHost.prototype.refresh).toHaveBeenCalled();
+    });
   });
 
   it("requires approval before guest tools mutate the host MCP registry", async () => {

@@ -48,10 +48,12 @@ async function showHostMcpPermissionDialog(request) {
         : 'Delete host MCP server';
   const detailLines = [
     `Server ID: ${request.serverId}`,
+    `Transport: ${request.transport}`,
     request.name ? `Name: ${request.name}` : null,
     request.command ? `Command: ${request.command}` : null,
     request.args.length > 0 ? `Args: ${request.args.join(' ')}` : null,
     request.cwd ? `Working directory: ${request.cwd}` : null,
+    request.url ? `URL: ${request.url}` : null,
     request.version ? `Version: ${request.version}` : null,
     `Requested by plugin: ${request.pluginId}`,
     `Harness: ${request.harness}`,

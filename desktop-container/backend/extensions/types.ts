@@ -2,6 +2,7 @@ import type {
   DesktopHarness,
   DesktopModel,
   DesktopPluginHostPanelData,
+  DesktopPluginPermission,
   DesktopPluginRecord,
   DesktopPanel,
   DesktopProvider,
@@ -23,6 +24,41 @@ export type CamelAIThreadStateValue =
   | CamelAIThreadStateValue[]
   | { [key: string]: CamelAIThreadStateValue };
 
+export const CAMELAI_CURRENT_API_VERSION = 1;
+
+export type CamelAISettingFieldType =
+  | "boolean"
+  | "number"
+  | "secret"
+  | "select"
+  | "string";
+
+export interface CamelAISettingFieldOption {
+  label: string;
+  value: string;
+}
+
+export interface CamelAISettingsField {
+  type: CamelAISettingFieldType;
+  label: string;
+  description?: string;
+  required?: boolean;
+  options?: CamelAISettingFieldOption[];
+}
+
+export interface CamelAISettingsSchema {
+  description?: string;
+  fields: Record<string, CamelAISettingsField>;
+}
+
+export interface CamelAIDisposable {
+  dispose(): void | Promise<void>;
+}
+
+export type CamelAIDisposableLike =
+  | CamelAIDisposable
+  | (() => void | Promise<void>);
+
 export interface CamelAIManifest {
   id: string;
   name?: string;
@@ -31,7 +67,11 @@ export interface CamelAIManifest {
   icon?: string;
   main?: string;
   webviews?: Record<string, string>;
-  settings?: string;
+  apiVersion?: number;
+  minApiVersion?: number;
+  permissions?: DesktopPluginPermission[];
+  disableable?: boolean;
+  settings?: string | CamelAISettingsSchema;
 }
 
 export interface DiscoveredCamelAIExtension {
@@ -138,7 +178,17 @@ export interface CamelAIHostMcpServerRegistration {
   createServer: () => CamelAIHostMcpSessionServer;
 }
 
-export interface CamelAIPersistedHostMcpServerRecord {
+export interface CamelAIHostMcpOAuthConfig {
+  clientId: string | null;
+  clientSecret: string | null;
+  clientName: string | null;
+  clientUri: string | null;
+  clientMetadataUrl: string | null;
+  scope: string | null;
+  tokenEndpointAuthMethod: string | null;
+}
+
+export interface CamelAIPersistedHostMcpStdioServerRecord {
   id: string;
   transport: "stdio";
   command: string;
@@ -148,6 +198,20 @@ export interface CamelAIPersistedHostMcpServerRecord {
   name: string | null;
   version: string | null;
 }
+
+export interface CamelAIPersistedHostMcpHttpServerRecord {
+  id: string;
+  transport: "streamable-http" | "sse";
+  url: string;
+  headers: Record<string, string>;
+  oauth: CamelAIHostMcpOAuthConfig | null;
+  name: string | null;
+  version: string | null;
+}
+
+export type CamelAIPersistedHostMcpServerRecord =
+  | CamelAIPersistedHostMcpStdioServerRecord
+  | CamelAIPersistedHostMcpHttpServerRecord;
 
 export interface CamelAIInstallHostMcpServerResult
   extends CamelAIPersistedHostMcpServerRecord {
@@ -170,6 +234,16 @@ export interface CamelAIHostMcpMutationContext {
   harness: DesktopHarness;
   threadId: string | null;
   workspaceDirectory: string;
+}
+
+export interface CamelAIInstallHttpHostMcpServerOptions {
+  id: string;
+  url: string;
+  transport?: "streamable-http" | "sse";
+  headers?: Record<string, string>;
+  oauth?: Partial<CamelAIHostMcpOAuthConfig> | null;
+  name?: string | null;
+  version?: string | null;
 }
 
 export interface CamelAIBeforePromptEvent {
@@ -243,32 +317,49 @@ export type CamelAIEventHandler = (
 export interface CamelAIPluginApi {
   readonly pluginId: string;
   readonly harnessAdapters: CamelAIHarnessAdapterInfo[];
-  on(event: CamelAIEventName, handler: CamelAIEventHandler): void;
-  registerView(id: string, view: CamelAIViewRegistration): void;
-  registerPanel(id: string, panel: CamelAIPanelRegistration): void;
-  registerCommand(id: string, command: CamelAICommandRegistration): void;
-  registerTool(id: string, tool: CamelAIToolRegistration): void;
-  registerHostMcpServer(registration: CamelAIHostMcpServerRegistration): void;
-  unregisterHostMcpServer(serverId: string): void;
+  registerDisposable(disposable: CamelAIDisposableLike): CamelAIDisposable;
+  on(event: CamelAIEventName, handler: CamelAIEventHandler): CamelAIDisposable;
+  registerView(id: string, view: CamelAIViewRegistration): CamelAIDisposable;
+  registerPanel(id: string, panel: CamelAIPanelRegistration): CamelAIDisposable;
+  registerCommand(
+    id: string,
+    command: CamelAICommandRegistration,
+  ): CamelAIDisposable;
+  registerTool(id: string, tool: CamelAIToolRegistration): CamelAIDisposable;
+  registerHostMcpServer(
+    registration: CamelAIHostMcpServerRegistration,
+  ): CamelAIDisposable;
+  unregisterHostMcpServer(serverId: string): boolean;
   listInstalledHostMcpServers(): CamelAIPersistedHostMcpServerRecord[];
   installStdioHostMcpServer(
     server: CamelAIInstallStdioHostMcpServerOptions,
+  ): Promise<CamelAIInstallHostMcpServerResult>;
+  installHttpHostMcpServer(
+    server: CamelAIInstallHttpHostMcpServerOptions,
   ): Promise<CamelAIInstallHostMcpServerResult>;
   uninstallInstalledHostMcpServer(serverId: string): Promise<boolean>;
   threadState(threadId?: string | null): AgentExtensionThreadStateStore;
 }
 
 export interface CamelAIExtensionModule {
-  activate?: (api: CamelAIPluginApi) => void | Promise<void>;
+  activate?: (
+    api: CamelAIPluginApi,
+  ) => void | Promise<void> | CamelAIDisposableLike;
+  deactivate?: () => void | Promise<void>;
 }
 
 export interface CamelAIRuntimeRecord {
   discovered: DiscoveredCamelAIExtension;
+  enabled: boolean;
   activated: boolean;
   activationError: string | null;
+  compatibilityError: string | null;
   views: Map<string, CamelAIViewRegistration>;
   panels: Map<string, CamelAIPanelRegistration>;
   commands: Map<string, CamelAICommandRegistration>;
   tools: Map<string, CamelAIToolRegistration>;
   handlers: Map<CamelAIEventName, CamelAIEventHandler[]>;
+  disposables: CamelAIDisposable[];
+  deactivate?: (() => void | Promise<void>) | null;
+  registeredHostMcpServerIds: Set<string>;
 }

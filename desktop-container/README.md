@@ -59,8 +59,9 @@ Notes:
 Host MCP notes:
 
 - Host code can register MCP servers on `DesktopService` with `registerHostMcpServer({ id, createServer })`.
-- Persisted stdio host MCP server registrations live under the desktop data directory at `host-mcp/servers/*.json`.
-- The builtin `host-mcp-manager` plugin registers a host MCP server that can list, install, and remove persisted stdio host MCP servers from inside the guest.
+- Persisted host MCP server registrations live under the desktop data directory at `host-mcp/servers/*.json`.
+- Persisted remote MCP servers can use `streamable-http` or legacy `sse` transport, and optional OAuth tokens/client state are kept on the host under `host-mcp/oauth/*.json`.
+- The builtin `host-mcp-manager` plugin registers a host MCP server that can list, install, and remove persisted stdio and remote HTTP host MCP servers from inside the guest.
 - Inside the container, `acon-mcp --help` shows the CLI surface.
 - `acon-mcp servers` lists the host MCP servers that the Electron app has registered for that backend session.
 - `acon-mcp tools <server-id>` lists the tools exposed by one registered host MCP server.
@@ -110,10 +111,10 @@ export ANTHROPIC_API_KEY=...
 - Provider-specific runtime data lives under the shared desktop runtime directory and is mounted into the container under `/data/providers/<provider>`.
 - `desktop-container/container-images/` contains the shared Apple-container image definition that installs Codex and Claude Code together, plus the internal `acon-agentd` daemon and the `acon-mcp` stdio proxy so agents can reach host MCP servers from inside the container.
 - Packaged builds should stage the Apple `container` CLI at `Contents/Resources/desktop/bin/container`, the helper tree at `Contents/Resources/desktop/libexec/container/`, builtin plugin manifests under `Contents/Resources/desktop/plugins/builtin/`, and the image contexts at `Contents/Resources/desktop/container-images/`.
-- `desktop-container/backend/extensions/host.ts` discovers V2 `camelai` plugin manifests from `desktop-container/plugins/builtin/` plus the user install directory, loads extension modules, exposes a runtime-first API (`on`, `registerView`, `registerPanel`, `registerCommand`, `registerTool`), and materializes workbench views plus per-thread companion panels into the shared snapshot model.
+- `desktop-container/backend/extensions/host.ts` discovers V2 `camelai` plugin manifests from `desktop-container/plugins/builtin/` plus the user install directory, loads extension modules, enforces manifest metadata such as API compatibility and declared permissions, supports registration disposables plus `deactivate()` cleanup, and exposes the runtime-first API (`on`, `registerView`, `registerPanel`, `registerCommand`, `registerTool`, host MCP registration) that materializes workbench views plus per-thread companion panels into the shared snapshot model.
 - `desktop-container/backend/extensions/thread-state.ts` provides a persistent per-thread plugin state store under the desktop runtime directory so workbench views, companion panels, and runtime hooks can share thread-scoped JSON state.
 - `desktop-container/backend/extensions/harness-adapters.ts` is the abstraction layer between supported harnesses and the unified extension model; it currently includes `codex`, `claude-code`, and `opencode` adapter identities.
-- `desktop/electron/main.mjs` exposes the desktop-shell install flow for user plugins, including folder selection, copying into the user plugin directory, and triggering a live catalog refresh.
+- `desktop/electron/main.mjs` exposes the desktop-shell install flow for user plugins, including folder selection, copying into the user plugin directory, and triggering a live catalog refresh; enabled and disabled plugin state is persisted in the desktop backend store and surfaced through Extension Lab.
 - `desktop-container/plugins/` contains repo-shipped V2 plugins, with `plugins/builtin/` reserved for curated builtins. The current builtin set includes `chat-core`, `extension-lab`, `host-mcp-manager`, and `thread-journal`.
 - `desktop-container/sdk/index.ts` contains the extension-facing V2 manifest and activation API types.
 - `desktop-container/electron/main.mjs` loads the desktop backend service directly into the Electron main process via `tsx`.
