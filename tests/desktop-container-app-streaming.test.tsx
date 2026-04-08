@@ -488,6 +488,7 @@ function createSnapshot(): DesktopSnapshot {
         },
       },
     ],
+    pendingPermissionRequest: null,
   };
 }
 

@@ -38,6 +38,37 @@ let startupProbeRendererReady = null;
 let pendingPluginRefresh = null;
 let backendCleanupDone = false;
 
+async function showHostMcpPermissionDialog(request) {
+  const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? undefined;
+  const actionLabel =
+    request.action === 'create'
+      ? 'Create host MCP server'
+      : request.action === 'update'
+        ? 'Update host MCP server'
+        : 'Delete host MCP server';
+  const detailLines = [
+    `Server ID: ${request.serverId}`,
+    request.name ? `Name: ${request.name}` : null,
+    request.command ? `Command: ${request.command}` : null,
+    request.args.length > 0 ? `Args: ${request.args.join(' ')}` : null,
+    request.cwd ? `Working directory: ${request.cwd}` : null,
+    request.version ? `Version: ${request.version}` : null,
+    `Requested by plugin: ${request.pluginId}`,
+    `Harness: ${request.harness}`,
+  ].filter(Boolean);
+  const response = await dialog.showMessageBox(window, {
+    type: 'warning',
+    buttons: ['Approve', 'Deny'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+    title: actionLabel,
+    message: `${actionLabel}?`,
+    detail: detailLines.join('\n'),
+  });
+  return response.response === 0;
+}
+
 function getWindowBackgroundColor() {
   return nativeTheme.shouldUseDarkColors ? '#09090b' : '#f5f5f4';
 }
@@ -387,6 +418,26 @@ async function refreshPluginsInBackend() {
 }
 
 function publishBackendEvent(event) {
+  if (event.type === 'permission_request' && event.request.kind === 'host_mcp_mutation') {
+    void showHostMcpPermissionDialog(event.request)
+      .then((approved) =>
+        sendBackendEvent({
+          type: 'respond_permission_request',
+          requestId: event.request.id,
+          decision: approved ? 'approve' : 'deny',
+        }),
+      )
+      .catch((error) => {
+        console.error('[desktop-backend] failed to resolve permission request', error);
+        return sendBackendEvent({
+          type: 'respond_permission_request',
+          requestId: event.request.id,
+          decision: 'deny',
+        });
+      });
+    return;
+  }
+
   if (event.type === 'snapshot') {
     latestSnapshot = event.snapshot;
     settlePendingPluginRefresh(event.snapshot);

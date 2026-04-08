@@ -4,6 +4,7 @@ import { DesktopStore } from "./store";
 import { logDesktop } from "../../desktop/backend/log";
 import type {
   DesktopClientEvent,
+  DesktopPermissionRequest,
   DesktopRuntimeStatus,
   DesktopServerEvent,
   DesktopSnapshot,
@@ -24,6 +25,7 @@ import {
 } from "./container-runtime";
 import { CamelAIExtensionHost } from "./extensions/host";
 import { getHarnessAdapterForProvider } from "./extensions/harness-adapters";
+import type { CamelAIHostMcpMutationContext } from "./extensions/types";
 import type { HostMcpServerRegistration } from "./host-mcp";
 import {
   createPersistedHostMcpServerRegistration,
@@ -39,6 +41,12 @@ type Listener = (event: DesktopServerEvent) => void;
 
 interface ActiveThreadRun {
   stopRequested: boolean;
+}
+
+interface PendingPermissionRequestRecord {
+  request: DesktopPermissionRequest;
+  resolve: () => void;
+  reject: (error: Error) => void;
 }
 
 const INTERRUPTED_MESSAGE_TEXT = "[Request interrupted by user]";
@@ -66,6 +74,7 @@ export class DesktopService {
   private readonly extensionHost: CamelAIExtensionHost;
   private readonly activeThreadRuns = new Map<string, ActiveThreadRun>();
   private readonly listeners = new Set<Listener>();
+  private readonly pendingPermissionRequests: PendingPermissionRequestRecord[] = [];
   private runtimeStatus: DesktopRuntimeStatus;
   private runtimeStartupPromise: Promise<void> | null = null;
 
@@ -84,10 +93,10 @@ export class DesktopService {
         this.unregisterHostMcpServer(serverId);
       },
       listInstalledHostMcpServers: () => this.listInstalledHostMcpServers(),
-      installStdioHostMcpServer: (server, workspaceDirectory) =>
-        this.installStdioHostMcpServer(server, workspaceDirectory),
-      uninstallInstalledHostMcpServer: (serverId) =>
-        this.uninstallInstalledHostMcpServer(serverId),
+      installStdioHostMcpServer: (server, context) =>
+        this.installStdioHostMcpServer(server, context),
+      uninstallInstalledHostMcpServer: (serverId, context) =>
+        this.uninstallInstalledHostMcpServer(serverId, context),
     });
     const provider = this.getCurrentProvider();
     const model = this.getCurrentModel(provider);
@@ -120,6 +129,9 @@ export class DesktopService {
   }
 
   dispose(): void {
+    this.rejectPendingPermissionRequests(
+      new Error("Desktop service disposed before the permission request was resolved."),
+    );
     this.runtimeManager.dispose();
     this.listeners.clear();
     this.activeThreadRuns.clear();
@@ -140,10 +152,38 @@ export class DesktopService {
     });
   }
 
-  installStdioHostMcpServer(
+  async installStdioHostMcpServer(
     server: PersistedHostMcpStdioInstallOptions,
-    workspaceDirectory = this.runtimeManager.getWorkspaceDirectory(),
-  ): PersistedHostMcpInstallResult {
+    context:
+      | string
+      | CamelAIHostMcpMutationContext = this.runtimeManager.getWorkspaceDirectory(),
+  ): Promise<PersistedHostMcpInstallResult> {
+    const workspaceDirectory =
+      typeof context === "string"
+        ? context
+        : context.workspaceDirectory;
+    if (typeof context !== "string") {
+      const action = this.listInstalledHostMcpServers().some(
+        (entry) => entry.id === server.id,
+      )
+        ? "update"
+        : "create";
+      await this.requestPermission({
+        kind: "host_mcp_mutation",
+        id: randomUUID(),
+        threadId: context.threadId,
+        pluginId: context.pluginId,
+        harness: context.harness,
+        action,
+        serverId: server.id,
+        command: server.command,
+        args: server.args ?? [],
+        cwd: server.cwd ?? null,
+        name: server.name ?? null,
+        version: server.version ?? null,
+      });
+    }
+
     const installed = installPersistedHostMcpServer({
       dataDirectory: this.dataDirectory,
       workspaceDirectory,
@@ -155,7 +195,29 @@ export class DesktopService {
     return installed;
   }
 
-  uninstallInstalledHostMcpServer(serverId: string): boolean {
+  async uninstallInstalledHostMcpServer(
+    serverId: string,
+    context?: Omit<CamelAIHostMcpMutationContext, "workspaceDirectory">,
+  ): Promise<boolean> {
+    if (context) {
+      const existingServer =
+        this.listInstalledHostMcpServers().find((entry) => entry.id === serverId) ?? null;
+      await this.requestPermission({
+        kind: "host_mcp_mutation",
+        id: randomUUID(),
+        threadId: context.threadId,
+        pluginId: context.pluginId,
+        harness: context.harness,
+        action: "delete",
+        serverId,
+        command: existingServer?.command ?? null,
+        args: existingServer?.args ?? [],
+        cwd: existingServer?.cwd ?? null,
+        name: existingServer?.name ?? null,
+        version: existingServer?.version ?? null,
+      });
+    }
+
     const removed = uninstallPersistedHostMcpServer({
       dataDirectory: this.dataDirectory,
       serverId,
@@ -184,7 +246,7 @@ export class DesktopService {
     const extensionSnapshot = this.extensionHost.getSnapshot(
       this.getExtensionActivationContext(),
     );
-    return this.store.buildSnapshot(
+    const snapshot = this.store.buildSnapshot(
       this.getRuntimeStatus(),
       provider.id,
       getProviderOptions(),
@@ -195,6 +257,9 @@ export class DesktopService {
       extensionSnapshot.panels,
       extensionSnapshot.plugins,
     );
+    snapshot.pendingPermissionRequest =
+      this.pendingPermissionRequests[0]?.request ?? null;
+    return snapshot;
   }
 
   private getCurrentProvider() {
@@ -343,6 +408,10 @@ export class DesktopService {
         });
         return;
       }
+      case "respond_permission_request": {
+        this.resolvePermissionRequest(event.requestId, event.decision);
+        return;
+      }
       default: {
         const neverEvent: never = event;
         throw new Error(`Unhandled event: ${JSON.stringify(neverEvent)}`);
@@ -353,6 +422,58 @@ export class DesktopService {
   private broadcast(event: DesktopServerEvent): void {
     for (const listener of this.listeners) {
       listener(event);
+    }
+  }
+
+  private async requestPermission(
+    request: DesktopPermissionRequest,
+  ): Promise<void> {
+    return await new Promise<void>((resolve, reject) => {
+      this.pendingPermissionRequests.push({
+        request,
+        resolve,
+        reject,
+      });
+      this.emitSnapshot();
+      this.broadcast({
+        type: "permission_request",
+        request,
+      });
+    });
+  }
+
+  private resolvePermissionRequest(
+    requestId: string,
+    decision: "approve" | "deny",
+  ): void {
+    const index = this.pendingPermissionRequests.findIndex(
+      (entry) => entry.request.id === requestId,
+    );
+    if (index === -1) {
+      throw new Error(`Unknown permission request: ${requestId}`);
+    }
+
+    const [pending] = this.pendingPermissionRequests.splice(index, 1);
+    this.emitSnapshot();
+    if (decision === "approve") {
+      pending.resolve();
+      return;
+    }
+
+    const action =
+      pending.request.kind === "host_mcp_mutation"
+        ? pending.request.action
+        : "perform";
+    pending.reject(
+      new Error(
+        `User denied permission to ${action} host MCP server ${pending.request.serverId}.`,
+      ),
+    );
+  }
+
+  private rejectPendingPermissionRequests(error: Error): void {
+    while (this.pendingPermissionRequests.length > 0) {
+      this.pendingPermissionRequests.shift()?.reject(error);
     }
   }
 

@@ -54,6 +54,24 @@ function createRuntimeManagerStub() {
   };
 }
 
+async function waitFor<T>(assertion: () => T, timeoutMs = 5_000): Promise<T> {
+  const startedAt = Date.now();
+  let lastError: unknown;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      return assertion();
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Timed out waiting for test condition.");
+}
+
 describe("DesktopService", () => {
   let sandboxDataDir: string;
   let previousDataDir: string | undefined;
@@ -103,7 +121,7 @@ describe("DesktopService", () => {
       threadId,
       content: "first task",
     });
-    await vi.waitFor(() => expect(streamPrompt).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(streamPrompt).toHaveBeenCalledTimes(1));
 
     service.handleClientEvent({
       type: "send_message",
@@ -111,7 +129,7 @@ describe("DesktopService", () => {
       content: "second task",
     });
 
-    await vi.waitFor(() => expect(streamPrompt).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(streamPrompt).toHaveBeenCalledTimes(2));
     expect(
       events.some(
         (event) =>
@@ -144,7 +162,7 @@ describe("DesktopService", () => {
       stopReason: null,
     });
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       const messages = service.getSnapshot().messagesByThread[threadId] ?? [];
       expect(messages.filter((message) => message.role === "user")).toHaveLength(2);
       expect(
@@ -176,14 +194,14 @@ describe("DesktopService", () => {
       threadId,
       content: "keep investigating",
     });
-    await vi.waitFor(() => expect(streamPrompt).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(streamPrompt).toHaveBeenCalledTimes(1));
 
     service.handleClientEvent({
       type: "stop_thread",
       threadId,
     });
 
-    await vi.waitFor(() => expect(cancelPrompt).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(cancelPrompt).toHaveBeenCalledTimes(1));
     expect(cancelPrompt).toHaveBeenCalledWith({
       provider: expect.objectContaining({ id: "claude" }),
       threadId,
@@ -197,7 +215,7 @@ describe("DesktopService", () => {
       stopReason: "cancelled",
     });
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       const messages = service.getSnapshot().messagesByThread[threadId] ?? [];
       expect(
         messages.some(
@@ -219,7 +237,7 @@ describe("DesktopService", () => {
       threadId,
       content: "remember this session",
     });
-    await vi.waitFor(() => expect(streamPrompt).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(streamPrompt).toHaveBeenCalledTimes(1));
 
     const pending = pendingPrompts.shift();
     expect(pending).toBeTruthy();
@@ -244,7 +262,7 @@ describe("DesktopService", () => {
       stopReason: null,
     });
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       const persisted = JSON.parse(
         readFileSync(resolve(sandboxDataDir, "state.json"), "utf8"),
       ) as {
@@ -256,7 +274,64 @@ describe("DesktopService", () => {
     });
   });
 
-  it("loads, installs, and removes persisted host MCP servers", () => {
+  it("emits permission requests for host MCP mutations and resolves approvals", async () => {
+    const { runtime } = createRuntimeManagerStub();
+    const service = new DesktopService(runtime);
+    const events: DesktopServerEvent[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      events.push(event);
+    });
+
+    const pendingInstall = service.installStdioHostMcpServer(
+      {
+        id: "workspace-server",
+        command: "node",
+        args: ["scripts/mcp-server.js"],
+      },
+      {
+        pluginId: "host-mcp-manager",
+        harness: "codex",
+        threadId: "thread-1",
+        workspaceDirectory: "/workspace",
+      },
+    );
+
+    const permissionEvent = await waitFor(() => {
+      const match = events.find(
+        (event): event is Extract<DesktopServerEvent, { type: "permission_request" }> =>
+          event.type === "permission_request",
+      );
+      expect(match).toBeTruthy();
+      return match!;
+    });
+
+    expect(permissionEvent.request).toEqual(
+      expect.objectContaining({
+        kind: "host_mcp_mutation",
+        pluginId: "host-mcp-manager",
+        harness: "codex",
+        action: "create",
+        serverId: "workspace-server",
+        command: "node",
+      }),
+    );
+
+    service.handleClientEvent({
+      type: "respond_permission_request",
+      requestId: permissionEvent.request.id,
+      decision: "approve",
+    });
+
+    await expect(pendingInstall).resolves.toEqual(
+      expect.objectContaining({
+        id: "workspace-server",
+        replaced: false,
+      }),
+    );
+    unsubscribe();
+  });
+
+  it("loads, installs, and removes persisted host MCP servers", async () => {
     const serverDirectory = resolve(sandboxDataDir, "host-mcp", "servers");
     mkdirSync(serverDirectory, { recursive: true });
     writeFileSync(
@@ -298,7 +373,7 @@ describe("DesktopService", () => {
       ]),
     );
 
-    const installed = service.installStdioHostMcpServer(
+    const installed = await service.installStdioHostMcpServer(
       {
         id: "workspace-server",
         command: "node",
@@ -327,10 +402,110 @@ describe("DesktopService", () => {
       existsSync(resolve(serverDirectory, "workspace-server.json")),
     ).toBe(true);
 
-    expect(service.uninstallInstalledHostMcpServer("workspace-server")).toBe(true);
+    expect(await service.uninstallInstalledHostMcpServer("workspace-server")).toBe(
+      true,
+    );
     expect(unregisterHostMcpServer).toHaveBeenCalledWith("workspace-server");
     expect(
       existsSync(resolve(serverDirectory, "workspace-server.json")),
     ).toBe(false);
+  });
+
+  it("requires approval before guest tools mutate the host MCP registry", async () => {
+    const serverDirectory = resolve(sandboxDataDir, "host-mcp", "servers");
+    const { runtime, registerHostMcpServer, unregisterHostMcpServer } =
+      createRuntimeManagerStub();
+    const service = new DesktopService(runtime);
+    const permissionContext = {
+      pluginId: "host-mcp-manager",
+      harness: "codex" as const,
+      threadId: "thread-1",
+      workspaceDirectory: "/host/workspace",
+    };
+
+    const installPromise = service.installStdioHostMcpServer(
+      {
+        id: "workspace-server",
+        command: "node",
+        args: ["scripts/mcp-server.js"],
+      },
+      permissionContext,
+    );
+
+    const installRequest = await waitFor(() => {
+      const request = service.getSnapshot().pendingPermissionRequest;
+      expect(request).toEqual(
+        expect.objectContaining({
+          action: "create",
+          serverId: "workspace-server",
+          harness: "codex",
+        }),
+      );
+      return request;
+    });
+
+    expect(registerHostMcpServer).not.toHaveBeenCalledWith(
+      expect.objectContaining({ id: "workspace-server" }),
+    );
+    expect(
+      existsSync(resolve(serverDirectory, "workspace-server.json")),
+    ).toBe(false);
+
+    service.handleClientEvent({
+      type: "respond_permission_request",
+      requestId: installRequest.id,
+      decision: "approve",
+    });
+
+    await expect(installPromise).resolves.toEqual(
+      expect.objectContaining({
+        id: "workspace-server",
+        replaced: false,
+      }),
+    );
+    expect(registerHostMcpServer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "workspace-server",
+      }),
+    );
+    expect(
+      existsSync(resolve(serverDirectory, "workspace-server.json")),
+    ).toBe(true);
+
+    const uninstallPromise = service.uninstallInstalledHostMcpServer(
+      "workspace-server",
+      {
+        pluginId: "host-mcp-manager",
+        harness: "codex",
+        threadId: "thread-1",
+      },
+    );
+
+    const uninstallRequest = await waitFor(() => {
+      const request = service.getSnapshot().pendingPermissionRequest;
+      expect(request).toEqual(
+        expect.objectContaining({
+          action: "delete",
+          serverId: "workspace-server",
+          harness: "codex",
+        }),
+      );
+      return request;
+    });
+
+    service.handleClientEvent({
+      type: "respond_permission_request",
+      requestId: uninstallRequest.id,
+      decision: "deny",
+    });
+
+    await expect(uninstallPromise).rejects.toThrow(
+      "User denied permission to delete host MCP server workspace-server.",
+    );
+    expect(unregisterHostMcpServer).not.toHaveBeenCalledWith("workspace-server");
+    expect(
+      existsSync(resolve(serverDirectory, "workspace-server.json")),
+    ).toBe(true);
+    expect(service.getSnapshot().pendingPermissionRequest).toBe(null);
   });
 });

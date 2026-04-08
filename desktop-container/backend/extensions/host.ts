@@ -24,6 +24,7 @@ import type {
   CamelAIEventHandler,
   CamelAIEventName,
   CamelAIExtensionModule,
+  CamelAIHostMcpMutationContext,
   CamelAIHostMcpServerRegistration,
   CamelAIInstallHostMcpServerResult,
   CamelAIInstallStdioHostMcpServerOptions,
@@ -62,9 +63,12 @@ export interface CamelAIExtensionHostOptions {
   listInstalledHostMcpServers?: () => CamelAIPersistedHostMcpServerRecord[];
   installStdioHostMcpServer?: (
     server: CamelAIInstallStdioHostMcpServerOptions,
-    workspaceDirectory: string,
-  ) => CamelAIInstallHostMcpServerResult;
-  uninstallInstalledHostMcpServer?: (serverId: string) => boolean;
+    context: CamelAIHostMcpMutationContext,
+  ) => Promise<CamelAIInstallHostMcpServerResult>;
+  uninstallInstalledHostMcpServer?: (
+    serverId: string,
+    context: Omit<CamelAIHostMcpMutationContext, "workspaceDirectory">,
+  ) => Promise<boolean>;
 }
 
 function isDirectory(path: string): boolean {
@@ -341,17 +345,23 @@ export class CamelAIExtensionHost {
       },
       listInstalledHostMcpServers: () =>
         this.options.listInstalledHostMcpServers?.() ?? [],
-      installStdioHostMcpServer: (server) => {
+      installStdioHostMcpServer: async (server) => {
         if (!this.options.installStdioHostMcpServer) {
           throw new Error("Host MCP installation is unavailable.");
         }
-        return this.options.installStdioHostMcpServer(
-          server,
-          context.workspaceDirectory,
-        );
+        return await this.options.installStdioHostMcpServer(server, {
+          pluginId,
+          harness: context.harness,
+          threadId: context.activeThreadId,
+          workspaceDirectory: context.workspaceDirectory,
+        });
       },
-      uninstallInstalledHostMcpServer: (serverId) =>
-        this.options.uninstallInstalledHostMcpServer?.(serverId) ?? false,
+      uninstallInstalledHostMcpServer: async (serverId) =>
+        (await this.options.uninstallInstalledHostMcpServer?.(serverId, {
+          pluginId,
+          harness: context.harness,
+          threadId: context.activeThreadId,
+        })) ?? false,
       threadState: (threadId = context.activeThreadId) =>
         this.createThreadState(pluginId, threadId ?? null, context),
     };
