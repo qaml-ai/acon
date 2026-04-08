@@ -51,9 +51,37 @@ describe("ContainerRuntimeManager", () => {
     expect(daemonSource).toContain(
       "Run \\`acon-mcp <server-id>\\` to expose that server over stdio for MCP clients in the container.",
     );
+    expect(daemonSource).toContain(
+      "A typed JavaScript package named \\`@acon/host-rpc\\` is preinstalled for guest code.",
+    );
+    expect(daemonSource).toContain(
+      'import { createHostRpcClient } from "@acon/host-rpc";',
+    );
     expect(daemonSource).toContain("MCP tools are external integrations.");
     expect(daemonSource).toContain('"--dangerously-bypass-approvals-and-sandbox"');
     expect(daemonSource).toContain('"bypassPermissions"');
+  });
+
+  it("ships typed metadata for the guest host RPC package", () => {
+    const packageJson = readFileSync(
+      resolve(
+        process.cwd(),
+        "desktop-container/container-images/npm-packages/acon-host-rpc/package.json",
+      ),
+      "utf8",
+    );
+    const typeDefinitions = readFileSync(
+      resolve(
+        process.cwd(),
+        "desktop-container/container-images/npm-packages/acon-host-rpc/index.d.ts",
+      ),
+      "utf8",
+    );
+
+    expect(packageJson).toContain('"name": "@acon/host-rpc"');
+    expect(packageJson).toContain('"types": "./index.d.ts"');
+    expect(typeDefinitions).toContain("export class HostRpcClient");
+    expect(typeDefinitions).toContain("listMcpServers(): Promise<HostMcpServerSummary[]>");
   });
 
   it("bootstraps the host RPC directory before dropping root", () => {

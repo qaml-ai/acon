@@ -5,9 +5,12 @@ import { spawn } from "node:child_process";
 import {
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -16,6 +19,8 @@ import { createServer } from "node:net";
 const socketPath =
   process.env.ACON_HOST_RPC_SOCKET?.trim() || "/data/host-rpc/bridge.sock";
 const workspaceRoot = process.env.ACON_WORKSPACE_DIR?.trim() || "/workspace";
+const bundledNodeModulesRoot = "/opt/acon/npm-global/node_modules";
+const bundledHostRpcPackagePath = resolve(bundledNodeModulesRoot, "@acon/host-rpc");
 
 const GLOBAL_INSTRUCTIONS = `# acon
 
@@ -27,6 +32,14 @@ This environment is for \`acon\`, the standalone camelAI desktop app.
 - Run \`acon-mcp servers\` to list available MCP servers.
 - Run \`acon-mcp tools <server-id>\` to list the tools exposed by a server.
 - Run \`acon-mcp <server-id>\` to expose that server over stdio for MCP clients in the container.
+- A typed JavaScript package named \`@acon/host-rpc\` is preinstalled for guest code.
+- Example:
+  \`\`\`js
+  import { createHostRpcClient } from "@acon/host-rpc";
+
+  const client = createHostRpcClient();
+  const servers = await client.listMcpServers();
+  \`\`\`
 - MCP tools are external integrations.
 `;
 
@@ -247,6 +260,7 @@ function getProviderEnv(provider, model) {
 }
 
 function ensureProviderHomes(provider) {
+  ensureBundledGuestNodePackages();
   const home = getProviderHome(provider);
   mkdirSync(home, { recursive: true });
 
@@ -280,6 +294,41 @@ function ensureProviderHomes(provider) {
     copyFileSync(claudeCredentialsJsonSeed, claudeCredentialsTarget);
   }
   writeFileSync(resolve(claudeConfigDir, "CLAUDE.md"), GLOBAL_INSTRUCTIONS, "utf8");
+}
+
+function ensureBundledGuestNodePackages() {
+  if (!existsSync(bundledHostRpcPackagePath)) {
+    return;
+  }
+
+  const workspaceNodeModulesPath = resolve(workspaceRoot, "node_modules");
+  const workspaceScopedPackagesPath = resolve(workspaceNodeModulesPath, "@acon");
+  const workspaceHostRpcLinkPath = resolve(workspaceScopedPackagesPath, "host-rpc");
+
+  mkdirSync(workspaceScopedPackagesPath, { recursive: true });
+
+  try {
+    const currentEntry = lstatSync(workspaceHostRpcLinkPath);
+    if (!currentEntry.isSymbolicLink()) {
+      return;
+    }
+
+    const currentTargetPath = resolve(
+      workspaceScopedPackagesPath,
+      readlinkSync(workspaceHostRpcLinkPath),
+    );
+    if (currentTargetPath === bundledHostRpcPackagePath) {
+      return;
+    }
+
+    rmSync(workspaceHostRpcLinkPath, { force: true, recursive: true });
+  } catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
+      throw error;
+    }
+  }
+
+  symlinkSync(bundledHostRpcPackagePath, workspaceHostRpcLinkPath, "dir");
 }
 
 function cleanupSocketFile() {
@@ -1873,6 +1922,7 @@ function handleSocketConnection(socket) {
 
 cleanupSocketFile();
 mkdirSync(dirname(socketPath), { recursive: true });
+ensureBundledGuestNodePackages();
 
 const server = createServer(handleSocketConnection);
 server.listen(socketPath, () => {
