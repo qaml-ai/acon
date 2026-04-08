@@ -47,7 +47,6 @@ export function createDefaultHostMcpOAuthConfig(): HostMcpOAuthConfig {
     tokenEndpointAuthMethod: "none",
   };
 }
-
 export type HostMcpBrowserOpener = (url: string) => Promise<void> | void;
 
 interface PersistedHostMcpOAuthState {
@@ -106,7 +105,6 @@ function normalizeTokenEndpointAuthMethod(
   const normalized = normalizeOptionalString(value);
   return normalized ?? null;
 }
-
 function getOAuthStateDirectory(dataDirectory: string): string {
   return resolve(
     dataDirectory,
@@ -125,7 +123,6 @@ export function clearPersistedHostMcpOAuthState(
 ): void {
   rmSync(getOAuthStatePath(dataDirectory, serverId), { force: true });
 }
-
 function createAuthorizationResultHtml(title: string, body: string): string {
   return `<!doctype html>
 <html lang="en">
@@ -495,7 +492,6 @@ export class PersistedHostMcpOAuthProvider implements OAuthClientProvider {
         this.options.oauth.tokenEndpointAuthMethod,
       ) ??
       (this.options.oauth.clientSecret ? "client_secret_post" : "none");
-
     const metadata: OAuthClientMetadata = {
       client_name:
         this.options.oauth.clientName ?? `acon host MCP ${this.options.serverId}`,
@@ -607,7 +603,6 @@ export class PersistedHostMcpOAuthProvider implements OAuthClientProvider {
       params.set("client_secret", clientInformation.client_secret);
     }
   }
-
   saveCodeVerifier(codeVerifier: string): void {
     const state = this.store.load();
     this.store.save({
