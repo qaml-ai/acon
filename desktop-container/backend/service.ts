@@ -1,14 +1,25 @@
+import { existsSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { DesktopStore } from "./store";
 import { logDesktop } from "../../desktop/backend/log";
 import type {
   DesktopClientEvent,
+  DesktopPreviewItem,
+  DesktopPreviewTarget,
   DesktopPermissionRequest,
   DesktopRuntimeStatus,
   DesktopServerEvent,
   DesktopSnapshot,
+  DesktopThreadPreviewState,
+  DesktopView,
 } from "../../desktop/shared/protocol";
+import {
+  getDesktopPreviewItemId,
+  getDesktopPreviewItemTitle,
+  normalizeWorkspacePreviewPath,
+} from "../../desktop/shared/preview";
 import {
   applyRuntimeEventToMessages,
   desktopMessageToUiMessage,
@@ -21,6 +32,7 @@ import {
 } from "./providers";
 import {
   ContainerRuntimeManager,
+  type PreviewRuntimeResponse,
   type RuntimeManager,
 } from "./container-runtime";
 import { CamelAIExtensionHost } from "./extensions/host";
@@ -56,6 +68,7 @@ interface PendingPermissionRequestRecord {
 }
 
 const INTERRUPTED_MESSAGE_TEXT = "[Request interrupted by user]";
+const CORE_CHAT_VIEW_ID = "core:chat-thread";
 
 export interface DesktopServiceOptions {
   hostMcpBrowserOpener?: HostMcpBrowserOpener;
@@ -75,6 +88,18 @@ function extractProviderSessionIdFromRuntimeEvent(
     };
   }).params?.sessionId;
   return typeof sessionId === "string" && sessionId.trim() ? sessionId.trim() : null;
+}
+
+function toDesktopPluginFileUrl(path: string): string {
+  const fileUrl = pathToFileURL(path);
+  return `desktop-plugin://local${fileUrl.pathname}`;
+}
+
+export interface DesktopPreviewFetchResult {
+  status: number;
+  headers: Record<string, string>;
+  bodyBase64?: string;
+  localPath?: string;
 }
 
 export class DesktopService {
@@ -116,6 +141,13 @@ export class DesktopService {
         this.installHttpHostMcpServer(server, context),
       uninstallInstalledHostMcpServer: (serverId, context) =>
         this.uninstallInstalledHostMcpServer(serverId, context),
+      openThreadPreviewItem: (threadId, target) =>
+        this.openThreadPreviewItem(threadId, target),
+      setThreadPreviewItems: (threadId, targets, activeIndex) =>
+        this.setThreadPreviewItems(threadId, targets, activeIndex),
+      clearThreadPreview: (threadId) => this.clearThreadPreview(threadId),
+      setThreadPreviewVisibility: (threadId, visible) =>
+        this.setThreadPreviewVisibility(threadId, visible),
       isPluginEnabled: (pluginId) => this.store.isPluginEnabled(pluginId),
     });
     const provider = this.getCurrentProvider();
@@ -325,6 +357,7 @@ export class DesktopService {
     const extensionSnapshot = this.extensionHost.getSnapshot(
       this.getExtensionActivationContext(),
     );
+    const views = [...this.getCoreViews(), ...extensionSnapshot.views];
     const snapshot = this.store.buildSnapshot(
       this.getRuntimeStatus(),
       provider.id,
@@ -332,17 +365,178 @@ export class DesktopService {
       model,
       provider.getAvailableModels(),
       provider.getAuthState(model),
-      extensionSnapshot.views,
-      extensionSnapshot.panels,
+      views,
       extensionSnapshot.plugins,
+    );
+    snapshot.threadPreviewStateById = this.resolveThreadPreviewStates(
+      snapshot.threadPreviewStateById,
     );
     snapshot.pendingPermissionRequest =
       this.pendingPermissionRequests[0]?.request ?? null;
     return snapshot;
   }
 
+  openThreadPreviewItem(
+    threadId: string | null | undefined,
+    target: DesktopPreviewTarget,
+  ): { threadId: string; state: DesktopThreadPreviewState } {
+    const resolvedThreadId = this.resolvePreviewThreadId(threadId);
+    this.store.openThreadPreviewItem(resolvedThreadId, target);
+    const state = this.resolveThreadPreviewState(resolvedThreadId);
+    this.emitSnapshot();
+    return {
+      threadId: resolvedThreadId,
+      state,
+    };
+  }
+
+  setThreadPreviewItems(
+    threadId: string | null | undefined,
+    targets: DesktopPreviewTarget[],
+    activeIndex?: number | null,
+  ): { threadId: string; state: DesktopThreadPreviewState } {
+    const resolvedThreadId = this.resolvePreviewThreadId(threadId);
+    const normalizedActiveIndex =
+      typeof activeIndex === "number" &&
+      Number.isInteger(activeIndex) &&
+      activeIndex >= 0 &&
+      activeIndex < targets.length
+        ? activeIndex
+        : null;
+    const activeItemId =
+      normalizedActiveIndex === null
+        ? null
+        : getDesktopPreviewItemId(targets[normalizedActiveIndex]);
+    this.store.setThreadPreviewItems(resolvedThreadId, targets, activeItemId);
+    const state = this.resolveThreadPreviewState(resolvedThreadId);
+    this.emitSnapshot();
+    return {
+      threadId: resolvedThreadId,
+      state,
+    };
+  }
+
+  clearThreadPreview(
+    threadId: string | null | undefined,
+  ): { threadId: string; state: DesktopThreadPreviewState } {
+    const resolvedThreadId = this.resolvePreviewThreadId(threadId);
+    this.store.clearThreadPreview(resolvedThreadId);
+    const state = this.resolveThreadPreviewState(resolvedThreadId);
+    this.emitSnapshot();
+    return {
+      threadId: resolvedThreadId,
+      state,
+    };
+  }
+
+  setThreadPreviewVisibility(
+    threadId: string | null | undefined,
+    visible: boolean,
+  ): { threadId: string; state: DesktopThreadPreviewState } {
+    const resolvedThreadId = this.resolvePreviewThreadId(threadId);
+    this.store.setThreadPreviewVisibility(resolvedThreadId, visible);
+    const state = this.resolveThreadPreviewState(resolvedThreadId);
+    this.emitSnapshot();
+    return {
+      threadId: resolvedThreadId,
+      state,
+    };
+  }
+
+  async fetchThreadPreviewResource(
+    threadId: string,
+    itemId: string,
+    options: {
+      pathname?: string;
+      search?: string;
+    } = {},
+  ): Promise<DesktopPreviewFetchResult> {
+    const thread = this.store.getThread(threadId);
+    if (!thread) {
+      return {
+        status: 404,
+        headers: {
+          "content-type": "text/plain; charset=utf-8",
+        },
+        bodyBase64: Buffer.from(`Unknown thread ${threadId}.`, "utf8").toString("base64"),
+      };
+    }
+
+    const previewState = this.store.getThreadPreviewState(threadId);
+    const item = previewState.items.find((entry) => entry.id === itemId) ?? null;
+    if (!item) {
+      return {
+        status: 404,
+        headers: {
+          "content-type": "text/plain; charset=utf-8",
+        },
+        bodyBase64: Buffer.from(`Unknown preview item ${itemId}.`, "utf8").toString("base64"),
+      };
+    }
+
+    if (item.target.kind === "file") {
+      const localPath = this.resolveLocalPreviewFilePath(item.target);
+      if (localPath) {
+        return {
+          status: 200,
+          headers: {},
+          localPath,
+        };
+      }
+
+      return this.toPreviewFetchResult(
+        await this.runtimeManager.fetchPreviewFile({
+          provider: requireDesktopProvider(thread.provider),
+          path: item.target.path,
+        }),
+      );
+    }
+
+    const baseUrl = new URL(item.target.url);
+    const pathname = options.pathname?.trim() || baseUrl.pathname || "/";
+    const nextUrl = new URL(`${pathname}${options.search ?? ""}`, baseUrl.origin);
+    return this.toPreviewFetchResult(
+      await this.runtimeManager.fetchPreviewUrl({
+        provider: requireDesktopProvider(thread.provider),
+        url: nextUrl.toString(),
+      }),
+    );
+  }
+
   private getCurrentProvider() {
     return requireDesktopProvider(this.store.getProvider());
+  }
+
+  private toPreviewFetchResult(
+    response: PreviewRuntimeResponse,
+  ): DesktopPreviewFetchResult {
+    return {
+      status: response.status,
+      headers: response.headers,
+      bodyBase64: response.bodyBase64,
+    };
+  }
+
+  private resolvePreviewThreadId(threadId: string | null | undefined): string {
+    const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+    const resolvedThreadId = normalizedThreadId || this.store.getActiveThreadId();
+    if (!resolvedThreadId) {
+      throw new Error("No active thread is available for preview updates.");
+    }
+    if (!this.store.getThread(resolvedThreadId)) {
+      throw new Error(`Thread ${resolvedThreadId} does not exist.`);
+    }
+    return resolvedThreadId;
+  }
+
+  private resolveThreadPreviewState(threadId: string): DesktopThreadPreviewState {
+    return this.resolveThreadPreviewStates({
+      [threadId]: this.store.getThreadPreviewState(threadId),
+    })[threadId] ?? {
+      visible: false,
+      activeItemId: null,
+      items: [],
+    };
   }
 
   private getCurrentModel(provider = this.getCurrentProvider()): string {
@@ -390,7 +584,6 @@ export class DesktopService {
       case "create_thread": {
         const thread = this.store.createThread(event.title, this.store.getProvider());
         this.activateDefaultThreadView(thread.id);
-        this.ensureDefaultThreadPanel(thread.id);
         this.emitSnapshot();
         return;
       }
@@ -398,7 +591,6 @@ export class DesktopService {
         if (!this.activateDefaultThreadView(event.threadId)) {
           this.store.setActiveThread(event.threadId);
         }
-        this.ensureDefaultThreadPanel(event.threadId);
         this.emitSnapshot();
         void this.ensureRuntimeRunning("startup");
         return;
@@ -426,22 +618,37 @@ export class DesktopService {
         this.emitSnapshot();
         return;
       }
-      case "open_thread_panel": {
-        this.store.openThreadPanel(event.threadId, event.panelId);
+      case "preview_open_item": {
+        this.store.openThreadPreviewItem(event.threadId, event.item);
         this.emitSnapshot();
-        void this.extensionHost.emit(
-          "preview_open",
-          {
-            type: "preview_open",
-            threadId: event.threadId,
-            pageId: event.panelId,
-          },
-          this.getExtensionActivationContext(),
-        );
         return;
       }
-      case "close_thread_panel": {
-        this.store.closeThreadPanel(event.threadId);
+      case "preview_set_items": {
+        this.store.setThreadPreviewItems(
+          event.threadId,
+          event.items,
+          event.activeItemId,
+        );
+        this.emitSnapshot();
+        return;
+      }
+      case "preview_select_item": {
+        this.store.selectThreadPreviewItem(event.threadId, event.itemId);
+        this.emitSnapshot();
+        return;
+      }
+      case "preview_close_item": {
+        this.store.closeThreadPreviewItem(event.threadId, event.itemId);
+        this.emitSnapshot();
+        return;
+      }
+      case "preview_clear": {
+        this.store.clearThreadPreview(event.threadId);
+        this.emitSnapshot();
+        return;
+      }
+      case "preview_set_visibility": {
+        this.store.setThreadPreviewVisibility(event.threadId, event.visible);
         this.emitSnapshot();
         return;
       }
@@ -579,51 +786,17 @@ export class DesktopService {
     }
   }
 
-  private ensureDefaultThreadPanels(): void {
-    const defaultPanelId = this.extensionHost.getDefaultThreadPanelId();
-    if (!defaultPanelId) {
-      return;
-    }
-
-    for (const thread of this.store.listThreads()) {
-      this.store.openThreadPanel(thread.id, defaultPanelId);
-    }
-  }
-
-  private ensureDefaultThreadPanel(threadId: string): void {
-    const defaultPanelId = this.extensionHost.getDefaultThreadPanelId();
-    if (!defaultPanelId) {
-      return;
-    }
-
-    this.store.openThreadPanel(threadId, defaultPanelId);
-  }
-
   private reconcileWorkbenchState(): void {
     const extensionSnapshot = this.extensionHost.getSnapshot(
       this.getExtensionActivationContext(),
     );
-    const validViewIds = new Set(extensionSnapshot.views.map((view) => view.id));
-    const validPanelIds = new Set(extensionSnapshot.panels.map((panel) => panel.id));
-    const defaultPanelId = this.extensionHost.getDefaultThreadPanelId();
+    const validViewIds = new Set(
+      [...this.getCoreViews(), ...extensionSnapshot.views].map((view) => view.id),
+    );
     const activeViewId = this.store.getActiveViewId();
 
     if (activeViewId && !validViewIds.has(activeViewId)) {
       this.store.setActiveView(null);
-    }
-
-    for (const thread of this.store.listThreads()) {
-      const panelState = this.store.getThreadPanelState(thread.id);
-      if (!panelState.panelId || validPanelIds.has(panelState.panelId)) {
-        continue;
-      }
-
-      if (panelState.visible && defaultPanelId) {
-        this.store.openThreadPanel(thread.id, defaultPanelId);
-        continue;
-      }
-
-      this.store.setThreadPanelState(thread.id, null, false);
     }
   }
 
@@ -632,7 +805,6 @@ export class DesktopService {
       await this.extensionHost.refresh(this.getExtensionActivationContext());
       this.reconcileWorkbenchState();
       this.ensureDefaultTab();
-      this.ensureDefaultThreadPanels();
       this.emitSnapshot();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -670,13 +842,99 @@ export class DesktopService {
   }
 
   private activateDefaultThreadView(threadId: string): boolean {
-    const defaultViewId = this.extensionHost.getDefaultViewId("thread");
-    if (!defaultViewId) {
-      return false;
+    this.store.activateThreadView(threadId, CORE_CHAT_VIEW_ID);
+    return true;
+  }
+
+  private getCoreViews(): DesktopView[] {
+    return [
+      {
+        id: CORE_CHAT_VIEW_ID,
+        title: "Chat",
+        description: "Thread-focused chat workspace.",
+        icon: "MessagesSquare",
+        pluginId: null,
+        scope: "thread",
+        isDefault: true,
+        render: {
+          kind: "host",
+          component: "chat-thread",
+        },
+        hostData: null,
+      },
+    ];
+  }
+
+  private resolveLocalPreviewFilePath(target: Extract<DesktopPreviewTarget, { kind: "file" }>): string | null {
+    const trimmedPath = target.path.trim();
+    if (!trimmedPath) {
+      return null;
     }
 
-    this.store.activateThreadView(threadId, defaultViewId);
-    return true;
+    if (target.source === "workspace") {
+      const normalizedPath = normalizeWorkspacePreviewPath(trimmedPath);
+      const workspaceRelativePath = normalizedPath.replace(/^\/+/, "");
+      const localPath = resolve(
+        this.runtimeManager.getManagedWorkspaceDirectory(),
+        workspaceRelativePath,
+      );
+      if (!existsSync(localPath) || !statSync(localPath).isFile()) {
+        return null;
+      }
+      return localPath;
+    }
+
+    if (existsSync(trimmedPath) && statSync(trimmedPath).isFile()) {
+      return trimmedPath;
+    }
+
+    return null;
+  }
+
+  private resolvePreviewSource(target: DesktopPreviewTarget): string | null {
+    if (target.kind === "url") {
+      const normalizedUrl = target.url.trim();
+      return normalizedUrl || null;
+    }
+
+    const localPath = this.resolveLocalPreviewFilePath(target);
+    return localPath ? toDesktopPluginFileUrl(localPath) : null;
+  }
+
+  private resolvePreviewItem(item: DesktopPreviewItem): DesktopPreviewItem {
+    const title = getDesktopPreviewItemTitle(item.target);
+    return {
+      ...item,
+      title,
+      src: this.resolvePreviewSource(item.target),
+      contentType:
+        item.target.kind === "file"
+          ? item.target.contentType ?? item.contentType ?? null
+          : null,
+    };
+  }
+
+  private resolveThreadPreviewStates(
+    states: Record<string, DesktopThreadPreviewState>,
+  ): Record<string, DesktopThreadPreviewState> {
+    return Object.fromEntries(
+      Object.entries(states).map(([threadId, state]) => {
+        const items = state.items.map((item) => this.resolvePreviewItem(item));
+        const activeItemId =
+          state.activeItemId && items.some((item) => item.id === state.activeItemId)
+            ? state.activeItemId
+            : items[0]?.id ?? null;
+
+        return [
+          threadId,
+          {
+            visible: state.visible && items.length > 0,
+            activeItemId,
+            items,
+          },
+        ];
+      }),
+    );
   }
 
   private emitPageOpen(viewId: string): void {

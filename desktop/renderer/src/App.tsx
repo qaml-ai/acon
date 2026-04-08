@@ -7,7 +7,9 @@ import {
   useState,
   type ComponentType,
 } from "react";
-import { Loader2, X } from "lucide-react";
+import { ExternalLink, Loader2, PanelRightClose, X } from "lucide-react";
+import { ChatPreviewProvider } from "@/components/chat-preview/preview-context";
+import { FilePreviewContent } from "@/components/chat-file-preview";
 import { ContentBlockRenderer } from "@/components/message-bubble";
 import { FloatingTodoList, type TodoItem } from "@/components/floating-todo";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -38,11 +40,12 @@ import {
   mergeTeammateMessages,
   normalizeToolResultMessages,
 } from "@/lib/streaming";
-import type { ContentBlock, Message } from "@/types";
+import type { ContentBlock, Message, PreviewTarget } from "@/types";
 import type {
   DesktopClientEvent,
   DesktopModel,
-  DesktopPanel,
+  DesktopPreviewTarget,
+  DesktopThreadPreviewState,
   DesktopProvider,
   DesktopServerEvent,
   DesktopSnapshot,
@@ -54,6 +57,11 @@ import {
   applyRuntimeEventToMessages,
   mergeSnapshotMessages,
 } from "../../shared/message-state";
+import {
+  encodeDesktopPreviewProxyHost,
+  getDesktopPreviewItemId,
+  isGuestLocalPreviewUrl,
+} from "../../shared/preview";
 import { DesktopSidebar } from "./desktop-sidebar";
 import { SettingsPage } from "./settings-page";
 import { getDesktopIcon } from "./desktop-icons";
@@ -62,13 +70,10 @@ const desktopShell = window.desktopShell;
 const fallbackBackendUrl = "http://127.0.0.1:4315";
 const EMPTY_THREAD_DRAFT_KEY = "__no_thread__";
 
-type WorkbenchSurface = DesktopView | DesktopPanel;
-
 type HostSurfaceComponentProps = {
   snapshot: DesktopSnapshot;
-  surface: WorkbenchSurface;
+  surface: DesktopView;
   activeThreadId: string | null;
-  mode: "full" | "companion";
   rawMessages: Message[];
   initialDraft: string;
   isStreaming: boolean;
@@ -78,6 +83,12 @@ type HostSurfaceComponentProps = {
   onStopThread: (threadId: string) => void;
   onSubmitMessage: (threadId: string, content: string) => void;
   onSendEvent: (event: DesktopClientEvent) => void;
+  onOpenPreviewTarget: (target: PreviewTarget) => void;
+  onSetPreviewTargets: (
+    targets: PreviewTarget[],
+    options?: { activeTarget?: PreviewTarget | null },
+  ) => void;
+  onClearPreviewTargets: () => void;
 };
 
 function getActiveThread(
@@ -99,17 +110,6 @@ function getView(
   return snapshot.views.find((view) => view.id === viewId) ?? null;
 }
 
-function getPanel(
-  snapshot: DesktopSnapshot | null,
-  panelId: string | null,
-): DesktopPanel | null {
-  if (!snapshot || !panelId) {
-    return null;
-  }
-
-  return snapshot.panels.find((panel) => panel.id === panelId) ?? null;
-}
-
 function isSupportedPluginWebviewEntrypoint(
   entrypoint: string | null | undefined,
 ): entrypoint is string {
@@ -128,25 +128,19 @@ function isSupportedPluginWebviewEntrypoint(
 function withPluginWebviewContext(
   source: string,
   context: {
-    threadId?: string | null;
     pluginId?: string | null;
     surfaceId?: string | null;
-    mode: "full" | "companion";
   },
 ): string {
   try {
     const url = new URL(source);
     const params = new URLSearchParams();
-    if (context.threadId) {
-      params.set("threadId", context.threadId);
-    }
     if (context.pluginId) {
       params.set("pluginId", context.pluginId);
     }
     if (context.surfaceId) {
       params.set("surfaceId", context.surfaceId);
     }
-    params.set("surface", context.mode);
 
     if (url.protocol === "file:") {
       url.hash = params.toString();
@@ -162,12 +156,54 @@ function withPluginWebviewContext(
   }
 }
 
+function toDesktopPreviewTarget(target: PreviewTarget): DesktopPreviewTarget {
+  if (target.kind === "url") {
+    return {
+      kind: "url",
+      url: target.url,
+      title: target.title ?? null,
+    };
+  }
+
+  return {
+    kind: "file",
+    source: target.source,
+    workspaceId: target.workspaceId,
+    path: target.path,
+    filename: target.filename ?? null,
+    title: target.title ?? null,
+    contentType: target.contentType ?? null,
+  };
+}
+
 function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString([], {
     hour: "numeric",
     minute: "2-digit",
     hour12: true,
   });
+}
+
+function getThreadPreviewUrl(
+  threadId: string,
+  item: DesktopThreadPreviewState["items"][number],
+): string | null {
+  const proxyHost = encodeDesktopPreviewProxyHost(threadId, item.id);
+
+  if (item.target.kind === "file") {
+    return item.src ?? `desktop-preview://${proxyHost}/file`;
+  }
+
+  if (desktopShell && isGuestLocalPreviewUrl(item.target.url)) {
+    try {
+      const targetUrl = new URL(item.target.url);
+      return `desktop-preview://${proxyHost}${targetUrl.pathname || "/"}${targetUrl.search}`;
+    } catch {
+      return `desktop-preview://${proxyHost}/`;
+    }
+  }
+
+  return item.src ?? item.target.url;
 }
 
 function focusWorkbenchTab(tabId: string): void {
@@ -523,6 +559,9 @@ function ChatThreadView({
   onSetModel,
   onStopThread,
   onSubmitMessage,
+  onOpenPreviewTarget,
+  onSetPreviewTargets,
+  onClearPreviewTargets,
 }: Pick<
   HostSurfaceComponentProps,
   | "snapshot"
@@ -535,56 +574,66 @@ function ChatThreadView({
   | "onSetModel"
   | "onStopThread"
   | "onSubmitMessage"
+  | "onOpenPreviewTarget"
+  | "onSetPreviewTargets"
+  | "onClearPreviewTargets"
 >) {
   const currentTodos = useMemo(() => extractLatestTodos(rawMessages), [rawMessages]);
 
   return (
-    <>
-      <MemoizedTranscriptPane rawMessages={rawMessages} />
+    <ChatPreviewProvider
+      value={{
+        openPreviewTarget: onOpenPreviewTarget,
+        setPreviewTargets: onSetPreviewTargets,
+        clearPreviewTarget: onClearPreviewTargets,
+      }}
+    >
+      <>
+        <MemoizedTranscriptPane rawMessages={rawMessages} />
 
-      <div className="sticky bottom-0 z-20 shrink-0">
-        <div
-          className="pointer-events-none absolute inset-x-0 bottom-full h-8 bg-gradient-to-t from-background to-transparent"
-          aria-hidden="true"
-        />
-        <div className="bg-background">
-          <div className="px-4 pb-4 pt-2">
-            <div className="mx-auto flex w-full max-w-3xl flex-col max-h-[calc(100dvh-2rem)]">
-              {currentTodos.length > 0 && (
-                <div className="mb-2">
-                  <FloatingTodoList
-                    todos={currentTodos}
-                    isStreaming={isStreaming}
-                  />
-                </div>
-              )}
-              <MemoizedComposer
-                availableProviders={snapshot.availableProviders}
-                availableModels={snapshot.availableModels}
-                activeThreadId={activeThreadId}
-                initialDraft={initialDraft}
-                isStreaming={isStreaming}
-                provider={snapshot.provider}
-                model={snapshot.model}
-                onDraftChange={onDraftChange}
-                onSetProvider={onSetProvider}
-                onSetModel={onSetModel}
-                onStopThread={onStopThread}
-                onSubmitMessage={onSubmitMessage}
-              />
+        <div className="sticky bottom-0 z-20 shrink-0">
+          <div
+            className="pointer-events-none absolute inset-x-0 bottom-full h-8 bg-gradient-to-t from-background to-transparent"
+            aria-hidden="true"
+          />
+          <div className="bg-background">
+            <div className="px-4 pb-4 pt-2">
+              <div className="mx-auto flex w-full max-w-3xl flex-col max-h-[calc(100dvh-2rem)]">
+                {currentTodos.length > 0 && (
+                  <div className="mb-2">
+                    <FloatingTodoList
+                      todos={currentTodos}
+                      isStreaming={isStreaming}
+                    />
+                  </div>
+                )}
+                <MemoizedComposer
+                  availableProviders={snapshot.availableProviders}
+                  availableModels={snapshot.availableModels}
+                  activeThreadId={activeThreadId}
+                  initialDraft={initialDraft}
+                  isStreaming={isStreaming}
+                  provider={snapshot.provider}
+                  model={snapshot.model}
+                  onDraftChange={onDraftChange}
+                  onSetProvider={onSetProvider}
+                  onSetModel={onSetModel}
+                  onStopThread={onStopThread}
+                  onSubmitMessage={onSubmitMessage}
+                />
+              </div>
             </div>
           </div>
         </div>
-      </div>
-    </>
+      </>
+    </ChatPreviewProvider>
   );
 }
 
 function ExtensionCatalogPane({
   snapshot,
-  mode = "full",
   onSendEvent,
-}: Pick<HostSurfaceComponentProps, "snapshot" | "mode" | "onSendEvent">) {
+}: Pick<HostSurfaceComponentProps, "snapshot" | "onSendEvent">) {
   const [isInstallingPlugin, setIsInstallingPlugin] = useState(false);
   const [installFeedback, setInstallFeedback] = useState<{
     tone: "success" | "error";
@@ -649,11 +698,7 @@ function ExtensionCatalogPane({
 
   return (
     <div className="flex min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
-      <div
-        className={`flex min-h-0 w-full flex-col gap-4 px-4 pb-8 pt-5 md:px-6 ${
-          mode === "companion" ? "" : "mx-auto max-w-5xl"
-        }`}
-      >
+      <div className="mx-auto flex min-h-0 w-full max-w-5xl flex-col gap-4 px-4 pb-8 pt-5 md:px-6">
         <div className="space-y-3">
           <div className="space-y-1">
             <h2 className="text-lg font-semibold font-heading">Extension Lab</h2>
@@ -803,7 +848,6 @@ function ExtensionCatalogPane({
                         <div className="space-y-2">
                           <p className="text-sm text-muted-foreground">
                             {plugin.capabilities.views.length} views ·{" "}
-                            {plugin.capabilities.panels.length} panels ·{" "}
                             {plugin.capabilities.commands.length} commands ·{" "}
                             {plugin.capabilities.tools.length} tools
                           </p>
@@ -899,19 +943,13 @@ const HOST_SURFACE_COMPONENTS: Record<
 
 function GenericHostDataPane({
   surface,
-  mode,
 }: {
-  surface: WorkbenchSurface;
-  mode: "full" | "companion";
+  surface: DesktopView;
 }) {
   const ViewIcon = getDesktopIcon(surface.icon);
   return (
     <div className="flex flex-1 overflow-y-auto">
-      <div
-        className={`flex w-full flex-col gap-4 px-4 pb-8 pt-5 md:px-6 ${
-          mode === "companion" ? "" : "mx-auto max-w-4xl"
-        }`}
-      >
+      <div className="mx-auto flex w-full max-w-4xl flex-col gap-4 px-4 pb-8 pt-5 md:px-6">
         <Card>
           <CardHeader>
             <div className="flex items-center gap-3">
@@ -933,15 +971,11 @@ function GenericHostDataPane({
           <Card key={section.id}>
             <CardHeader>
               <CardTitle>{section.title}</CardTitle>
-              <CardDescription>
-                {section.description ?? "Plugin-provided section"}
-              </CardDescription>
-            </CardHeader>
-            <CardContent
-              className={`grid gap-3 ${
-                mode === "companion" ? "grid-cols-1" : "md:grid-cols-2"
-              }`}
-            >
+            <CardDescription>
+              {section.description ?? "Plugin-provided section"}
+            </CardDescription>
+          </CardHeader>
+            <CardContent className="grid gap-3 md:grid-cols-2">
               {section.items.map((item) => (
                 <div
                   key={`${section.id}:${item.label}`}
@@ -965,12 +999,8 @@ function GenericHostDataPane({
 
 function WebviewSurfacePane({
   surface,
-  activeThreadId,
-  mode,
 }: {
-  surface: WorkbenchSurface;
-  activeThreadId: string | null;
-  mode: "full" | "companion";
+  surface: DesktopView;
 }) {
   const [resolvedWebviewSrc, setResolvedWebviewSrc] = useState<string | null>(null);
   const [webviewError, setWebviewError] = useState<string | null>(null);
@@ -1019,40 +1049,10 @@ function WebviewSurfacePane({
 
   const contextualWebviewSrc = resolvedWebviewSrc
     ? withPluginWebviewContext(resolvedWebviewSrc, {
-        threadId: mode === "companion" ? activeThreadId : null,
         pluginId: surface.pluginId,
         surfaceId: surface.id,
-        mode,
       })
     : null;
-
-  if (mode === "companion") {
-    return (
-      <div className="flex min-h-0 flex-1 bg-background">
-        {webviewError ? (
-          <Alert className="m-4 self-start">
-            <AlertTitle>Webview failed to load</AlertTitle>
-            <AlertDescription>{webviewError}</AlertDescription>
-          </Alert>
-        ) : contextualWebviewSrc ? (
-          <iframe
-            title={`${surface.title} plugin webview`}
-            src={contextualWebviewSrc}
-            className="min-h-0 w-full flex-1 bg-white"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-            referrerPolicy="no-referrer"
-          />
-        ) : (
-          <div className="flex min-h-0 flex-1 items-center justify-center bg-muted/10">
-            <div className="flex items-center gap-3 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" />
-              <span>Loading plugin surface…</span>
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  }
 
   return (
     <div className="flex flex-1 overflow-y-auto">
@@ -1132,7 +1132,7 @@ function WebviewSurfacePane({
 }
 
 function WorkbenchSurfacePane(props: HostSurfaceComponentProps) {
-  const { surface, activeThreadId, mode } = props;
+  const { surface } = props;
 
   if (surface.render.kind === "host") {
     const HostComponent = surface.render.component
@@ -1147,7 +1147,7 @@ function WorkbenchSurfacePane(props: HostSurfaceComponentProps) {
     }
 
     if (surface.hostData) {
-      return <GenericHostDataPane surface={surface} mode={mode} />;
+      return <GenericHostDataPane surface={surface} />;
     }
 
     return (
@@ -1162,26 +1162,165 @@ function WorkbenchSurfacePane(props: HostSurfaceComponentProps) {
     );
   }
 
-  return (
-    <WebviewSurfacePane
-      surface={surface}
-      activeThreadId={activeThreadId}
-      mode={mode}
-    />
-  );
+  return <WebviewSurfacePane surface={surface} />;
 }
 
-const MemoizedCompanionPanelPane = memo(
-  function CompanionPanelPane(props: HostSurfaceComponentProps) {
-    return <WorkbenchSurfacePane {...props} mode="companion" />;
-  },
-  (prev, next) =>
-    prev.surface === next.surface &&
-    prev.activeThreadId === next.activeThreadId &&
-    prev.rawMessages === next.rawMessages &&
-    prev.initialDraft === next.initialDraft &&
-    prev.isStreaming === next.isStreaming,
-);
+function ThreadPreviewPane({
+  threadId,
+  previewState,
+  onClear,
+  onCloseItem,
+  onSelectItem,
+  onSetVisible,
+}: {
+  threadId: string;
+  previewState: DesktopThreadPreviewState;
+  onClear: () => void;
+  onCloseItem: (itemId: string) => void;
+  onSelectItem: (itemId: string) => void;
+  onSetVisible: (visible: boolean) => void;
+}) {
+  const activeItem =
+    previewState.items.find((item) => item.id === previewState.activeItemId) ??
+    previewState.items[0] ??
+    null;
+  const activePreviewUrl =
+    activeItem && threadId ? getThreadPreviewUrl(threadId, activeItem) : null;
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col bg-background">
+      <div className="flex items-center justify-between gap-2 border-b border-border/70 px-3 py-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium">Preview</p>
+          <p className="truncate text-xs text-muted-foreground">
+            {previewState.items.length === 1
+              ? "1 item"
+              : `${previewState.items.length} items`}
+          </p>
+        </div>
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Clear preview items"
+            onClick={onClear}
+          >
+            <X className="size-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Hide preview pane"
+            onClick={() => onSetVisible(false)}
+          >
+            <PanelRightClose className="size-4" />
+          </Button>
+        </div>
+      </div>
+
+      <div className="border-b border-border/70 px-2 py-2">
+        <div className="flex gap-2 overflow-x-auto">
+          {previewState.items.map((item) => {
+            const isActive = item.id === activeItem?.id;
+            return (
+              <div
+                key={item.id}
+                className={cn(
+                  "group flex min-w-0 max-w-[220px] items-center gap-1 rounded-md border px-2 py-1.5 text-xs",
+                  isActive
+                    ? "border-border bg-background text-foreground"
+                    : "border-transparent bg-muted/40 text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 truncate text-left"
+                  onClick={() => onSelectItem(item.id)}
+                >
+                  {item.title}
+                </button>
+                <button
+                  type="button"
+                  className="shrink-0 rounded-sm p-0.5 opacity-60 hover:opacity-100"
+                  aria-label={`Close ${item.title}`}
+                  onClick={() => onCloseItem(item.id)}
+                >
+                  <X className="size-3.5" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-hidden bg-muted/10">
+        {!activeItem ? (
+          <div className="flex h-full items-center justify-center p-6">
+            <p className="text-sm text-muted-foreground">No preview selected.</p>
+          </div>
+        ) : activeItem.target.kind === "file" ? (
+          activePreviewUrl ? (
+            <FilePreviewContent
+              filename={activeItem.title}
+              previewUrl={activePreviewUrl}
+              contentType={activeItem.contentType ?? undefined}
+              layout="panel"
+            />
+          ) : (
+            <div className="flex h-full items-center justify-center p-6">
+              <Alert className="max-w-sm">
+                <AlertTitle>Preview unavailable</AlertTitle>
+                <AlertDescription>
+                  This file could not be read from the current desktop runtime.
+                </AlertDescription>
+              </Alert>
+            </div>
+          )
+        ) : activePreviewUrl ? (
+          (() => {
+            const targetUrl = activeItem.target.url;
+            return (
+              <div className="flex h-full flex-col">
+                <div className="flex items-center justify-between gap-3 border-b border-border/70 px-3 py-2">
+                  <p className="truncate text-xs text-muted-foreground">
+                    {targetUrl}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      window.open(targetUrl, "_blank", "noopener,noreferrer");
+                    }}
+                  >
+                    <ExternalLink className="size-4" />
+                    Open
+                  </Button>
+                </div>
+                <iframe
+                  title={activeItem.title}
+                  src={activePreviewUrl}
+                  className="min-h-0 w-full flex-1 bg-white"
+                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                  referrerPolicy="no-referrer"
+                />
+              </div>
+            );
+          })()
+        ) : (
+          <div className="flex h-full items-center justify-center p-6">
+            <Alert className="max-w-sm">
+              <AlertTitle>Preview unavailable</AlertTitle>
+              <AlertDescription>
+                This URL preview could not be opened.
+              </AlertDescription>
+            </Alert>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function WorkbenchTabStrip({
   activeTabId,
@@ -1306,25 +1445,19 @@ export function App() {
     () => getView(snapshot, activeViewId),
     [snapshot, activeViewId],
   );
-  const activeThreadPanelState = useMemo(() => {
+  const activeThreadPreviewState = useMemo(() => {
     if (!snapshot || !activeThreadId) {
       return null;
     }
 
     return (
-      snapshot.threadPanelStateById[activeThreadId] ?? {
-        panelId: null,
+      snapshot.threadPreviewStateById[activeThreadId] ?? {
         visible: false,
+        activeItemId: null,
+        items: [],
       }
     );
   }, [snapshot, activeThreadId]);
-  const activeThreadPanel = useMemo(
-    () =>
-      activeThreadPanelState?.visible
-        ? getPanel(snapshot, activeThreadPanelState.panelId)
-        : null,
-    [activeThreadPanelState, snapshot],
-  );
   const rawMessages = useMemo(() => {
     if (!activeThreadId) return [];
     return uiMessagesByThread[activeThreadId] ?? [];
@@ -1641,6 +1774,86 @@ export function App() {
     });
   }, [sendEvent]);
 
+  const handleOpenPreviewTarget = useCallback((target: PreviewTarget) => {
+    if (!activeThreadId) {
+      return;
+    }
+
+    sendEvent({
+      type: "preview_open_item",
+      threadId: activeThreadId,
+      item: toDesktopPreviewTarget(target),
+    });
+  }, [activeThreadId, sendEvent]);
+
+  const handleSetPreviewTargets = useCallback((
+    targets: PreviewTarget[],
+    options?: { activeTarget?: PreviewTarget | null },
+  ) => {
+    if (!activeThreadId) {
+      return;
+    }
+
+    const items = targets.map((target) => toDesktopPreviewTarget(target));
+    const activeItemId = options?.activeTarget
+      ? getDesktopPreviewItemId(toDesktopPreviewTarget(options.activeTarget))
+      : null;
+
+    sendEvent({
+      type: "preview_set_items",
+      threadId: activeThreadId,
+      items,
+      activeItemId,
+    });
+  }, [activeThreadId, sendEvent]);
+
+  const handleClearPreviewTargets = useCallback(() => {
+    if (!activeThreadId) {
+      return;
+    }
+
+    sendEvent({
+      type: "preview_clear",
+      threadId: activeThreadId,
+    });
+  }, [activeThreadId, sendEvent]);
+
+  const handleSelectPreviewItem = useCallback((itemId: string) => {
+    if (!activeThreadId) {
+      return;
+    }
+
+    sendEvent({
+      type: "preview_select_item",
+      threadId: activeThreadId,
+      itemId,
+    });
+  }, [activeThreadId, sendEvent]);
+
+  const handleClosePreviewItem = useCallback((itemId: string) => {
+    if (!activeThreadId) {
+      return;
+    }
+
+    sendEvent({
+      type: "preview_close_item",
+      threadId: activeThreadId,
+      itemId,
+    });
+  }, [activeThreadId, sendEvent]);
+
+  const handleSetPreviewVisible = useCallback((visible: boolean) => {
+    if (!activeThreadId) {
+      return;
+    }
+
+    sendEvent({
+      type: "preview_set_visibility",
+      threadId: activeThreadId,
+      visible,
+    });
+  }, [activeThreadId, sendEvent]);
+
   useEffect(() => {
     const handleWindowKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing) {
@@ -1703,7 +1916,6 @@ export function App() {
     snapshot,
     surface: activeView,
     activeThreadId,
-    mode: "full" as const,
     rawMessages,
     initialDraft,
     isStreaming,
@@ -1713,22 +1925,9 @@ export function App() {
     onStopThread: handleStopThread,
     onSubmitMessage: handleSubmitMessage,
     onSendEvent: sendEvent,
-  } : null;
-
-  const activePanelProps = snapshot && activeThreadPanel ? {
-    snapshot,
-    surface: activeThreadPanel,
-    activeThreadId,
-    mode: "companion" as const,
-    rawMessages,
-    initialDraft,
-    isStreaming,
-    onDraftChange: handleDraftChange,
-    onSetProvider: handleSetProvider,
-    onSetModel: handleSetModel,
-    onStopThread: handleStopThread,
-    onSubmitMessage: handleSubmitMessage,
-    onSendEvent: sendEvent,
+    onOpenPreviewTarget: handleOpenPreviewTarget,
+    onSetPreviewTargets: handleSetPreviewTargets,
+    onClearPreviewTargets: handleClearPreviewTargets,
   } : null;
 
   return (
@@ -1786,9 +1985,17 @@ export function App() {
                       <WorkbenchSurfacePane {...activeSurfaceProps} />
                     </div>
 
-                    {activePanelProps ? (
+                    {activeThreadPreviewState?.visible &&
+                    activeThreadPreviewState.items.length > 0 ? (
                       <aside className="flex min-h-[320px] w-full min-w-0 border-t border-border/60 bg-muted/10 lg:min-h-0 lg:w-[420px] lg:border-l lg:border-t-0 xl:w-[480px] 2xl:w-[560px]">
-                        <MemoizedCompanionPanelPane {...activePanelProps} />
+                        <ThreadPreviewPane
+                          threadId={activeThreadId!}
+                          previewState={activeThreadPreviewState}
+                          onClear={handleClearPreviewTargets}
+                          onCloseItem={handleClosePreviewItem}
+                          onSelectItem={handleSelectPreviewItem}
+                          onSetVisible={handleSetPreviewVisible}
+                        />
                       </aside>
                     ) : null}
                   </div>

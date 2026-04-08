@@ -26,5 +26,8 @@ Core areas:
 - Do not reintroduce the old monorepo web app, Workers, sandbox-host, or deployment code here.
 - Prefer `desktop-container/` for runtime and extension-host changes.
 - Prefer `desktop/renderer/` and `src/` for desktop UI changes.
+- Keep chat as a core desktop surface owned by the workbench, not a builtin plugin contribution.
+- Keep thread preview items in the dedicated right-side preview pane instead of the main workbench tab strip.
+- Use the builtin `preview-control` extension when host MCP or plugin code needs to open or manage thread preview items for files or URLs.
 - User plugins are installed into the desktop data directory under `plugins/`, and the builtin Extension Lab view is the primary install/manage entrypoint for them.
 - Keep this file current when the standalone architecture changes.

@@ -62,6 +62,21 @@ describe("ContainerRuntimeManager", () => {
     expect(daemonSource).toContain('"bypassPermissions"');
   });
 
+  it("loads the guest host RPC package from the bundled node_modules path", () => {
+    const mcpBridgeSource = readFileSync(
+      resolve(
+        process.cwd(),
+        "desktop-container/container-images/bridge/acon-mcp.mjs",
+      ),
+      "utf8",
+    );
+
+    expect(mcpBridgeSource).toContain('"/opt/acon/npm-global/node_modules"');
+    expect(mcpBridgeSource).toContain('resolve(');
+    expect(mcpBridgeSource).toContain('"@acon/host-rpc/index.js"');
+    expect(mcpBridgeSource).toContain('require.resolve("@acon/host-rpc")');
+  });
+
   it("ships typed metadata for the guest host RPC package", () => {
     const packageJson = readFileSync(
       resolve(

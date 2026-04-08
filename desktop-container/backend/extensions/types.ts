@@ -1,12 +1,13 @@
 import type {
   DesktopHarness,
   DesktopModel,
+  DesktopPreviewTarget,
   DesktopPluginHostPanelData,
   DesktopPluginPermission,
   DesktopPluginRecord,
-  DesktopPanel,
   DesktopProvider,
   DesktopRuntimeStatus,
+  DesktopThreadPreviewState,
   DesktopView,
 } from "../../../desktop/shared/protocol";
 import type {
@@ -102,14 +103,6 @@ export interface CamelAIViewRenderContext extends CamelAIActivationContext {
   plugin: DesktopPluginRecord;
 }
 
-export interface CamelAIPanelRenderContext extends CamelAIActivationContext {
-  pluginId: string;
-  panelId: string;
-  threadId: string | null;
-  threadState: AgentExtensionThreadStateStore;
-  plugin: DesktopPluginRecord;
-}
-
 export interface CamelAICommandContext extends CamelAIActivationContext {
   pluginId: string;
   threadId: string | null;
@@ -135,19 +128,6 @@ export interface CamelAIViewRegistration {
     | { kind: "webview"; webviewId: string };
   buildHostData?: (
     context: CamelAIViewRenderContext,
-  ) => DesktopPluginHostPanelData;
-}
-
-export interface CamelAIPanelRegistration {
-  title: string;
-  description?: string;
-  icon?: string;
-  autoOpen?: "never" | "new-thread" | "all-threads";
-  render:
-    | { kind: "host"; component: string }
-    | { kind: "webview"; webviewId: string };
-  buildHostData?: (
-    context: CamelAIPanelRenderContext,
   ) => DesktopPluginHostPanelData;
 }
 
@@ -236,6 +216,11 @@ export interface CamelAIHostMcpMutationContext {
   workspaceDirectory: string;
 }
 
+export interface CamelAIThreadPreviewMutationResult {
+  threadId: string;
+  state: DesktopThreadPreviewState;
+}
+
 export interface CamelAIInstallHttpHostMcpServerOptions {
   id: string;
   url: string;
@@ -274,12 +259,6 @@ export interface CamelAIPageOpenEvent {
   pageId: string;
 }
 
-export interface CamelAIPreviewOpenEvent {
-  type: "preview_open";
-  threadId: string;
-  pageId: string;
-}
-
 export interface CamelAIRuntimeReadyEvent {
   type: "runtime_ready";
 }
@@ -290,7 +269,6 @@ export type CamelAIEvent =
   | CamelAITurnStartEvent
   | CamelAITurnEndEvent
   | CamelAIPageOpenEvent
-  | CamelAIPreviewOpenEvent
   | CamelAIRuntimeReadyEvent;
 
 export type CamelAIEventName = CamelAIEvent["type"];
@@ -319,7 +297,6 @@ export interface CamelAIPluginApi {
   registerDisposable(disposable: CamelAIDisposableLike): CamelAIDisposable;
   on(event: CamelAIEventName, handler: CamelAIEventHandler): CamelAIDisposable;
   registerView(id: string, view: CamelAIViewRegistration): CamelAIDisposable;
-  registerPanel(id: string, panel: CamelAIPanelRegistration): CamelAIDisposable;
   registerCommand(
     id: string,
     command: CamelAICommandRegistration,
@@ -337,6 +314,22 @@ export interface CamelAIPluginApi {
     server: CamelAIInstallHttpHostMcpServerOptions,
   ): Promise<CamelAIInstallHostMcpServerResult>;
   uninstallInstalledHostMcpServer(serverId: string): Promise<boolean>;
+  openThreadPreviewItem(
+    target: DesktopPreviewTarget,
+    threadId?: string | null,
+  ): CamelAIThreadPreviewMutationResult;
+  setThreadPreviewItems(
+    targets: DesktopPreviewTarget[],
+    options?: {
+      threadId?: string | null;
+      activeIndex?: number | null;
+    },
+  ): CamelAIThreadPreviewMutationResult;
+  clearThreadPreview(threadId?: string | null): CamelAIThreadPreviewMutationResult;
+  setThreadPreviewVisibility(
+    visible: boolean,
+    threadId?: string | null,
+  ): CamelAIThreadPreviewMutationResult;
   threadState(threadId?: string | null): AgentExtensionThreadStateStore;
 }
 
@@ -354,7 +347,6 @@ export interface CamelAIRuntimeRecord {
   activationError: string | null;
   compatibilityError: string | null;
   views: Map<string, CamelAIViewRegistration>;
-  panels: Map<string, CamelAIPanelRegistration>;
   commands: Map<string, CamelAICommandRegistration>;
   tools: Map<string, CamelAIToolRegistration>;
   handlers: Map<CamelAIEventName, CamelAIEventHandler[]>;

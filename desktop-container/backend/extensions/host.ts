@@ -2,14 +2,15 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
-  DesktopPanel,
+  DesktopPreviewTarget,
   DesktopPluginPermission,
   DesktopPluginRecord,
+  DesktopThreadPreviewState,
   DesktopView,
 } from "../../../desktop/shared/protocol";
-import builtinChatCore from "../../plugins/builtin/chat-core/index";
 import builtinExtensionLab from "../../plugins/builtin/extension-lab/index";
 import builtinHostMcpManager from "../../plugins/builtin/host-mcp-manager/index";
+import builtinPreviewControl from "../../plugins/builtin/preview-control/index";
 import builtinThreadJournal from "../../plugins/builtin/thread-journal/index";
 import {
   getHarnessAdapterForProvider,
@@ -72,12 +73,20 @@ function getExtensionDirectories(): Array<{ path: string; builtin: boolean }> {
   ].filter((entry) => Boolean(entry.path));
 }
 const BUILTIN_EXTENSION_MODULES: Record<string, CamelAIExtensionModule> = {
-  "chat-core": builtinChatCore as unknown as CamelAIExtensionModule,
   "extension-lab": builtinExtensionLab as unknown as CamelAIExtensionModule,
   "host-mcp-manager": builtinHostMcpManager as unknown as CamelAIExtensionModule,
+  "preview-control": builtinPreviewControl as unknown as CamelAIExtensionModule,
   "thread-journal": builtinThreadJournal as unknown as CamelAIExtensionModule,
 };
-const VALID_PLUGIN_PERMISSIONS = new Set<DesktopPluginPermission>(["host-mcp"]);
+const VALID_PLUGIN_PERMISSIONS = new Set<DesktopPluginPermission>([
+  "host-mcp",
+  "thread-preview",
+]);
+
+interface ThreadPreviewMutationResult {
+  threadId: string;
+  state: DesktopThreadPreviewState;
+}
 
 export interface CamelAIExtensionHostOptions {
   registerHostMcpServer?: (registration: CamelAIHostMcpServerRegistration) => void;
@@ -99,6 +108,20 @@ export interface CamelAIExtensionHostOptions {
     server: CamelAIInstallHttpHostMcpServerOptions,
     context: CamelAIHostMcpMutationContext,
   ) => Promise<CamelAIInstallHostMcpServerResult>;
+  openThreadPreviewItem?: (
+    threadId: string | null,
+    target: DesktopPreviewTarget,
+  ) => ThreadPreviewMutationResult;
+  setThreadPreviewItems?: (
+    threadId: string | null,
+    targets: DesktopPreviewTarget[],
+    activeIndex?: number | null,
+  ) => ThreadPreviewMutationResult;
+  clearThreadPreview?: (threadId: string | null) => ThreadPreviewMutationResult;
+  setThreadPreviewVisibility?: (
+    threadId: string | null,
+    visible: boolean,
+  ) => ThreadPreviewMutationResult;
 }
 
 function isDirectory(path: string): boolean {
@@ -410,7 +433,6 @@ export class CamelAIExtensionHost {
       activationError: null,
       compatibilityError: getCompatibilityError(discovered.manifest),
       views: new Map(),
-      panels: new Map(),
       commands: new Map(),
       tools: new Map(),
       handlers: new Map(),
@@ -468,7 +490,6 @@ export class CamelAIExtensionHost {
       }
 
       record.views.clear();
-      record.panels.clear();
       record.commands.clear();
       record.tools.clear();
       record.handlers.clear();
@@ -583,12 +604,6 @@ export class CamelAIExtensionHost {
           record.views.delete(id);
         });
       },
-      registerPanel: (id, panel) => {
-        record.panels.set(id, panel);
-        return this.registerRecordDisposable(record, () => {
-          record.panels.delete(id);
-        });
-      },
       registerCommand: (id, command) => {
         record.commands.set(id, command);
         return this.registerRecordDisposable(record, () => {
@@ -657,6 +672,44 @@ export class CamelAIExtensionHost {
             threadId: context.activeThreadId,
           })
         ) ?? false;
+      },
+      openThreadPreviewItem: (target, threadId = context.activeThreadId) => {
+        this.assertPluginPermission(record, "thread-preview");
+        if (!this.options.openThreadPreviewItem) {
+          throw new Error("Thread preview mutation is unavailable.");
+        }
+        return this.options.openThreadPreviewItem(threadId ?? null, target);
+      },
+      setThreadPreviewItems: (
+        targets,
+        options = {},
+      ) => {
+        this.assertPluginPermission(record, "thread-preview");
+        if (!this.options.setThreadPreviewItems) {
+          throw new Error("Thread preview mutation is unavailable.");
+        }
+        return this.options.setThreadPreviewItems(
+          options.threadId ?? context.activeThreadId ?? null,
+          targets,
+          options.activeIndex,
+        );
+      },
+      clearThreadPreview: (threadId = context.activeThreadId) => {
+        this.assertPluginPermission(record, "thread-preview");
+        if (!this.options.clearThreadPreview) {
+          throw new Error("Thread preview mutation is unavailable.");
+        }
+        return this.options.clearThreadPreview(threadId ?? null);
+      },
+      setThreadPreviewVisibility: (
+        visible,
+        threadId = context.activeThreadId,
+      ) => {
+        this.assertPluginPermission(record, "thread-preview");
+        if (!this.options.setThreadPreviewVisibility) {
+          throw new Error("Thread preview mutation is unavailable.");
+        }
+        return this.options.setThreadPreviewVisibility(threadId ?? null, visible);
       },
       threadState: (threadId = context.activeThreadId) =>
         this.createThreadState(pluginId, threadId ?? null, context),
@@ -784,13 +837,6 @@ export class CamelAIExtensionHost {
           scope: view.scope ?? "workspace",
           default: view.default === true,
         })),
-        panels: Array.from(record.panels.entries()).map(([id, panel]) => ({
-          id,
-          title: panel.title,
-          description: panel.description ?? null,
-          icon: panel.icon ?? null,
-          autoOpen: panel.autoOpen ?? "never",
-        })),
         commands: Array.from(record.commands.entries()).map(([id, command]) => ({
           id,
           title: command.title,
@@ -809,7 +855,6 @@ export class CamelAIExtensionHost {
         activationError: record.activationError,
         subscribedEvents: Array.from(record.handlers.keys()),
         registeredViewIds: Array.from(record.views.keys()),
-        registeredPanelIds: Array.from(record.panels.keys()),
         registeredCommandIds: Array.from(record.commands.keys()),
         registeredToolIds: Array.from(record.tools.keys()),
       },
@@ -870,63 +915,8 @@ export class CamelAIExtensionHost {
     return views;
   }
 
-  private buildPanels(
-    context: CamelAIActivationContext,
-    plugins: DesktopPluginRecord[],
-  ): DesktopPanel[] {
-    const pluginById = new Map(plugins.map((plugin) => [plugin.id, plugin]));
-    const panels: DesktopPanel[] = [];
-
-    for (const record of this.records.values()) {
-      const plugin = pluginById.get(record.discovered.id);
-      if (!plugin) {
-        continue;
-      }
-
-      for (const [id, panel] of record.panels.entries()) {
-        const render =
-          panel.render.kind === "host"
-            ? { kind: "host" as const, component: panel.render.component }
-            : {
-                kind: "webview" as const,
-                entrypoint: resolveWebviewEntrypoint(
-                  record.discovered,
-                  panel.render.webviewId,
-                ) ?? "",
-              };
-        const threadState = this.createThreadState(
-          record.discovered.id,
-          context.activeThreadId,
-          context,
-        );
-        panels.push({
-          id: getContributionId(record.discovered.id, id),
-          title: panel.title,
-          description: panel.description ?? null,
-          icon: panel.icon ?? record.discovered.manifest.icon ?? null,
-          pluginId: record.discovered.id,
-          autoOpen: panel.autoOpen ?? "never",
-          render,
-          hostData: panel.buildHostData
-            ? panel.buildHostData({
-                ...context,
-                pluginId: record.discovered.id,
-                panelId: id,
-                threadId: context.activeThreadId,
-                threadState,
-                plugin,
-              })
-            : null,
-        });
-      }
-    }
-
-    return panels;
-  }
-
   getSnapshot(context: CamelAIActivationContext): {
     views: DesktopView[];
-    panels: DesktopPanel[];
     plugins: DesktopPluginRecord[];
   } {
     const plugins = Array.from(this.records.values()).map((record) =>
@@ -934,7 +924,6 @@ export class CamelAIExtensionHost {
     );
     return {
       views: this.buildViews(context, plugins),
-      panels: this.buildPanels(context, plugins),
       plugins,
     };
   }
@@ -974,18 +963,6 @@ export class CamelAIExtensionHost {
       ? getContributionId(firstScopeMatch.pluginId, firstScopeMatch.viewId)
       : null;
   }
-
-  getDefaultThreadPanelId(): string | null {
-    for (const record of this.records.values()) {
-      for (const [id, panel] of record.panels.entries()) {
-        if ((panel.autoOpen ?? "never") !== "never") {
-          return getContributionId(record.discovered.id, id);
-        }
-      }
-    }
-    return null;
-  }
-
   async emit(
     type: CamelAIEventName,
     event: CamelAIEvent,

@@ -1,9 +1,39 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto";
-import { createHostRpcClient } from "@acon/host-rpc";
+import { createRequire } from "node:module";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const require = createRequire(import.meta.url);
+const bundledNodeModulesRoot =
+  process.env.ACON_BUNDLED_NODE_MODULES_ROOT?.trim() ||
+  "/opt/acon/npm-global/node_modules";
+
+async function loadHostRpcModule() {
+  const bundledEntryPath = resolve(
+    bundledNodeModulesRoot,
+    "@acon/host-rpc/index.js",
+  );
+
+  try {
+    return await import(pathToFileURL(bundledEntryPath).href);
+  } catch (bundledError) {
+    try {
+      const resolvedPackageEntry = require.resolve("@acon/host-rpc");
+      return await import(pathToFileURL(resolvedPackageEntry).href);
+    } catch {
+      const detail =
+        bundledError instanceof Error ? bundledError.message : String(bundledError);
+      throw new Error(
+        `Unable to load @acon/host-rpc from ${bundledEntryPath} or the default module resolution path. ${detail}`,
+      );
+    }
+  }
+}
 
 const args = process.argv.slice(2);
+const { createHostRpcClient } = await loadHostRpcModule();
 const client = createHostRpcClient();
 
 function printHelp(exitCode = 0) {

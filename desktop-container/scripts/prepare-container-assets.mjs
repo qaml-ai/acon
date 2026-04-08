@@ -5,6 +5,7 @@ import {
   copyFileSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -323,6 +324,10 @@ function installHostCliPrefix(destinationDirectory) {
   const workingDirectory = mkdtempSync(resolve(tmpdir(), "acon-npm-prefix-"));
   const npmCacheDirectory = resolve(workingDirectory, ".npm-cache");
   const npmBinDirectory = resolve(workingDirectory, "node_modules/.bin");
+  const installedHostRpcPath = resolve(
+    workingDirectory,
+    "node_modules/@acon/host-rpc",
+  );
   const result = run("npm", [
     "install",
     "--prefix",
@@ -346,10 +351,26 @@ function installHostCliPrefix(destinationDirectory) {
         "failed to prepare host CLI packages for the container image",
     );
   }
+  if (
+    existsSync(installedHostRpcPath) &&
+    statSync(resolve(workingDirectory, "node_modules/@acon")).isDirectory() &&
+    lstatSync(installedHostRpcPath).isSymbolicLink()
+  ) {
+    rmSync(installedHostRpcPath, { force: true, recursive: true });
+    cpSync(bundledNodePackagePaths.hostRpc, installedHostRpcPath, {
+      force: true,
+      recursive: true,
+      dereference: true,
+    });
+  }
   rmSync(npmBinDirectory, { force: true, recursive: true });
   rmSync(npmCacheDirectory, { force: true, recursive: true });
   rmSync(destinationDirectory, { force: true, recursive: true });
-  cpSync(workingDirectory, destinationDirectory, { force: true, recursive: true });
+  cpSync(workingDirectory, destinationDirectory, {
+    force: true,
+    recursive: true,
+    dereference: true,
+  });
   rmSync(workingDirectory, { force: true, recursive: true });
 }
 

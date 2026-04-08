@@ -1,0 +1,13 @@
+{
+  "name": "@camelai/preview-control",
+  "version": "0.1.0",
+  "type": "module",
+  "camelai": {
+    "id": "preview-control",
+    "name": "Preview Control",
+    "description": "Registers a host-side MCP server that can open and manage thread preview items in the desktop app side pane.",
+    "icon": "PanelRightOpen",
+    "permissions": ["thread-preview", "host-mcp"],
+    "main": "./index.ts"
+  }
+}
