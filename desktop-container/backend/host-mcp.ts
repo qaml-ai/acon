@@ -35,13 +35,28 @@ export interface HostMcpSessionServer {
   close(): Promise<void>;
 }
 
+export interface HostMcpServerSessionContext {
+  serverId: string;
+  sessionId: string;
+}
+
 export interface HostMcpServerRegistration {
   id: string;
-  createServer: () => HostMcpSessionServer;
+  name?: string | null;
+  version?: string | null;
+  description?: string | null;
+  pluginId?: string | null;
+  source?: "host" | "plugin";
+  createServer: (context: HostMcpServerSessionContext) => HostMcpSessionServer;
 }
 
 export interface HostMcpServerSummary {
   id: string;
+  name: string | null;
+  version: string | null;
+  description: string | null;
+  pluginId: string | null;
+  source: "host" | "plugin";
 }
 
 export interface HostMcpBridgeRequest {
@@ -435,6 +450,11 @@ export class HostMcpRegistry {
     this.registrations.set(serverId, {
       ...registration,
       id: serverId,
+      name: registration.name?.trim() || null,
+      version: registration.version?.trim() || null,
+      description: registration.description?.trim() || null,
+      pluginId: registration.pluginId?.trim() || null,
+      source: registration.source === "plugin" ? "plugin" : "host",
     });
   }
 
@@ -449,9 +469,16 @@ export class HostMcpRegistry {
   }
 
   listServers(): HostMcpServerSummary[] {
-    return [...this.registrations.keys()]
-      .sort((left, right) => left.localeCompare(right))
-      .map((id) => ({ id }));
+    return [...this.registrations.values()]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((registration) => ({
+        id: registration.id,
+        name: registration.name ?? null,
+        version: registration.version ?? null,
+        description: registration.description ?? null,
+        pluginId: registration.pluginId ?? null,
+        source: registration.source ?? "host",
+      }));
   }
 
   async dispatchRequest(
@@ -514,7 +541,10 @@ export class HostMcpRegistry {
     }
 
     const transport = new HostMcpSessionTransport(sessionId);
-    const server = registration.createServer();
+    const server = registration.createServer({
+      serverId,
+      sessionId,
+    });
     await server.connect(transport);
 
     const session: HostMcpSessionState = {

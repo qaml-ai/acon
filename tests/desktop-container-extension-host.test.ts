@@ -180,23 +180,26 @@ describe("CamelAIExtensionHost", () => {
   });
 
   it("registers the builtin host MCP manager server", async () => {
-    const registerHostMcpServer = vi.fn();
+    const registerMcpServer = vi.fn();
     const host = new CamelAIExtensionHost({
-      registerHostMcpServer,
+      registerMcpServer,
     });
     const context = createActivationContext();
 
     await host.initialize(context);
 
-    expect(registerHostMcpServer).toHaveBeenCalledWith(
+    expect(registerMcpServer).toHaveBeenCalledWith(
       expect.objectContaining({
-        id: "host-mcp-manager",
+        id: "plugin:host-mcp-manager:host-mcp-manager",
+        name: "Host MCP Manager",
+        pluginId: "host-mcp-manager",
+        source: "plugin",
       }),
     );
   });
 
   it("exposes install_http_server through the builtin host MCP manager", async () => {
-    const registerHostMcpServer = vi.fn();
+    const registerMcpServer = vi.fn();
     const installHttpHostMcpServer = vi.fn().mockReturnValue({
       configPath: "/tmp/host-mcp/servers/remote-server.json",
       headers: {
@@ -221,15 +224,15 @@ describe("CamelAIExtensionHost", () => {
     const host = new CamelAIExtensionHost({
       installHttpHostMcpServer,
       listInstalledHostMcpServers: () => [],
-      registerHostMcpServer,
+      registerMcpServer,
       uninstallInstalledHostMcpServer: () => false,
     });
     const context = createActivationContext();
 
     await host.initialize(context);
 
-    const registration = registerHostMcpServer.mock.calls.find(
-      ([entry]) => entry?.id === "host-mcp-manager",
+    const registration = registerMcpServer.mock.calls.find(
+      ([entry]) => entry?.id === "plugin:host-mcp-manager:host-mcp-manager",
     )?.[0];
     expect(registration).toBeTruthy();
 
@@ -238,10 +241,14 @@ describe("CamelAIExtensionHost", () => {
     registry.registerServer(registration);
 
     try {
-      await initializeRegistryServer(registry, "host-mcp-manager", sessionId);
+      await initializeRegistryServer(
+        registry,
+        "plugin:host-mcp-manager:host-mcp-manager",
+        sessionId,
+      );
 
       const toolsList = await registry.dispatchRequest({
-        serverId: "host-mcp-manager",
+        serverId: "plugin:host-mcp-manager:host-mcp-manager",
         sessionId,
         message: {
           jsonrpc: "2.0",
@@ -267,7 +274,7 @@ describe("CamelAIExtensionHost", () => {
       expect(toolNames).toContain("install_http_server");
 
       const installResponse = await registry.dispatchRequest({
-        serverId: "host-mcp-manager",
+        serverId: "plugin:host-mcp-manager:host-mcp-manager",
         sessionId,
         message: {
           jsonrpc: "2.0",
@@ -299,7 +306,12 @@ describe("CamelAIExtensionHost", () => {
           transport: "streamable-http",
           url: "https://example.com/mcp",
         }),
-        "/tmp/workspace",
+        expect.objectContaining({
+          pluginId: "host-mcp-manager",
+          harness: "claude-code",
+          threadId: "thread-1",
+          workspaceDirectory: "/tmp/workspace",
+        }),
       );
       expect(installMessage).toEqual(
         expect.objectContaining({
@@ -313,7 +325,10 @@ describe("CamelAIExtensionHost", () => {
         }),
       );
     } finally {
-      await registry.closeSession("host-mcp-manager", sessionId);
+      await registry.closeSession(
+        "plugin:host-mcp-manager:host-mcp-manager",
+        sessionId,
+      );
       registry.dispose();
     }
   });
@@ -355,14 +370,13 @@ describe("CamelAIExtensionHost", () => {
     ).toBe(false);
   });
 
-  it("requires an explicit host-mcp permission before privileged host MCP APIs can be used", async () => {
+  it("requires an explicit serve-mcp permission before plugins can expose MCP servers", async () => {
     writeUserPlugin(sandboxDataDir, {
-      id: "missing-host-mcp-permission",
+      id: "missing-serve-mcp-permission",
       code: `
         export default {
           activate(api) {
-            api.registerHostMcpServer({
-              id: "missing-host-mcp-permission.server",
+            api.registerMcpServer("missing-serve-mcp-permission.server", {
               createServer() {
                 return {
                   async connect() {},
@@ -376,38 +390,38 @@ describe("CamelAIExtensionHost", () => {
     });
 
     const host = new CamelAIExtensionHost({
-      registerHostMcpServer: vi.fn(),
+      registerMcpServer: vi.fn(),
     });
     const context = createActivationContext();
 
     await host.initialize(context);
     const plugin = host
       .getSnapshot(context)
-      .plugins.find((entry) => entry.id === "missing-host-mcp-permission");
+      .plugins.find((entry) => entry.id === "missing-serve-mcp-permission");
 
-    expect(plugin?.runtime.activationError).toContain("host-mcp");
+    expect(plugin?.runtime.activationError).toContain("serve-mcp");
   });
 
   it("cleans up host MCP registrations when plugins refresh", async () => {
-    const registerHostMcpServer = vi.fn();
-    const unregisterHostMcpServer = vi.fn();
+    const registerMcpServer = vi.fn();
+    const unregisterMcpServer = vi.fn();
     const host = new CamelAIExtensionHost({
-      registerHostMcpServer,
-      unregisterHostMcpServer,
+      registerMcpServer,
+      unregisterMcpServer,
     });
     const context = createActivationContext();
 
     await host.initialize(context);
     await host.refresh(context);
 
-    expect(registerHostMcpServer).toHaveBeenCalledTimes(2);
-    expect(registerHostMcpServer).toHaveBeenCalledWith(
+    expect(registerMcpServer).toHaveBeenCalledTimes(2);
+    expect(registerMcpServer).toHaveBeenCalledWith(
       expect.objectContaining({
-        id: "host-mcp-manager",
+        id: "plugin:host-mcp-manager:host-mcp-manager",
       }),
     );
-    expect(unregisterHostMcpServer).toHaveBeenCalledWith(
-      "host-mcp-manager",
+    expect(unregisterMcpServer).toHaveBeenCalledWith(
+      "plugin:host-mcp-manager:host-mcp-manager",
     );
   });
 });

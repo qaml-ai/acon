@@ -88,8 +88,10 @@ const uninstallServerOutputSchema = z.object({
 
 const extension: CamelAIExtensionModule = {
   activate(api) {
-    api.registerHostMcpServer({
-      id: HOST_MCP_MANAGER_ID,
+    api.registerMcpServer(HOST_MCP_MANAGER_ID, {
+      name: "Host MCP Manager",
+      version: "0.1.0",
+      description: "Manage persisted host MCP server registrations from inside the guest.",
       createServer: () => {
         const server = new McpServer({
           name: HOST_MCP_MANAGER_ID,
