@@ -254,6 +254,109 @@ function getSessionName(providerId: DesktopProvider, threadId: string): string {
   return `${providerId}-${threadId}`;
 }
 
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function getAcpSessionUpdateCounts(
+  runtimeEvents: RuntimeEventRecord[],
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const record of runtimeEvents) {
+    const update =
+      record.event &&
+      typeof record.event === "object" &&
+      "params" in record.event &&
+      record.event.params &&
+      typeof record.event.params === "object" &&
+      "update" in record.event.params &&
+      record.event.params.update &&
+      typeof record.event.params.update === "object"
+        ? record.event.params.update
+        : null;
+    const sessionUpdate =
+      update &&
+      "sessionUpdate" in update &&
+      typeof update.sessionUpdate === "string"
+        ? update.sessionUpdate
+        : null;
+    const key = sessionUpdate ?? "<none>";
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function buildClaudeRawThinkingProbeScript(prompt: string, model: string): string {
+  const userPayload = JSON.stringify({
+    type: "user",
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: prompt,
+        },
+      ],
+    },
+  });
+
+  return [
+    "export CLAUDE_CONFIG_DIR=\"$HOME/.claude\"",
+    "cat >/tmp/acon-claude-thinking-probe.js <<'NODE'",
+    "const fs = require('node:fs');",
+    "const input = fs.readFileSync(0, 'utf8');",
+    "const lines = input",
+    "  .split(/\\n+/)",
+    "  .map((line) => line.trim())",
+    "  .filter(Boolean)",
+    "  .map((line) => {",
+    "    try {",
+    "      return JSON.parse(line);",
+    "    } catch {",
+    "      return null;",
+    "    }",
+    "  })",
+    "  .filter(Boolean);",
+    "const counts = {};",
+    "const thinking = [];",
+    "for (const message of lines) {",
+    "  let key = message.type;",
+    "  if (message.type === 'stream_event' && message.event && typeof message.event === 'object') {",
+    "    const event = message.event;",
+    "    if (typeof event.type === 'string') {",
+    "      key = `stream_event:${event.type}`;",
+    "      if (event.type === 'content_block_start' && event.content_block && typeof event.content_block === 'object' && typeof event.content_block.type === 'string') {",
+    "        key += `:${event.content_block.type}`;",
+    "      }",
+    "      if (event.type === 'content_block_delta' && event.delta && typeof event.delta === 'object' && typeof event.delta.type === 'string') {",
+    "        key += `:${event.delta.type}`;",
+    "        if (event.delta.type === 'thinking_delta' && typeof event.delta.thinking === 'string') {",
+    "          thinking.push(event.delta.thinking);",
+    "        }",
+    "      }",
+    "    }",
+    "  }",
+    "  if (message.type === 'assistant' && message.message && typeof message.message === 'object' && Array.isArray(message.message.content)) {",
+    "    for (const chunk of message.message.content) {",
+    "      if (chunk && typeof chunk === 'object' && chunk.type === 'thinking' && typeof chunk.thinking === 'string') {",
+    "        thinking.push(chunk.thinking);",
+    "      }",
+    "    }",
+    "  }",
+    "  counts[key] = (counts[key] ?? 0) + 1;",
+    "}",
+    "process.stdout.write(JSON.stringify({",
+    "  counts,",
+    "  thinkingChars: thinking.join('').length,",
+    "  thinkingPreview: thinking.join('').slice(0, 240),",
+    "}, null, 2));",
+    "NODE",
+    `printf '%s\\n' ${shellSingleQuote(userPayload)} | claude -p --verbose --input-format stream-json --output-format stream-json --include-partial-messages --disallowedTools AskUserQuestion --permission-mode acceptEdits --model ${shellSingleQuote(
+      model,
+    )} | node /tmp/acon-claude-thinking-probe.js`,
+  ].join("\n");
+}
+
 function inspectContainerStatus(containerName: string): string | null {
   const result = spawnSync(
     CONTAINER_COMMAND,
@@ -1377,4 +1480,98 @@ integrationDescribe("desktop-container agent runtime integration", () => {
       },
     );
   }
+
+  const claudeProvider = requireDesktopProvider("claude");
+  const claudeProviderTest = claudeProvider.getAuthState().available ? it : it.skip;
+
+  claudeProviderTest(
+    "diagnoses missing Claude thought chunks by comparing backend ACP events with raw in-container Claude output",
+    { timeout: INTEGRATION_TIMEOUT_MS },
+    async () => {
+      const harness = new DesktopBackendHarness("claude");
+      const prompts = [
+        "ultrathink. Without using tools, solve this carefully: There are 12 coins and one is counterfeit. The counterfeit coin may be heavier or lighter than the others. Using a balance scale only 3 times, explain the strategy that always identifies the counterfeit coin and whether it is heavier or lighter. Keep the answer concise but correct.",
+        "ultrathink. Without using tools, solve this carefully: 100 prisoners and a light bulb. The prisoners can communicate only by leaving the bulb on or off in the central room. Prisoners are taken into the room one at a time in arbitrary order, and the bulb may initially be either on or off. Give a strategy that guarantees that eventually one prisoner can correctly declare that everyone has visited the room at least once. Keep the answer concise but correct.",
+        "ultrathink. Without using tools, solve this carefully: Find the smallest positive integer n such that n has exactly 36 divisors and the sum of its positive divisors is odd. Explain the reasoning clearly but concisely.",
+      ];
+
+      try {
+        const threadId = await harness.waitForActiveThread();
+        harness.send({
+          type: "set_provider",
+          provider: "claude",
+        });
+        await harness.waitForProvider("claude");
+        harness.send({
+          type: "set_model",
+          model: "sonnet",
+        });
+        await harness.waitForModel("sonnet");
+        await harness.waitForRuntimeReady("claude");
+
+        const backendPromptSummaries: Array<{
+          prompt: string;
+          acpCounts: Record<string, number>;
+          assistantText: string;
+        }> = [];
+
+        for (const prompt of prompts) {
+          const turn = await harness.sendMessageAndWait(threadId, prompt);
+          expect(turn.message.status).toBe("done");
+          expect(turn.errorEvents).toHaveLength(0);
+
+          const acpCounts = getAcpSessionUpdateCounts(turn.runtimeEvents);
+          backendPromptSummaries.push({
+            prompt,
+            acpCounts,
+            assistantText: turn.text,
+          });
+
+          const thoughtCount = acpCounts.agent_thought_chunk ?? 0;
+          if (thoughtCount > 0) {
+            expect(thoughtCount).toBeGreaterThan(0);
+            return;
+          }
+        }
+
+        const rawResult = await runContainerCommand(
+          harness.userDataDir,
+          "claude",
+          ["sh", "-lc", buildClaudeRawThinkingProbeScript(prompts[0], "sonnet")],
+        );
+        const rawSummary = JSON.parse(rawResult.stdout) as {
+          counts?: Record<string, number>;
+          thinkingChars?: number;
+          thinkingPreview?: string;
+        };
+        const rawThinkingChars = rawSummary.thinkingChars ?? 0;
+        const rawCounts = rawSummary.counts ?? {};
+
+        if (rawThinkingChars > 0) {
+          throw new Error(
+            `Raw Claude in the same container emitted thinking (${rawThinkingChars} chars; counts=${JSON.stringify(
+              rawCounts,
+            )}) but desktop backend emitted no agent_thought_chunk updates across prompt corpus ${JSON.stringify(
+              backendPromptSummaries.map((entry) => ({
+                prompt: entry.prompt.slice(0, 96),
+                acpCounts: entry.acpCounts,
+              })),
+            )}. Thinking preview: ${rawSummary.thinkingPreview ?? ""}`,
+          );
+        }
+
+        throw new Error(
+          `Neither desktop backend nor raw in-container Claude emitted thinking. Backend prompt corpus=${JSON.stringify(
+            backendPromptSummaries.map((entry) => ({
+              prompt: entry.prompt.slice(0, 96),
+              acpCounts: entry.acpCounts,
+              assistantPreview: entry.assistantText.slice(0, 120),
+            })),
+          )}; raw counts=${JSON.stringify(rawCounts)}.`,
+        );
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
 });
