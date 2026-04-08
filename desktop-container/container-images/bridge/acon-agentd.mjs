@@ -117,7 +117,7 @@ This environment is for \`acon\`, the standalone camelAI desktop app.
  * @typedef {{
  *   finalText: string;
  *   turnId: string | null;
-  *   cancelled: boolean;
+ *   cancelled: boolean;
  *   waiters: Array<{
  *     resolve: (value: { sessionId: string; finalText: string; stopReason: string | null }) => void;
  *     reject: (error: Error) => void;
@@ -574,6 +574,14 @@ function resolveCodexToolTitle(item) {
       return item.tool ? `Tool: ${String(item.tool)}` : "tool";
     case "webSearch":
       return "Searching the Web";
+    case "imageView":
+      return "View Image";
+    case "enteredReviewMode":
+      return "Review Mode";
+    case "exitedReviewMode":
+      return "Review Mode";
+    case "contextCompaction":
+      return "Context Compaction";
     default:
       return null;
   }
@@ -602,6 +610,14 @@ function getCodexToolOutputText(item) {
       return item.status === "completed" ? "Updated files." : null;
     case "webSearch":
       return maybeString(item.query) ?? null;
+    case "imageView":
+      return maybeString(item.path) ?? "Viewed image.";
+    case "enteredReviewMode":
+      return maybeString(item.review) ?? "Entered review mode.";
+    case "exitedReviewMode":
+      return maybeString(item.review) ?? "Exited review mode.";
+    case "contextCompaction":
+      return "Context compacted.";
     default:
       return null;
   }
@@ -643,6 +659,10 @@ function resolveCodexToolStatus(item) {
           return "pending";
       }
     case "webSearch":
+    case "imageView":
+    case "enteredReviewMode":
+    case "exitedReviewMode":
+    case "contextCompaction":
       return "completed";
     default:
       return "pending";
@@ -694,6 +714,10 @@ function isCodexToolItem(item) {
         "mcpToolCall",
         "dynamicToolCall",
         "webSearch",
+        "imageView",
+        "enteredReviewMode",
+        "exitedReviewMode",
+        "contextCompaction",
       ].includes(item.type),
   );
 }
@@ -945,6 +969,34 @@ function handleCodexNotification(message) {
     }
 
     if (
+      method === "item/commandExecution/terminalInteraction" &&
+      typeof params.itemId === "string" &&
+      typeof params.input === "string"
+    ) {
+      emitCodexSessionUpdate(session, {
+        sessionUpdate: "tool_call_update",
+        toolCallId: params.itemId,
+        status: "pending",
+        content: toTextContent(`\n> ${params.input}\n`),
+        rawOutput: params.input,
+      });
+    }
+
+    if (
+      method === "item/mcpToolCall/progress" &&
+      typeof params.itemId === "string" &&
+      typeof params.message === "string"
+    ) {
+      emitCodexSessionUpdate(session, {
+        sessionUpdate: "tool_call_update",
+        toolCallId: params.itemId,
+        status: "pending",
+        content: toTextContent(params.message),
+        rawOutput: params.message,
+      });
+    }
+
+    if (
       method === "item/completed" &&
       isCodexToolItem(params.item)
     ) {
@@ -1122,6 +1174,8 @@ function createClaudeArgs(session) {
     "--output-format",
     "stream-json",
     "--include-partial-messages",
+    "--disallowedTools",
+    "AskUserQuestion",
     "--permission-mode",
     "bypassPermissions",
     "--model",

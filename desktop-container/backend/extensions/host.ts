@@ -92,6 +92,17 @@ export interface CamelAIExtensionHostOptions {
   ) => boolean;
 }
 
+export interface CamelAIExtensionHostOptions {
+  registerHostMcpServer?: (registration: CamelAIHostMcpServerRegistration) => void;
+  unregisterHostMcpServer?: (serverId: string) => void;
+  listInstalledHostMcpServers?: () => CamelAIPersistedHostMcpServerRecord[];
+  installStdioHostMcpServer?: (
+    server: CamelAIInstallStdioHostMcpServerOptions,
+    workspaceDirectory: string,
+  ) => CamelAIInstallHostMcpServerResult;
+  uninstallInstalledHostMcpServer?: (serverId: string) => boolean;
+}
+
 function isDirectory(path: string): boolean {
   try {
     return statSync(path).isDirectory();

@@ -960,6 +960,28 @@ describe("desktop container renderer streaming", () => {
     expect(textBlocks[0]).toHaveTextContent("Checking now.");
   });
 
+  it("renders ACP thinking chunks as thinking blocks", async () => {
+    const { emit } = await renderAppWithShell(createSnapshot());
+
+    expect(screen.queryByTestId("thinking-block")).toBeNull();
+
+    await emit(
+      createAcpRuntimeEvent({
+        sessionUpdate: "agent_thought_chunk",
+        content: {
+          type: "text",
+          text: "Comparing tradeoffs before answering.",
+        },
+      }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("thinking-block")).toHaveTextContent(
+        "Comparing tradeoffs before answering.",
+      );
+    });
+  });
+
   it("keeps later text in a new section after tool activity", async () => {
     const { emit } = await renderAppWithShell(createSnapshot());
 
