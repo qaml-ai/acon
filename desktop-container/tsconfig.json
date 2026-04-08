@@ -10,6 +10,7 @@
   ],
   "exclude": [
     "./.local-dev/**/*",
-    "./backend/extensions/**/*"
+    "./backend/extensions/**/*",
+    "./vendor/**/*"
   ]
 }

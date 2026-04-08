@@ -8,7 +8,6 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -18,6 +17,7 @@ import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import type { DesktopRuntimeStatus } from "../../desktop/shared/protocol";
 import { logDesktop } from "../../desktop/backend/log";
+import { getHostClaudeCredentialsJson } from "../../desktop/backend/anthropic";
 import type { DesktopProviderDefinition } from "./provider-types";
 import {
   HostMcpRegistry,
@@ -35,7 +35,8 @@ const CONTAINER_HOST_RPC_SOCKET_PATH = "/data/host-rpc/bridge.sock";
 const DEFAULT_HOST_RPC_FETCH_TIMEOUT_MS = 15_000;
 const DEFAULT_HOST_RPC_FETCH_MAX_BODY_BYTES = 256 * 1024;
 const DEFAULT_CONTAINER_COMMAND_TIMEOUT_MS = 60_000;
-const DEFAULT_CONTAINER_BRIDGE_READY_TIMEOUT_MS = 30_000;
+const DEFAULT_CONTAINER_DAEMON_READY_TIMEOUT_MS = 30_000;
+const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 30_000;
 const HOST_CODEX_HOME = process.env.CODEX_HOME?.trim()
   ? resolve(process.env.CODEX_HOME)
   : resolve(homedir(), ".codex");
@@ -56,7 +57,14 @@ export interface RuntimeManager {
     provider: DesktopProviderDefinition,
     onStatus?: (status: DesktopRuntimeStatus) => void,
   ): Promise<DesktopRuntimeStatus>;
+  cancelPrompt(options: CancelContainerPromptOptions): Promise<void>;
   streamPrompt(options: StreamContainerPromptOptions): Promise<StreamContainerPromptResult>;
+}
+
+export interface CancelContainerPromptOptions {
+  provider: DesktopProviderDefinition;
+  threadId: string;
+  model: string;
 }
 
 export interface StreamContainerPromptOptions {
@@ -74,6 +82,7 @@ export interface StreamContainerPromptResult {
   finalText: string;
   model: string;
   sessionId: string;
+  stopReason: string | null;
 }
 
 function formatError(error: unknown): string {
@@ -98,22 +107,6 @@ function formatTimeoutError(commandLabel: string, timeoutMs: number): Error {
   return new Error(
     `${commandLabel} timed out after ${timeoutMs}ms. Apple container may be stuck; try \`container system stop\` then \`container system start\`.`,
   );
-}
-
-function extractAcpChunkText(update: unknown): string {
-  if (!update || typeof update !== "object") {
-    return "";
-  }
-
-  const content = (update as { content?: unknown }).content;
-  if (content && typeof content === "object") {
-    const text = (content as { text?: unknown }).text;
-    if (typeof text === "string") {
-      return text;
-    }
-  }
-
-  return "";
 }
 
 function normalizeConfiguredPath(value: string | null | undefined): string | null {
@@ -156,22 +149,50 @@ function getClaudeJsonSeedDirectory(runtimeDirectory: string): string {
   return resolve(runtimeDirectory, "seed", "claude-json");
 }
 
-function shellEscape(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
+function getSharedContainerBaseName(runtimeDirectory: string): string {
+  const hash = createHash("sha1")
+    .update(`${runtimeDirectory}:shared`)
+    .digest("hex")
+    .slice(0, 12);
+  return `acon-acpx-${hash}`;
+}
+
+function buildSharedContainerName(baseContainerName: string): string {
+  return `${baseContainerName}-${process.pid.toString(36)}-${Date.now().toString(36)}`;
+}
+
+interface ManagedWorkspaceState {
+  id: string;
+  rootPath: string;
+  metadataPath: string;
 }
 
 interface ProviderContainerState {
+  baseContainerName: string;
   containerName: string;
   ensuredSessions: Map<string, string>;
   startupPromise: Promise<void> | null;
-  bridge: ProviderBridgeState | null;
+  daemon: ProviderDaemonState | null;
 }
 
-interface ProviderBridgeState {
+interface ProviderDaemonState {
   child: ChildProcessWithoutNullStreams;
   readyPromise: Promise<void>;
   stdoutBuffer: string;
   stderrBuffer: string;
+  pendingRequests: Map<
+    string,
+    {
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+      timer: NodeJS.Timeout | null;
+    }
+  >;
+}
+
+interface ActivePromptListener {
+  onDelta?: (delta: string) => void;
+  onRuntimeEvent?: (event: unknown) => void;
 }
 
 interface CapturedCommandResult {
@@ -181,26 +202,21 @@ interface CapturedCommandResult {
   stderr: string;
 }
 
-interface HostRpcRequest {
+interface DaemonEnvelope {
   id?: unknown;
   method?: unknown;
   params?: unknown;
   type?: unknown;
-}
-
-interface HostRpcResponse {
-  type: "response";
-  id: string;
   result?: unknown;
   error?: {
     code?: string;
-    message: string;
+    message?: string;
   };
 }
 
-function isRecoverableContainerExecError(error: unknown): boolean {
+function isRecoverableRuntimeError(error: unknown): boolean {
   const message = formatError(error);
-  return /failed to create process in container|xpc connection error|connection interrupted|container system start/i.test(
+  return /failed to create process in container|xpc connection error|connection interrupted|container system start|container daemon exited|daemon is not ready|broken pipe|not running/i.test(
     message,
   );
 }
@@ -209,6 +225,8 @@ export class ContainerRuntimeManager implements RuntimeManager {
   private lastRuntimeStatus: DesktopRuntimeStatus | null = null;
   private readonly runtimeDirectory =
     process.env.DESKTOP_RUNTIME_DIR || DEFAULT_RUNTIME_DIRECTORY;
+  private readonly dataDirectory =
+    process.env.DESKTOP_DATA_DIR?.trim() || resolve(this.runtimeDirectory, "..", "data");
   private readonly workspaceDirectory =
     process.env.DESKTOP_WORKSPACE_DIR?.trim() ||
     process.env.DESKTOP_CONTAINER_WORKSPACE_DIR?.trim() ||
@@ -217,6 +235,11 @@ export class ContainerRuntimeManager implements RuntimeManager {
   private readonly containerImageRoot = resolveContainerImageRoot();
   private readonly checkedImages = new Set<string>();
   private readonly hostMcpRegistry = new HostMcpRegistry();
+  private readonly activePromptListeners = new Map<
+    string,
+    Set<ActivePromptListener>
+  >();
+  private managedWorkspaceState: ManagedWorkspaceState | null = null;
   private sharedContainerState: ProviderContainerState | null = null;
 
   getWorkspaceDirectory(): string {
@@ -271,7 +294,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
     this.hostMcpRegistry.dispose();
     if (this.sharedContainerState) {
       const state = this.sharedContainerState;
-      this.stopProviderBridge(state);
+      this.stopProviderDaemon(state);
       spawnSync(this.containerCommand, ["stop", state.containerName], {
         encoding: "utf8",
       });
@@ -325,7 +348,33 @@ export class ContainerRuntimeManager implements RuntimeManager {
 
       await this.ensureContainerSystemStarted();
       await this.ensureImage(provider, onStatus);
-      await this.ensureProviderContainer(provider, onStatus);
+      const startupAttemptLimit = 3;
+      for (let attempt = 1; attempt <= startupAttemptLimit; attempt += 1) {
+        try {
+          await this.ensureProviderContainer(provider, onStatus);
+          break;
+        } catch (error) {
+          if (!isRecoverableRuntimeError(error)) {
+            throw error;
+          }
+          if (attempt >= startupAttemptLimit) {
+            throw error;
+          }
+
+          logDesktop(
+            "desktop-runtime",
+            "provider_container:startup_retry",
+            {
+              provider: provider.id,
+              attempt,
+              startupAttemptLimit,
+              error: formatError(error),
+            },
+            "warn",
+          );
+          await this.restartProviderContainer(provider);
+        }
+      }
 
       const readyStatus: DesktopRuntimeStatus = {
         state: "running",
@@ -393,17 +442,73 @@ export class ContainerRuntimeManager implements RuntimeManager {
       return this.sharedContainerState;
     }
 
-    const hash = createHash("sha1")
-      .update(`${this.runtimeDirectory}:${this.workspaceDirectory}:shared`)
-      .digest("hex")
-      .slice(0, 12);
+    const baseContainerName = getSharedContainerBaseName(this.runtimeDirectory);
     this.sharedContainerState = {
-      containerName: `acon-acpx-${hash}`,
+      baseContainerName,
+      containerName: buildSharedContainerName(baseContainerName),
       ensuredSessions: new Map<string, string>(),
       startupPromise: null,
-      bridge: null,
+      daemon: null,
     };
     return this.sharedContainerState;
+  }
+
+  private rotateSharedContainerName(state: ProviderContainerState): string {
+    state.containerName = buildSharedContainerName(state.baseContainerName);
+    return state.containerName;
+  }
+
+  private getManagedWorkspaceState(): ManagedWorkspaceState {
+    if (this.managedWorkspaceState) {
+      return this.managedWorkspaceState;
+    }
+
+    const id = "default";
+    const workspaceRoot = resolve(this.dataDirectory, "workspaces", id);
+    this.managedWorkspaceState = {
+      id,
+      rootPath: resolve(workspaceRoot, "root"),
+      metadataPath: resolve(workspaceRoot, "metadata.json"),
+    };
+    return this.managedWorkspaceState;
+  }
+
+  private writeManagedWorkspaceMetadata(
+    state: ManagedWorkspaceState,
+    seedMode: "empty",
+  ): void {
+    writeFileSync(
+      state.metadataPath,
+      JSON.stringify(
+        {
+          workspaceId: state.id,
+          containerPath: "/workspace",
+          seedMode,
+          createdAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  }
+
+  private ensureManagedWorkspaceInitialized(): ManagedWorkspaceState {
+    const state = this.getManagedWorkspaceState();
+    if (existsSync(state.rootPath)) {
+      if (!existsSync(state.metadataPath)) {
+        this.writeManagedWorkspaceMetadata(state, "empty");
+      }
+      return state;
+    }
+
+    mkdirSync(state.rootPath, { recursive: true });
+    this.writeManagedWorkspaceMetadata(state, "empty");
+    logDesktop("desktop-runtime", "managed_workspace:initialized", {
+      workspaceId: state.id,
+      rootPath: state.rootPath,
+    });
+    return state;
   }
 
   private async inspectContainerStatus(containerName: string): Promise<string | null> {
@@ -511,73 +616,86 @@ export class ContainerRuntimeManager implements RuntimeManager {
     await this.ensureContainerSystemStarted();
     state.ensuredSessions.clear();
     state.startupPromise = null;
-    this.stopProviderBridge(state);
+    this.stopProviderDaemon(state);
     await this.runCapturedCommand(["stop", state.containerName], {
       commandLabel: `container stop ${state.containerName}`,
     });
     await this.ensureProviderContainer(provider);
   }
 
-  private buildProviderHomeEnv(
-    provider: DesktopProviderDefinition,
-  ): Record<string, string> {
-    const providerDataRoot = `/data/providers/${provider.id}`;
-    const providerHome = `${providerDataRoot}/home`;
-    const env: Record<string, string> = {
-      DESKTOP_DATA_ROOT: providerDataRoot,
-      HOME: providerHome,
-      ACON_HOST_RPC_SOCKET: CONTAINER_HOST_RPC_SOCKET_PATH,
-    };
-
-    if (provider.id === "codex") {
-      return {
-        ...env,
-        CODEX_HOME: `${providerHome}/.codex`,
-      };
+  private async deleteProviderContainer(
+    containerName: string,
+    providerId: string,
+  ): Promise<void> {
+    const removeResult = await this.runCapturedCommand(
+      ["delete", "--force", containerName],
+      {
+        commandLabel: `container delete ${containerName}`,
+      },
+    );
+    if (removeResult.code !== 0) {
+      throw new Error(
+        removeResult.stderr?.trim() ||
+          removeResult.stdout?.trim() ||
+          `Failed to delete stale container ${containerName}.`,
+      );
     }
-
-    return {
-      ...env,
-      CLAUDE_CONFIG_DIR: `${providerHome}/.claude`,
-    };
+    logDesktop("desktop-runtime", "shared_container:deleted_stale", {
+      provider: providerId,
+      containerName,
+    });
   }
 
-  private buildExecArgs(
+  private buildProviderContainerRunArgs(
     provider: DesktopProviderDefinition,
-    model: string,
-    containerName: string,
-    command: string[],
-    interactive = false,
+    state: ProviderContainerState,
+    managedWorkspace: ManagedWorkspaceState,
+    providersDataDirectory: string,
   ): string[] {
-    const args = ["exec"];
-    if (interactive) {
-      args.push("--interactive");
+    const args = [
+      "run",
+      "--interactive",
+      "--rm",
+      "--name",
+      state.containerName,
+      "--workdir",
+      "/workspace",
+      "--volume",
+      `${providersDataDirectory}:/data/providers`,
+      "--volume",
+      `${managedWorkspace.rootPath}:/workspace`,
+      "--env",
+      `ACON_HOST_RPC_SOCKET=${CONTAINER_HOST_RPC_SOCKET_PATH}`,
+    ];
+
+    if (existsSync(HOST_CODEX_HOME)) {
+      args.push(
+        "--mount",
+        `type=bind,source=${HOST_CODEX_HOME},target=/seed-codex,readonly`,
+      );
     }
 
-    args.push("--workdir", "/workspace");
-    for (const [key, value] of Object.entries({
-      ...this.buildProviderHomeEnv(provider),
-      ...provider.buildRuntimeEnv(model),
-    })) {
-      if (value.trim()) {
-        args.push("--env", `${key}=${value}`);
-      }
+    if (existsSync(HOST_CLAUDE_CONFIG_DIR)) {
+      args.push(
+        "--mount",
+        `type=bind,source=${HOST_CLAUDE_CONFIG_DIR},target=/seed-claude,readonly`,
+      );
+    }
+    const seedDirectory = this.prepareClaudeSeed(
+      resolve(this.runtimeDirectory, "providers", "claude"),
+    );
+    if (seedDirectory) {
+      args.push(
+        "--mount",
+        `type=bind,source=${seedDirectory},target=/seed-claude-json,readonly`,
+      );
     }
 
-    const setupScript =
-      provider.id === "codex"
-        ? [
-            'mkdir -p "$HOME" "$CODEX_HOME"',
-            'if [ -f /seed-codex/auth.json ] && [ ! -f "$CODEX_HOME/auth.json" ]; then cp /seed-codex/auth.json "$CODEX_HOME/auth.json"; fi',
-          ].join("; ")
-        : [
-            'mkdir -p "$HOME" "$CLAUDE_CONFIG_DIR"',
-            'if [ -f /seed-claude/.credentials.json ] && [ ! -f "$CLAUDE_CONFIG_DIR/.credentials.json" ]; then cp /seed-claude/.credentials.json "$CLAUDE_CONFIG_DIR/.credentials.json"; fi',
-            'if [ -f /seed-claude-json/.claude.json ] && [ ! -f "$HOME/.claude.json" ]; then cp /seed-claude-json/.claude.json "$HOME/.claude.json"; fi',
-          ].join("; ");
-    const execScript = `${setupScript}; exec ${command.map(shellEscape).join(" ")}`;
-
-    args.push(containerName, "sh", "-lc", execScript);
+    args.push(
+      provider.getImageName(),
+      "node",
+      "/usr/local/lib/acon/acon-agentd.mjs",
+    );
     return args;
   }
 
@@ -587,8 +705,9 @@ export class ContainerRuntimeManager implements RuntimeManager {
   ): Promise<void> {
     await this.ensureContainerSystemStarted();
     const state = this.getSharedContainerState();
-    if ((await this.inspectContainerStatus(state.containerName)) === "running") {
-      await this.ensureProviderBridge(provider, state);
+    const existingStatus = await this.inspectContainerStatus(state.containerName);
+    if (existingStatus === "running" && state.daemon) {
+      await state.daemon.readyPromise;
       logDesktop("desktop-runtime", "shared_container:reuse", {
         provider: provider.id,
         containerName: state.containerName,
@@ -603,12 +722,42 @@ export class ContainerRuntimeManager implements RuntimeManager {
 
     state.startupPromise = (async () => {
       state.ensuredSessions.clear();
+      if (existingStatus) {
+        logDesktop(
+          "desktop-runtime",
+          "shared_container:delete_before_start",
+          {
+            provider: provider.id,
+            containerName: state.containerName,
+            status: existingStatus,
+          },
+          "warn",
+        );
+        try {
+          await this.deleteProviderContainer(state.containerName, provider.id);
+        } catch (error) {
+          const previousContainerName = state.containerName;
+          const nextContainerName = this.rotateSharedContainerName(state);
+          logDesktop(
+            "desktop-runtime",
+            "shared_container:delete_failed_rotate_name",
+            {
+              provider: provider.id,
+              previousContainerName,
+              nextContainerName,
+              error: formatError(error),
+            },
+            "warn",
+          );
+        }
+      }
+      const managedWorkspace = this.ensureManagedWorkspaceInitialized();
       const providersDataDirectory = resolve(this.runtimeDirectory, "providers");
       mkdirSync(providersDataDirectory, { recursive: true });
       logDesktop("desktop-runtime", "shared_container:start_requested", {
         provider: provider.id,
         containerName: state.containerName,
-        workspaceDirectory: this.workspaceDirectory,
+        workspaceDirectory: managedWorkspace.rootPath,
         providersDataDirectory,
         imageName: provider.getImageName(),
       });
@@ -624,80 +773,207 @@ export class ContainerRuntimeManager implements RuntimeManager {
       this.lastRuntimeStatus = startingStatus;
       onStatus?.(startingStatus);
 
-      const args = [
-        "run",
-        "--detach",
-        "--rm",
-        "--name",
-        state.containerName,
-        "--workdir",
-        "/workspace",
-        "--volume",
-        `${providersDataDirectory}:/data/providers`,
-        "--volume",
-        `${this.workspaceDirectory}:/workspace`,
-      ];
-
-      if (existsSync(HOST_CODEX_HOME)) {
-        args.push(
-          "--mount",
-          `type=bind,source=${HOST_CODEX_HOME},target=/seed-codex,readonly`,
-        );
-      }
-
-      if (existsSync(HOST_CLAUDE_CONFIG_DIR)) {
-        args.push(
-          "--mount",
-          `type=bind,source=${HOST_CLAUDE_CONFIG_DIR},target=/seed-claude,readonly`,
-        );
-      }
-      const seedDirectory = this.prepareClaudeSeed(
-        resolve(this.runtimeDirectory, "providers", "claude"),
+      const args = this.buildProviderContainerRunArgs(
+        provider,
+        state,
+        managedWorkspace,
+        providersDataDirectory,
       );
-      if (seedDirectory) {
-        args.push(
-          "--mount",
-          `type=bind,source=${seedDirectory},target=/seed-claude-json,readonly`,
-        );
-      }
-
-      args.push(
-        provider.getImageName(),
-        "sh",
-        "-lc",
-        "while true; do sleep 3600; done",
+      const child = spawn(
+        this.containerCommand,
+        args,
+        {
+          cwd: this.workspaceDirectory,
+          stdio: ["pipe", "pipe", "pipe"],
+        },
       );
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
 
-      const start = await this.runCapturedCommand(args, {
-        timeoutMs: parseTimeoutMs(
-          process.env.DESKTOP_CONTAINER_RUN_TIMEOUT_MS,
-          DEFAULT_CONTAINER_COMMAND_TIMEOUT_MS,
-        ),
-        commandLabel: `container run ${state.containerName}`,
+      const daemon: ProviderDaemonState = {
+        child,
+        readyPromise: Promise.resolve(),
+        stdoutBuffer: "",
+        stderrBuffer: "",
+        pendingRequests: new Map(),
+      };
+
+      const readyPromise = new Promise<void>((resolvePromise, rejectPromise) => {
+        let ready = false;
+        const timeoutMs = parseTimeoutMs(
+          process.env.DESKTOP_CONTAINER_DAEMON_READY_TIMEOUT_MS,
+          DEFAULT_CONTAINER_DAEMON_READY_TIMEOUT_MS,
+        );
+        const readyTimeout = setTimeout(() => {
+          if (ready) {
+            return;
+          }
+          ready = true;
+          rejectPromise(
+            formatTimeoutError(
+              `container daemon startup for ${state.containerName}`,
+              timeoutMs,
+            ),
+          );
+        }, timeoutMs);
+        const fail = (error: unknown) => {
+          if (ready) {
+            logDesktop(
+              "desktop-runtime",
+              "provider_daemon:runtime_error",
+              {
+                provider: provider.id,
+                containerName: state.containerName,
+                error: formatError(error),
+              },
+              "warn",
+            );
+            return;
+          }
+          ready = true;
+          clearTimeout(readyTimeout);
+          rejectPromise(error instanceof Error ? error : new Error(formatError(error)));
+        };
+
+        child.on("error", fail);
+        child.on("exit", (code, signal) => {
+          if (state.daemon === daemon) {
+            this.stopProviderDaemon(state);
+          }
+          const detail = `Container daemon exited (code=${code}, signal=${signal}).`;
+          for (const [requestId, pending] of daemon.pendingRequests.entries()) {
+            pending.timer && clearTimeout(pending.timer);
+            pending.reject(
+              new Error(
+                daemon.stderrBuffer.trim()
+                  ? `${detail} ${daemon.stderrBuffer.trim()}`
+                  : detail,
+              ),
+            );
+            daemon.pendingRequests.delete(requestId);
+          }
+          fail(
+            new Error(
+              daemon.stderrBuffer.trim()
+                ? `${detail} ${daemon.stderrBuffer.trim()}`
+                : detail,
+            ),
+          );
+        });
+
+        child.stdout.on("data", (chunk: string) => {
+          if (state.daemon !== daemon) {
+            return;
+          }
+
+          daemon.stdoutBuffer += chunk;
+          while (true) {
+            const newlineIndex = daemon.stdoutBuffer.indexOf("\n");
+            if (newlineIndex === -1) {
+              break;
+            }
+
+            const line = daemon.stdoutBuffer.slice(0, newlineIndex).trim();
+            daemon.stdoutBuffer = daemon.stdoutBuffer.slice(newlineIndex + 1);
+            if (!line) {
+              continue;
+            }
+
+            let message: DaemonEnvelope;
+            try {
+              message = JSON.parse(line) as DaemonEnvelope;
+            } catch {
+              fail(new Error(`Container daemon returned invalid JSON: ${line}`));
+              continue;
+            }
+
+            if (message.type === "ready") {
+              if (!ready) {
+                ready = true;
+                clearTimeout(readyTimeout);
+                resolvePromise();
+              }
+              continue;
+            }
+
+            if (message.type === "request") {
+              void this.handleProviderDaemonRequest(state, message);
+              continue;
+            }
+
+            if (message.type === "response") {
+              const requestId =
+                typeof message.id === "string" ? message.id : null;
+              if (!requestId) {
+                continue;
+              }
+              const pending = daemon.pendingRequests.get(requestId);
+              if (!pending) {
+                continue;
+              }
+              daemon.pendingRequests.delete(requestId);
+              pending.timer && clearTimeout(pending.timer);
+              if (message.error?.message) {
+                pending.reject(new Error(message.error.message));
+              } else {
+                pending.resolve(message.result ?? null);
+              }
+              continue;
+            }
+
+            if (message.type === "notification") {
+              this.handleProviderDaemonNotification(message);
+              continue;
+            }
+
+            logDesktop(
+              "desktop-runtime",
+              "provider_daemon:unexpected_message",
+              {
+                provider: provider.id,
+                containerName: state.containerName,
+                message,
+              },
+              "warn",
+            );
+          }
+        });
+
+        child.stderr.on("data", (chunk: string) => {
+          if (state.daemon !== daemon) {
+            return;
+          }
+
+          daemon.stderrBuffer += chunk;
+          logDesktop(
+            "desktop-runtime",
+            "provider_daemon:stderr",
+            {
+              provider: provider.id,
+              containerName: state.containerName,
+              chunk: chunk.trim(),
+            },
+            "debug",
+          );
+        });
       });
-      if (start.code !== 0) {
-        throw new Error(
-          start.stderr?.trim() ||
-            start.stdout?.trim() ||
-            `Failed to start container ${state.containerName}.`,
-        );
+      daemon.readyPromise = readyPromise;
+      state.daemon = daemon;
+
+      try {
+        await readyPromise;
+      } catch (error) {
+        this.stopProviderDaemon(state);
+        throw error;
       }
 
-      const runningStatus = await this.inspectContainerStatus(state.containerName);
-      if (runningStatus !== "running") {
-        throw new Error(
-          `Container ${state.containerName} failed to reach running state.`,
-        );
-      }
-
-      await this.ensureProviderBridge(provider, state);
       logDesktop("desktop-runtime", "shared_container:started", {
         provider: provider.id,
         containerName: state.containerName,
-        workspaceDirectory: this.workspaceDirectory,
+        workspaceDirectory: managedWorkspace.rootPath,
         providersDataDirectory,
         imageName: provider.getImageName(),
-        status: runningStatus,
+        status: "running",
       });
     })();
 
@@ -708,205 +984,35 @@ export class ContainerRuntimeManager implements RuntimeManager {
     }
   }
 
-  private stopProviderBridge(state: ProviderContainerState): void {
-    const bridge = state.bridge;
-    state.bridge = null;
-    if (!bridge) {
+  private stopProviderDaemon(state: ProviderContainerState): void {
+    const daemon = state.daemon;
+    state.daemon = null;
+    if (!daemon) {
       return;
     }
 
-    bridge.child.stdin.end();
-    bridge.child.kill("SIGTERM");
-  }
-
-  private async ensureProviderBridge(
-    provider: DesktopProviderDefinition,
-    state = this.getSharedContainerState(),
-  ): Promise<void> {
-    if (state.bridge) {
-      await state.bridge.readyPromise;
-      return;
+    for (const [requestId, pending] of daemon.pendingRequests.entries()) {
+      pending.timer && clearTimeout(pending.timer);
+      pending.reject(new Error("Container daemon stopped before request completed."));
+      daemon.pendingRequests.delete(requestId);
     }
 
-    const args = this.buildExecArgs(
-      provider,
-      provider.getDefaultModel(),
-      state.containerName,
-      ["node", "/usr/local/lib/acon/acon-host-bridge.mjs"],
-      true,
-    );
-
-    const child = spawn(this.containerCommand, args, {
-      cwd: this.workspaceDirectory,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-
-    const bridge: ProviderBridgeState = {
-      child,
-      readyPromise: Promise.resolve(),
-      stdoutBuffer: "",
-      stderrBuffer: "",
-    };
-
-    const readyPromise = new Promise<void>((resolvePromise, rejectPromise) => {
-      let ready = false;
-      const timeoutMs = parseTimeoutMs(
-        process.env.DESKTOP_CONTAINER_BRIDGE_READY_TIMEOUT_MS,
-        DEFAULT_CONTAINER_BRIDGE_READY_TIMEOUT_MS,
-      );
-      const readyTimeout = setTimeout(() => {
-        if (ready) {
-          return;
-        }
-        ready = true;
-        rejectPromise(
-          formatTimeoutError(
-            `container bridge startup for ${state.containerName}`,
-            timeoutMs,
-          ),
-        );
-      }, timeoutMs);
-      const fail = (error: unknown) => {
-        if (ready) {
-          logDesktop(
-            "desktop-runtime",
-            "provider_bridge:runtime_error",
-            {
-              provider: provider.id,
-              containerName: state.containerName,
-              error: formatError(error),
-            },
-            "warn",
-          );
-          return;
-        }
-        ready = true;
-        clearTimeout(readyTimeout);
-        rejectPromise(error instanceof Error ? error : new Error(formatError(error)));
-      };
-
-      child.on("error", fail);
-      child.on("exit", (code, signal) => {
-        state.bridge = null;
-        const detail = `Bridge process exited (code=${code}, signal=${signal}).`;
-        fail(
-          new Error(
-            bridge.stderrBuffer.trim()
-              ? `${detail} ${bridge.stderrBuffer.trim()}`
-              : detail,
-          ),
-        );
-      });
-
-      child.stdout.on("data", (chunk: string) => {
-        if (state.bridge !== bridge) {
-          return;
-        }
-
-        bridge.stdoutBuffer += chunk;
-        while (true) {
-          const newlineIndex = bridge.stdoutBuffer.indexOf("\n");
-          if (newlineIndex === -1) {
-            break;
-          }
-
-          const line = bridge.stdoutBuffer.slice(0, newlineIndex).trim();
-          bridge.stdoutBuffer = bridge.stdoutBuffer.slice(newlineIndex + 1);
-          if (!line) {
-            continue;
-          }
-
-          let message: HostRpcRequest;
-          try {
-            message = JSON.parse(line) as HostRpcRequest;
-          } catch {
-            fail(new Error(`Bridge returned invalid JSON: ${line}`));
-            continue;
-          }
-
-          if (message.type === "ready") {
-            if (!ready) {
-              ready = true;
-              clearTimeout(readyTimeout);
-              resolvePromise();
-            }
-            continue;
-          }
-
-          if (message.type !== "request") {
-            logDesktop(
-              "desktop-runtime",
-              "provider_bridge:unexpected_message",
-              {
-                provider: provider.id,
-                containerName: state.containerName,
-                message,
-              },
-              "warn",
-            );
-            continue;
-          }
-
-          void this.handleProviderBridgeRequest(provider, state, message);
-        }
-      });
-
-      child.stderr.on("data", (chunk: string) => {
-        if (state.bridge !== bridge) {
-          return;
-        }
-
-        bridge.stderrBuffer += chunk;
-        logDesktop(
-          "desktop-runtime",
-          "provider_bridge:stderr",
-          {
-            provider: provider.id,
-            containerName: state.containerName,
-            chunk: chunk.trim(),
-          },
-          "debug",
-        );
-      });
-    });
-
-    bridge.readyPromise = readyPromise;
-    state.bridge = bridge;
-
-    try {
-      await readyPromise;
-    } catch (error) {
-      this.stopProviderBridge(state);
-      throw error;
-    }
+    daemon.child.stdin.end();
+    daemon.child.kill("SIGTERM");
   }
 
-  private async handleProviderBridgeRequest(
-    provider: DesktopProviderDefinition,
+  private async handleProviderDaemonRequest(
     state: ProviderContainerState,
-    message: HostRpcRequest,
+    message: DaemonEnvelope,
   ): Promise<void> {
     const id = typeof message.id === "string" ? message.id : null;
     if (!id) {
-      logDesktop(
-        "desktop-runtime",
-        "provider_bridge:request_missing_id",
-        {
-          provider: provider.id,
-          containerName: state.containerName,
-          message,
-        },
-        "warn",
-      );
       return;
     }
 
-    let response: HostRpcResponse;
+    let response: DaemonEnvelope;
     try {
-      const result = await this.executeProviderBridgeMethod(
-        provider,
+      const result = await this.executeProviderDaemonMethod(
         state,
         typeof message.method === "string" ? message.method : "",
         message.params,
@@ -927,30 +1033,125 @@ export class ContainerRuntimeManager implements RuntimeManager {
       };
     }
 
-    const bridge = state.bridge;
-    if (!bridge || bridge.child.stdin.destroyed) {
+    const daemon = state.daemon;
+    if (!daemon || daemon.child.stdin.destroyed) {
       return;
     }
 
-    bridge.child.stdin.write(`${JSON.stringify(response)}\n`);
+    daemon.child.stdin.write(`${JSON.stringify(response)}\n`);
   }
 
-  private async executeProviderBridgeMethod(
-    provider: DesktopProviderDefinition,
+  private handleProviderDaemonNotification(message: DaemonEnvelope): void {
+    const method = typeof message.method === "string" ? message.method : "";
+    const params =
+      message.params && typeof message.params === "object"
+        ? (message.params as Record<string, unknown>)
+        : null;
+    if (!params) {
+      return;
+    }
+
+    if (method === "session.runtime_event") {
+      const sessionName =
+        typeof params.sessionName === "string" ? params.sessionName : "";
+      for (const listener of this.activePromptListeners.get(sessionName) ?? []) {
+        listener.onRuntimeEvent?.(params.event);
+      }
+      return;
+    }
+
+    if (method === "session.delta") {
+      const sessionName =
+        typeof params.sessionName === "string" ? params.sessionName : "";
+      const delta = typeof params.delta === "string" ? params.delta : "";
+      if (delta) {
+        for (const listener of this.activePromptListeners.get(sessionName) ?? []) {
+          listener.onDelta?.(delta);
+        }
+      }
+    }
+  }
+
+  private addActivePromptListener(
+    sessionName: string,
+    listener: ActivePromptListener,
+  ): void {
+    const listeners = this.activePromptListeners.get(sessionName) ?? new Set();
+    listeners.add(listener);
+    this.activePromptListeners.set(sessionName, listeners);
+  }
+
+  private removeActivePromptListener(
+    sessionName: string,
+    listener: ActivePromptListener,
+  ): void {
+    const listeners = this.activePromptListeners.get(sessionName);
+    if (!listeners) {
+      return;
+    }
+    listeners.delete(listener);
+    if (listeners.size === 0) {
+      this.activePromptListeners.delete(sessionName);
+    }
+  }
+
+  private async callProviderDaemon(
+    state: ProviderContainerState,
+    method: string,
+    params: unknown,
+    options: {
+      timeoutMs?: number;
+    } = {},
+  ): Promise<unknown> {
+    const daemon = state.daemon;
+    if (!daemon || daemon.child.stdin.destroyed) {
+      throw new Error("Container daemon is not ready.");
+    }
+
+    const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    return await new Promise<unknown>((resolvePromise, rejectPromise) => {
+      const timeoutMs =
+        typeof options.timeoutMs === "number"
+          ? options.timeoutMs
+          : DEFAULT_DAEMON_REQUEST_TIMEOUT_MS;
+      const timer =
+        timeoutMs > 0
+          ? setTimeout(() => {
+              daemon.pendingRequests.delete(requestId);
+              rejectPromise(formatTimeoutError(`container daemon ${method}`, timeoutMs));
+            }, timeoutMs)
+          : null;
+      daemon.pendingRequests.set(requestId, {
+        resolve: resolvePromise,
+        reject: rejectPromise,
+        timer,
+      });
+      daemon.child.stdin.write(
+        `${JSON.stringify({
+          type: "request",
+          id: requestId,
+          method,
+          params,
+        })}\n`,
+      );
+    });
+  }
+
+  private async executeProviderDaemonMethod(
     state: ProviderContainerState,
     method: string,
     params: unknown,
   ): Promise<unknown> {
     switch (method) {
-      case "ping":
+      case "ping": {
         return {
           ok: true,
-          provider: provider.id,
           containerName: state.containerName,
           now: new Date().toISOString(),
           pid: process.pid,
           params: params ?? null,
         };
+      }
       case "fetch":
         return await this.executeProviderBridgeFetch(params);
       case "mcp.request":
@@ -1160,141 +1361,92 @@ export class ContainerRuntimeManager implements RuntimeManager {
     provider: DesktopProviderDefinition,
     threadId: string,
     model: string,
+    sessionId?: string | null,
   ): Promise<void> {
     try {
-      await this.ensurePromptSessionOnce(provider, threadId, model);
+      await this.ensurePromptSessionOnce(provider, threadId, model, sessionId);
     } catch (error) {
-      if (!isRecoverableContainerExecError(error)) {
+      if (!isRecoverableRuntimeError(error)) {
         throw error;
       }
 
       await this.restartProviderContainer(provider);
-      await this.ensurePromptSessionOnce(provider, threadId, model);
+      await this.ensurePromptSessionOnce(provider, threadId, model, sessionId);
     }
+  }
+
+  async cancelPrompt({
+    provider,
+    threadId,
+    model,
+  }: CancelContainerPromptOptions): Promise<void> {
+    await this.ensureRuntime(provider);
+    await this.ensureContainerSystemStarted();
+    const state = this.getSharedContainerState();
+    const sessionName = `${provider.id}-${threadId}`;
+    await this.callProviderDaemon(state, "session.cancel", {
+      provider: provider.id,
+      sessionName,
+      model,
+    }, {
+      timeoutMs: parseTimeoutMs(
+        process.env.DESKTOP_CONTAINER_EXEC_TIMEOUT_MS,
+        30_000,
+      ),
+    });
   }
 
   private async ensurePromptSessionOnce(
     provider: DesktopProviderDefinition,
     threadId: string,
     model: string,
+    sessionId?: string | null,
   ): Promise<void> {
     await this.ensureContainerSystemStarted();
     const state = this.getSharedContainerState();
     const sessionName = `${provider.id}-${threadId}`;
-    if (state.ensuredSessions.get(sessionName) === model) {
+    const sessionKey = `${model}:${sessionId?.trim() || ""}`;
+    if (state.ensuredSessions.get(sessionName) === sessionKey) {
       return;
     }
 
-    const args = this.buildExecArgs(
-      provider,
+    await this.callProviderDaemon(state, "session.ensure", {
+      provider: provider.id,
+      sessionName,
       model,
-      state.containerName,
-      [
-        "acpx",
-        "--json-strict",
-        "--format",
-        "json",
-        "--approve-all",
-        "--cwd",
-        "/workspace",
-        provider.id,
-        "sessions",
-        "ensure",
-        "--name",
-        sessionName,
-      ],
-    );
-
-    const ensureResult = await this.runCapturedCommand(args, {
-      cwd: this.workspaceDirectory,
+      sessionId: sessionId ?? null,
+    }, {
       timeoutMs: parseTimeoutMs(
         process.env.DESKTOP_CONTAINER_EXEC_TIMEOUT_MS,
         120_000,
       ),
-      commandLabel: `acpx sessions ensure ${sessionName}`,
     });
-    if (ensureResult.code !== 0) {
-      throw new Error(
-        ensureResult.stderr?.trim() ||
-          ensureResult.stdout?.trim() ||
-          `Failed to ensure ACPX session ${sessionName}.`,
-      );
-    }
 
-    const jsonLines = ensureResult.stdout
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-    const finalLine = jsonLines.at(-1);
-    if (!finalLine) {
-      throw new Error(`ACPX session ensure for ${sessionName} returned no output.`);
-    }
-
-    let message: any;
-    try {
-      message = JSON.parse(finalLine);
-    } catch {
-      throw new Error(`ACPX session ensure returned non-JSON output: ${finalLine}`);
-    }
-
-    if (message.error) {
-      throw new Error(
-        typeof message.error?.message === "string"
-          ? message.error.message
-          : JSON.stringify(message.error),
-      );
-    }
-
-    const setModelArgs = this.buildExecArgs(
-      provider,
-      model,
-      state.containerName,
-      [
-        "acpx",
-        "--json-strict",
-        "--format",
-        "json",
-        "--approve-all",
-        "--cwd",
-        "/workspace",
-        provider.id,
-        "set",
-        "--session",
-        sessionName,
-        "model",
-        model,
-      ],
-    );
-
-    const setModelResult = await this.runCapturedCommand(setModelArgs, {
-      cwd: this.workspaceDirectory,
-      timeoutMs: parseTimeoutMs(
-        process.env.DESKTOP_CONTAINER_EXEC_TIMEOUT_MS,
-        120_000,
-      ),
-      commandLabel: `acpx set model ${sessionName}`,
-    });
-    if (setModelResult.code !== 0) {
-      throw new Error(
-        setModelResult.stderr?.trim() ||
-          setModelResult.stdout?.trim() ||
-          `Failed to set ACPX session model ${model} for ${sessionName}.`,
-      );
-    }
-
-    state.ensuredSessions.set(sessionName, model);
+    state.ensuredSessions.set(sessionName, sessionKey);
   }
 
   private prepareClaudeSeed(runtimeDataDirectory: string): string | null {
-    if (!existsSync(HOST_CLAUDE_JSON_PATH)) {
+    const hostCredentialsJson = getHostClaudeCredentialsJson();
+    if (!existsSync(HOST_CLAUDE_JSON_PATH) && !hostCredentialsJson) {
       return null;
     }
 
     const seedDirectory = getClaudeJsonSeedDirectory(runtimeDataDirectory);
     mkdirSync(seedDirectory, { recursive: true });
-    cpSync(HOST_CLAUDE_JSON_PATH, resolve(seedDirectory, ".claude.json"), {
-      force: true,
-    });
+    if (existsSync(HOST_CLAUDE_JSON_PATH)) {
+      cpSync(HOST_CLAUDE_JSON_PATH, resolve(seedDirectory, ".claude.json"), {
+        force: true,
+      });
+    }
+    if (hostCredentialsJson) {
+      writeFileSync(
+        resolve(seedDirectory, ".credentials.json"),
+        hostCredentialsJson,
+        "utf8",
+      );
+    } else {
+      rmSync(resolve(seedDirectory, ".credentials.json"), { force: true });
+    }
     return seedDirectory;
   }
 
@@ -1309,7 +1461,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
     onRuntimeEvent,
   }: StreamContainerPromptOptions): Promise<StreamContainerPromptResult> {
     await this.ensureRuntime(provider);
-    await this.ensurePromptSession(provider, threadId, model);
+    await this.ensurePromptSession(provider, threadId, model, sessionId);
 
     try {
       return await this.streamPromptOnce({
@@ -1323,12 +1475,12 @@ export class ContainerRuntimeManager implements RuntimeManager {
         onRuntimeEvent,
       });
     } catch (error) {
-      if (!isRecoverableContainerExecError(error)) {
+      if (!isRecoverableRuntimeError(error)) {
         throw error;
       }
 
       await this.restartProviderContainer(provider);
-      await this.ensurePromptSessionOnce(provider, threadId, model);
+      await this.ensurePromptSessionOnce(provider, threadId, model, sessionId);
       return this.streamPromptOnce({
         provider,
         threadId,
@@ -1356,166 +1508,50 @@ export class ContainerRuntimeManager implements RuntimeManager {
     mkdirSync(this.getThreadStateDirectory(threadId), { recursive: true });
     const state = this.getSharedContainerState();
     const sessionName = `${provider.id}-${threadId}`;
-    const args = this.buildExecArgs(
-      provider,
-      model,
-      state.containerName,
-      [
-        "acpx",
-        "--json-strict",
-        "--format",
-        "json",
-        "--approve-all",
-        "--model",
-        model,
-        "--ttl",
-        "0",
-        "--cwd",
-        "/workspace",
-        provider.id,
-        "prompt",
-        "--session",
+    const promptListener =
+      onDelta || onRuntimeEvent
+        ? {
+            onDelta,
+            onRuntimeEvent,
+          }
+        : null;
+    if (promptListener) {
+      this.addActivePromptListener(sessionName, promptListener);
+    }
+
+    try {
+      const result = await this.callProviderDaemon(state, "session.prompt", {
+        provider: provider.id,
         sessionName,
-        "--file",
-        "-",
-      ],
-      true,
-    );
-
-    const child = spawn(this.containerCommand, args, {
-      cwd: this.workspaceDirectory,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-
-    let stderr = "";
-    let stdoutBuffer = "";
-    let accumulatedText = "";
-    let resolvedSessionId = "";
-    let stopReason: string | null = null;
-
-    const resultPromise = new Promise<StreamContainerPromptResult>((resolvePromise, rejectPromise) => {
-      let settled = false;
-
-      const rejectOnce = (error: unknown) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        child.kill("SIGTERM");
-        rejectPromise(error instanceof Error ? error : new Error(formatError(error)));
+        content,
+        model,
+        sessionId: sessionId ?? null,
+      }, {
+        timeoutMs: 0,
+      }) as {
+        sessionId?: string;
+        finalText?: string;
+        stopReason?: string | null;
       };
 
-      const resolveOnce = () => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        resolvePromise({
-          finalText: accumulatedText,
-          model,
-          sessionId: resolvedSessionId || `${provider.id}-${threadId}-${Date.now()}`,
-        });
+      const resolvedSessionId =
+        typeof result?.sessionId === "string" && result.sessionId.trim()
+          ? result.sessionId.trim()
+          : typeof sessionId === "string" && sessionId.trim()
+            ? sessionId.trim()
+          : `${provider.id}-${threadId}-${Date.now()}`;
+      onSessionId?.(resolvedSessionId);
+      return {
+        finalText: typeof result?.finalText === "string" ? result.finalText : "",
+        model,
+        sessionId: resolvedSessionId,
+        stopReason:
+          typeof result?.stopReason === "string" ? result.stopReason : null,
       };
-
-      child.stderr.on("data", (chunk) => {
-        stderr += chunk.toString("utf8");
-      });
-
-      child.stdout.on("data", (chunk) => {
-        stdoutBuffer += chunk.toString("utf8");
-        while (true) {
-          const newlineIndex = stdoutBuffer.indexOf("\n");
-          if (newlineIndex === -1) {
-            break;
-          }
-
-          const line = stdoutBuffer.slice(0, newlineIndex).trim();
-          stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
-          if (!line) {
-            continue;
-          }
-
-          let message: any;
-          try {
-            message = JSON.parse(line);
-          } catch {
-            rejectOnce(new Error(`Container returned non-JSON output: ${line}`));
-            return;
-          }
-
-          if (message.error) {
-            rejectOnce(
-              new Error(
-                typeof message.error?.message === "string"
-                  ? message.error.message
-                  : JSON.stringify(message.error),
-              ),
-            );
-            return;
-          }
-
-          if (
-            message.result &&
-            typeof message.result.sessionId === "string" &&
-            message.result.sessionId.length > 0
-          ) {
-            resolvedSessionId = message.result.sessionId;
-            onSessionId?.(resolvedSessionId);
-            continue;
-          }
-
-          if (message.method === "session/update") {
-            const text = extractAcpChunkText(message.params?.update);
-            if (text) {
-              accumulatedText += text;
-              onDelta?.(text);
-            }
-            onRuntimeEvent?.(message);
-            continue;
-          }
-
-          if (message.result && typeof message.result.stopReason === "string") {
-            stopReason = message.result.stopReason;
-            resolveOnce();
-            return;
-          }
-        }
-      });
-
-      child.on("error", rejectOnce);
-      child.on("exit", (code, signal) => {
-        if (settled) {
-          return;
-        }
-
-        if (code === 0 && (accumulatedText || stopReason)) {
-          resolveOnce();
-          return;
-        }
-
-        logDesktop(
-          "desktop-runtime",
-          "container_exit",
-          {
-            provider: provider.id,
-            threadId,
-            containerName: state.containerName,
-            code,
-            signal,
-            stderr,
-          },
-          "warn",
-        );
-        rejectOnce(
-          new Error(
-            stderr.trim() ||
-              `Container exited before completion (code=${code}, signal=${signal}).`,
-          ),
-        );
-      });
-    });
-
-    child.stdin.end(`${content}\n`);
-    return resultPromise;
+    } finally {
+      if (promptListener) {
+        this.removeActivePromptListener(sessionName, promptListener);
+      }
+    }
   }
 }

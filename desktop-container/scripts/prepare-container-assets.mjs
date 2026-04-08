@@ -33,7 +33,6 @@ const vendorContainerLibexecPath = resolve(
   "desktop-container/vendor/apple-container/libexec/container",
 );
 const defaultCliVersions = {
-  acpx: "0.5.2",
   codex: "0.118.0",
   claude: "2.1.45",
 };
@@ -42,7 +41,6 @@ const stateFilePath = resolve(
   "desktop-container/.local/container-assets-state.json",
 );
 const cliPackageSpecs = {
-  acpx: `acpx@${process.env.DESKTOP_ACPX_IMAGE_VERSION?.trim() || defaultCliVersions.acpx}`,
   codex: `@openai/codex@${
     process.env.DESKTOP_CODEX_IMAGE_VERSION?.trim() || defaultCliVersions.codex
   }`,
@@ -54,8 +52,9 @@ const cliPackageSpecs = {
 const imageBuilds = [
   {
     id: "acpx",
-    label: "Shared ACPX",
+    label: "Shared agent runtime",
     imageName:
+      process.env.DESKTOP_CONTAINER_AGENT_IMAGE?.trim() ||
       process.env.DESKTOP_CONTAINER_ACPX_IMAGE?.trim() || "acon-desktop-acpx:0.1",
     buildContext: resolve(repoRoot, "desktop-container/container-images"),
   },
@@ -130,6 +129,9 @@ function sha1Directory(rootPath) {
       left.name.localeCompare(right.name),
     );
     for (const entry of entries) {
+      if (entry.name === ".git" || entry.name === "target") {
+        continue;
+      }
       const entryPath = resolve(current, entry.name);
       hash.update(entryPath.slice(rootPath.length));
       if (entry.isDirectory()) {
@@ -323,7 +325,6 @@ function installHostCliPrefix(destinationDirectory) {
     "--no-fund",
     "--os=linux",
     "--cpu=arm64",
-    cliPackageSpecs.acpx,
     cliPackageSpecs.codex,
     cliPackageSpecs.claude,
   ], {

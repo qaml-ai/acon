@@ -85,12 +85,16 @@ vi.mock("@/components/prompt-input", () => ({
     value,
     onChange,
     onSubmit,
+    onStop,
     placeholder,
+    isAssistantRunning,
   }: {
     value: string;
     onChange: (value: string) => void;
     onSubmit: () => void;
+    onStop?: () => void;
     placeholder?: string;
+    isAssistantRunning?: boolean;
   }) => (
     <div>
       <textarea
@@ -102,6 +106,11 @@ vi.mock("@/components/prompt-input", () => ({
       <button onClick={onSubmit} type="button">
         Send
       </button>
+      {isAssistantRunning && onStop ? (
+        <button onClick={onStop} type="button">
+          Stop
+        </button>
+      ) : null}
     </div>
   ),
 }));
@@ -1031,5 +1040,82 @@ describe("desktop container renderer streaming", () => {
     expect(toolUse.textContent).toContain("TodoWrite");
     expect(toolUse.textContent).toContain("Investigate");
     expect(toolUse.textContent).toContain("Fix it");
+  });
+
+  it("sends a normal message even while a turn is streaming", async () => {
+    const snapshot = createSnapshot();
+    snapshot.messagesByThread["thread-1"] = [
+      {
+        id: "assistant-streaming",
+        threadId: "thread-1",
+        role: "assistant",
+        content: "Working...",
+        createdAt: Date.now(),
+        status: "streaming",
+      },
+    ];
+
+    const { shell } = await renderAppWithShell(snapshot);
+
+    fireEvent.change(screen.getByLabelText("Prompt input"), {
+      target: { value: "follow up after this" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(shell.sendEvent).toHaveBeenCalledWith({
+      type: "send_message",
+      threadId: "thread-1",
+      content: "follow up after this",
+    });
+  });
+
+  it("sends /steer content as a normal message", async () => {
+    const snapshot = createSnapshot();
+    snapshot.messagesByThread["thread-1"] = [
+      {
+        id: "assistant-streaming",
+        threadId: "thread-1",
+        role: "assistant",
+        content: "Working...",
+        createdAt: Date.now(),
+        status: "streaming",
+      },
+    ];
+
+    const { shell } = await renderAppWithShell(snapshot);
+
+    fireEvent.change(screen.getByLabelText("Prompt input"), {
+      target: { value: "/steer focus on the failing login test" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(shell.sendEvent).toHaveBeenCalledWith({
+      type: "send_message",
+      threadId: "thread-1",
+      content: "/steer focus on the failing login test",
+    });
+  });
+
+  it("sends stop_thread when the composer stop button is pressed", async () => {
+    const snapshot = createSnapshot();
+    snapshot.messagesByThread["thread-1"] = [
+      {
+        id: "assistant-streaming",
+        threadId: "thread-1",
+        role: "assistant",
+        content: "Working...",
+        createdAt: Date.now(),
+        status: "streaming",
+      },
+    ];
+
+    const { shell } = await renderAppWithShell(snapshot);
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+
+    expect(shell.sendEvent).toHaveBeenCalledWith({
+      type: "stop_thread",
+      threadId: "thread-1",
+    });
   });
 });

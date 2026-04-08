@@ -20,7 +20,7 @@
     "probe:codex": "DESKTOP_PROVIDER_OVERRIDE=codex node desktop-container/scripts/probe-turn.mjs",
     "probe": "node desktop-container/scripts/probe-turn.mjs",
     "start": "NODE_OPTIONS='--import tsx/esm' bun x electron desktop-container/electron/main.mjs",
-    "test:integration": "RUN_DESKTOP_CONTAINER_INTEGRATION=1 bun x vitest run tests/desktop-container-acpx.integration.test.ts",
+    "test:integration": "RUN_DESKTOP_CONTAINER_INTEGRATION=1 bun x vitest run tests/desktop-container-agentd.integration.test.ts",
     "test": "bun x vitest",
     "test:run": "bun x vitest run",
     "test:renderer": "bun x vitest run tests/desktop-container-app-streaming.test.tsx"

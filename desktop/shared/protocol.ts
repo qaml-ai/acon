@@ -248,6 +248,10 @@ export type DesktopClientEvent =
       content: string;
     }
   | {
+      type: "stop_thread";
+      threadId: string;
+    }
+  | {
       type: "set_provider";
       provider: DesktopProvider;
     }

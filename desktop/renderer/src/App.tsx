@@ -75,6 +75,7 @@ type HostSurfaceComponentProps = {
   onDraftChange: (threadId: string | null, draft: string) => void;
   onSetProvider: (provider: DesktopProvider) => void;
   onSetModel: (model: string) => void;
+  onStopThread: (threadId: string) => void;
   onSubmitMessage: (threadId: string, content: string) => void;
 };
 
@@ -357,6 +358,7 @@ function Composer({
   onDraftChange,
   onSetProvider,
   onSetModel,
+  onStopThread,
   onSubmitMessage,
 }: {
   availableProviders: DesktopSnapshot["availableProviders"];
@@ -369,6 +371,7 @@ function Composer({
   onDraftChange: (threadId: string | null, draft: string) => void;
   onSetProvider: (provider: DesktopProvider) => void;
   onSetModel: (model: string) => void;
+  onStopThread: (threadId: string) => void;
   onSubmitMessage: (threadId: string, content: string) => void;
 }) {
   const [draft, setDraft] = useState(initialDraft);
@@ -384,11 +387,11 @@ function Composer({
   }, [activeThreadId, onDraftChange]);
 
   const handleSubmit = useCallback(() => {
-    if (!activeThreadId || !draft.trim() || isStreaming) return;
+    if (!activeThreadId || !draft.trim()) return;
     onSubmitMessage(activeThreadId, draft);
     setDraft("");
     onDraftChange(activeThreadId, "");
-  }, [activeThreadId, draft, isStreaming, onDraftChange, onSubmitMessage]);
+  }, [activeThreadId, draft, onDraftChange, onSubmitMessage]);
 
   return (
     <div className="flex flex-col gap-2">
@@ -434,6 +437,7 @@ function Composer({
         value={draft}
         onChange={handleChange}
         onSubmit={handleSubmit}
+        onStop={activeThreadId ? () => onStopThread(activeThreadId) : undefined}
         placeholder="Type a message..."
         isAssistantRunning={isStreaming}
         textareaRef={composerTextareaRef}
@@ -455,6 +459,7 @@ const MemoizedComposer = memo(
     prev.onDraftChange === next.onDraftChange &&
     prev.onSetProvider === next.onSetProvider &&
     prev.onSetModel === next.onSetModel &&
+    prev.onStopThread === next.onStopThread &&
     prev.onSubmitMessage === next.onSubmitMessage,
 );
 
@@ -515,6 +520,7 @@ function ChatThreadView({
   onDraftChange,
   onSetProvider,
   onSetModel,
+  onStopThread,
   onSubmitMessage,
 }: Pick<
   HostSurfaceComponentProps,
@@ -526,6 +532,7 @@ function ChatThreadView({
   | "onDraftChange"
   | "onSetProvider"
   | "onSetModel"
+  | "onStopThread"
   | "onSubmitMessage"
 >) {
   const currentTodos = useMemo(() => extractLatestTodos(rawMessages), [rawMessages]);
@@ -561,6 +568,7 @@ function ChatThreadView({
                 onDraftChange={onDraftChange}
                 onSetProvider={onSetProvider}
                 onSetModel={onSetModel}
+                onStopThread={onStopThread}
                 onSubmitMessage={onSubmitMessage}
               />
             </div>
@@ -1545,6 +1553,13 @@ export function App() {
     });
   }, [sendEvent]);
 
+  const handleStopThread = useCallback((threadId: string) => {
+    sendEvent({
+      type: "stop_thread",
+      threadId,
+    });
+  }, [sendEvent]);
+
   useEffect(() => {
     const handleWindowKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing) {
@@ -1614,6 +1629,7 @@ export function App() {
     onDraftChange: handleDraftChange,
     onSetProvider: handleSetProvider,
     onSetModel: handleSetModel,
+    onStopThread: handleStopThread,
     onSubmitMessage: handleSubmitMessage,
   } : null;
 
@@ -1628,6 +1644,7 @@ export function App() {
     onDraftChange: handleDraftChange,
     onSetProvider: handleSetProvider,
     onSetModel: handleSetModel,
+    onStopThread: handleStopThread,
     onSubmitMessage: handleSubmitMessage,
   } : null;
 

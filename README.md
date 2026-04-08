@@ -2,7 +2,7 @@
 
 Standalone repository for the Apple `container` backed camelAI desktop app.
 
-This repo keeps the local Electron shell and shared desktop renderer, and runs chats inside Apple `container` VMs through ACPX-backed Codex and Claude providers.
+This repo keeps the local Electron shell and shared desktop renderer, and runs chats inside Apple `container` VMs through a small daemon-backed runtime for Codex and Claude.
 
 ## Commands
 
