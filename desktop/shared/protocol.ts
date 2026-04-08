@@ -63,6 +63,42 @@ export interface DesktopPluginWebviewContribution {
   entrypoint: string;
 }
 
+export type DesktopPluginPermission = "host-mcp";
+
+export type DesktopPluginSettingFieldType =
+  | "boolean"
+  | "number"
+  | "secret"
+  | "select"
+  | "string";
+
+export interface DesktopPluginSettingFieldOption {
+  label: string;
+  value: string;
+}
+
+export interface DesktopPluginSettingFieldRecord {
+  id: string;
+  type: DesktopPluginSettingFieldType;
+  label: string;
+  description: string | null;
+  required: boolean;
+  options: DesktopPluginSettingFieldOption[];
+}
+
+export interface DesktopPluginSettingsRecord {
+  description: string | null;
+  fields: DesktopPluginSettingFieldRecord[];
+}
+
+export interface DesktopPluginCompatibility {
+  currentApiVersion: number;
+  declaredApiVersion: number;
+  minApiVersion: number;
+  compatible: boolean;
+  reason: string | null;
+}
+
 export interface DesktopPluginRecord {
   id: string;
   name: string;
@@ -70,9 +106,13 @@ export interface DesktopPluginRecord {
   description: string | null;
   source: "builtin" | "user";
   enabled: boolean;
+  disableable: boolean;
   path: string;
   main: string | null;
   webviews: DesktopPluginWebviewContribution[];
+  permissions: DesktopPluginPermission[];
+  settings: DesktopPluginSettingsRecord | null;
+  compatibility: DesktopPluginCompatibility;
   capabilities: {
     views: DesktopPluginViewContribution[];
     panels: DesktopPluginPanelContribution[];
@@ -261,6 +301,11 @@ export type DesktopClientEvent =
     }
   | {
       type: "refresh_plugins";
+    }
+  | {
+      type: "set_plugin_enabled";
+      pluginId: string;
+      enabled: boolean;
     }
   | {
       type: "ping";
