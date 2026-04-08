@@ -88,6 +88,7 @@ export class DesktopService {
         this.installStdioHostMcpServer(server, workspaceDirectory),
       uninstallInstalledHostMcpServer: (serverId) =>
         this.uninstallInstalledHostMcpServer(serverId),
+      isPluginEnabled: (pluginId) => this.store.isPluginEnabled(pluginId),
     });
     const provider = this.getCurrentProvider();
     const model = this.getCurrentModel(provider);
@@ -328,6 +329,10 @@ export class DesktopService {
         void this.handleRefreshPlugins();
         return;
       }
+      case "set_plugin_enabled": {
+        void this.handleSetPluginEnabled(event.pluginId, event.enabled);
+        return;
+      }
       case "send_message": {
         void this.sendThreadTurn(event.threadId, event.content);
         return;
@@ -436,6 +441,30 @@ export class DesktopService {
       });
       this.emitSnapshot();
     }
+  }
+
+  private async handleSetPluginEnabled(
+    pluginId: string,
+    enabled: boolean,
+  ): Promise<void> {
+    const plugin = this.getSnapshot().plugins.find((entry) => entry.id === pluginId);
+    if (!plugin) {
+      this.broadcast({
+        type: "error",
+        message: `Plugin ${pluginId} does not exist.`,
+      });
+      return;
+    }
+    if (!plugin.disableable) {
+      this.broadcast({
+        type: "error",
+        message: `Plugin ${plugin.name} cannot be disabled.`,
+      });
+      return;
+    }
+
+    this.store.setPluginEnabled(pluginId, enabled);
+    await this.handleRefreshPlugins();
   }
 
   private activateDefaultThreadView(threadId: string): boolean {

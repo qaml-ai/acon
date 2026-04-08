@@ -52,6 +52,7 @@ interface PersistedState {
       >
     >
   >;
+  pluginEnabledById?: Record<string, boolean>;
   threads: DesktopThread[];
   messagesByThread: Record<string, DesktopMessage[]>;
 }
@@ -238,6 +239,14 @@ export class DesktopStore {
           }),
         ),
         providerStateByThread,
+        pluginEnabledById:
+          parsed.pluginEnabledById && typeof parsed.pluginEnabledById === 'object'
+            ? Object.fromEntries(
+                Object.entries(parsed.pluginEnabledById).flatMap(([pluginId, enabled]) =>
+                  typeof enabled === 'boolean' ? [[pluginId, enabled]] : [],
+                ),
+              )
+            : {},
         threads,
         messagesByThread: parsed.messagesByThread ?? {},
       };
@@ -254,6 +263,7 @@ export class DesktopStore {
         },
         threadPanelStateById: {},
         providerStateByThread: {},
+        pluginEnabledById: {},
         threads: [],
         messagesByThread: {},
       };
@@ -401,6 +411,21 @@ export class DesktopStore {
 
   getProvider(): DesktopProvider {
     return this.state.provider;
+  }
+
+  isPluginEnabled(pluginId: string): boolean {
+    return this.state.pluginEnabledById?.[pluginId] !== false;
+  }
+
+  setPluginEnabled(pluginId: string, enabled: boolean): void {
+    const next = { ...(this.state.pluginEnabledById ?? {}) };
+    if (enabled) {
+      delete next[pluginId];
+    } else {
+      next[pluginId] = false;
+    }
+    this.state.pluginEnabledById = next;
+    this.persist();
   }
 
   setProvider(provider: DesktopProvider): void {

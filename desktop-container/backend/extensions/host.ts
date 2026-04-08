@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
   DesktopPanel,
+  DesktopPluginPermission,
   DesktopPluginRecord,
   DesktopView,
 } from "../../../desktop/shared/protocol";
@@ -16,8 +17,11 @@ import {
   type CamelAIHarnessAdapterInfo,
 } from "./harness-adapters";
 import { createAgentExtensionThreadStateStore } from "./thread-state";
+import { CAMELAI_CURRENT_API_VERSION } from "./types";
 import type {
   CamelAIActivationContext,
+  CamelAIDisposable,
+  CamelAIDisposableLike,
   CamelAIBeforePromptResult,
   CamelAIEvent,
   CamelAIEventContext,
@@ -37,24 +41,56 @@ import type {
 
 const extensionHostDirectory = dirname(fileURLToPath(import.meta.url));
 const backendDirectory = resolve(extensionHostDirectory, "..");
-const BUILTIN_EXTENSION_DIRECTORY = resolve(
-  process.env.DESKTOP_BUILTIN_PLUGIN_DIR ||
-    resolve(backendDirectory, "..", "plugins", "builtin"),
-);
-const USER_EXTENSION_DIRECTORY = resolve(
-  process.env.DESKTOP_DATA_DIR || resolve(backendDirectory, "..", ".local"),
-  "plugins",
-);
-const DEFAULT_EXTENSION_DIRECTORIES = [
-  { path: BUILTIN_EXTENSION_DIRECTORY, builtin: true },
-  { path: USER_EXTENSION_DIRECTORY, builtin: false },
-].filter((entry) => Boolean(entry.path));
+function resolveFirstExistingDirectory(candidates: string[]): string {
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate) && isDirectory(candidate)) {
+      return candidate;
+    }
+  }
+  return candidates[0] ?? "";
+}
+
+function getExtensionDirectories(): Array<{ path: string; builtin: boolean }> {
+  return [
+    {
+      path: resolveFirstExistingDirectory([
+        process.env.DESKTOP_BUILTIN_PLUGIN_DIR?.trim() || "",
+        resolve(backendDirectory, "..", "plugins", "builtin"),
+        resolve(process.cwd(), "desktop-container", "plugins", "builtin"),
+      ]),
+      builtin: true,
+    },
+    {
+      path: resolve(
+        process.env.DESKTOP_DATA_DIR || resolve(backendDirectory, "..", ".local"),
+        "plugins",
+      ),
+      builtin: false,
+    },
+  ].filter((entry) => Boolean(entry.path));
+}
 const BUILTIN_EXTENSION_MODULES: Record<string, CamelAIExtensionModule> = {
   "chat-core": builtinChatCore as unknown as CamelAIExtensionModule,
   "extension-lab": builtinExtensionLab as unknown as CamelAIExtensionModule,
   "host-mcp-manager": builtinHostMcpManager as unknown as CamelAIExtensionModule,
   "thread-journal": builtinThreadJournal as unknown as CamelAIExtensionModule,
 };
+const VALID_PLUGIN_PERMISSIONS = new Set<DesktopPluginPermission>(["host-mcp"]);
+
+export interface CamelAIExtensionHostOptions {
+  registerHostMcpServer?: (registration: CamelAIHostMcpServerRegistration) => void;
+  unregisterHostMcpServer?: (serverId: string) => void;
+  listInstalledHostMcpServers?: () => CamelAIPersistedHostMcpServerRecord[];
+  installStdioHostMcpServer?: (
+    server: CamelAIInstallStdioHostMcpServerOptions,
+    workspaceDirectory: string,
+  ) => CamelAIInstallHostMcpServerResult;
+  uninstallInstalledHostMcpServer?: (serverId: string) => boolean;
+  isPluginEnabled?: (
+    pluginId: string,
+    plugin: DiscoveredCamelAIExtension,
+  ) => boolean;
+}
 
 export interface CamelAIExtensionHostOptions {
   registerHostMcpServer?: (registration: CamelAIHostMcpServerRegistration) => void;
@@ -79,6 +115,108 @@ function readJson(path: string): Record<string, unknown> {
   return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
 }
 
+function normalizePositiveInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? value
+    : undefined;
+}
+
+function parsePluginPermissions(value: unknown): DesktopPluginPermission[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((entry) =>
+    typeof entry === "string" && VALID_PLUGIN_PERMISSIONS.has(entry as DesktopPluginPermission)
+      ? [entry as DesktopPluginPermission]
+      : [],
+  );
+}
+
+function parseSettingsSchema(value: unknown): CamelAIManifest["settings"] | undefined {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const raw = value as {
+    description?: unknown;
+    fields?: unknown;
+  };
+  const fields =
+    raw.fields && typeof raw.fields === "object"
+      ? Object.fromEntries(
+          Object.entries(raw.fields as Record<string, unknown>).flatMap(
+            ([fieldId, fieldValue]) => {
+              if (!fieldValue || typeof fieldValue !== "object") {
+                return [];
+              }
+              const field = fieldValue as {
+                type?: unknown;
+                label?: unknown;
+                description?: unknown;
+                required?: unknown;
+                options?: unknown;
+              };
+              if (
+                typeof field.type !== "string" ||
+                !["boolean", "number", "secret", "select", "string"].includes(
+                  field.type,
+                ) ||
+                typeof field.label !== "string"
+              ) {
+                return [];
+              }
+
+              const options = Array.isArray(field.options)
+                ? field.options.flatMap((option) => {
+                    if (!option || typeof option !== "object") {
+                      return [];
+                    }
+                    const rawOption = option as {
+                      label?: unknown;
+                      value?: unknown;
+                    };
+                    return typeof rawOption.label === "string" &&
+                        typeof rawOption.value === "string"
+                      ? [
+                          {
+                            label: rawOption.label,
+                            value: rawOption.value,
+                          },
+                        ]
+                      : [];
+                  })
+                : [];
+
+              return [
+                [
+                  fieldId,
+                  {
+                    type: field.type,
+                    label: field.label,
+                    description:
+                      typeof field.description === "string"
+                        ? field.description
+                        : undefined,
+                    required: field.required === true,
+                    options,
+                  },
+                ],
+              ];
+            },
+          ),
+        )
+      : {};
+
+  return {
+    description:
+      typeof raw.description === "string" ? raw.description : undefined,
+    fields,
+  };
+}
+
 function getEntrypoint(
   extensionPath: string,
   packageJson: Record<string, unknown>,
@@ -96,7 +234,7 @@ function getEntrypoint(
 function discoverExtensions(): DiscoveredCamelAIExtension[] {
   const discovered: DiscoveredCamelAIExtension[] = [];
 
-  for (const root of DEFAULT_EXTENSION_DIRECTORIES) {
+  for (const root of getExtensionDirectories()) {
     if (!existsSync(root.path) || !isDirectory(root.path)) {
       continue;
     }
@@ -146,10 +284,18 @@ function discoverExtensions(): DiscoveredCamelAIExtension[] {
             typeof rawManifest.icon === "string" ? rawManifest.icon : undefined,
           main:
             typeof rawManifest.main === "string" ? rawManifest.main : undefined,
-          settings:
-            typeof rawManifest.settings === "string"
-              ? rawManifest.settings
+          apiVersion:
+            normalizePositiveInteger(rawManifest.apiVersion) ??
+            CAMELAI_CURRENT_API_VERSION,
+          minApiVersion:
+            normalizePositiveInteger(rawManifest.minApiVersion) ??
+            CAMELAI_CURRENT_API_VERSION,
+          permissions: parsePluginPermissions(rawManifest.permissions),
+          disableable:
+            typeof rawManifest.disableable === "boolean"
+              ? rawManifest.disableable
               : undefined,
+          settings: parseSettingsSchema(rawManifest.settings),
           webviews:
             rawManifest.webviews && typeof rawManifest.webviews === "object"
               ? Object.fromEntries(
@@ -204,6 +350,42 @@ function resolveWebviewEntrypoint(
   return resolve(extension.extensionPath, webviewPath);
 }
 
+function getCompatibilityError(manifest: CamelAIManifest): string | null {
+  const declaredApiVersion =
+    manifest.apiVersion ?? CAMELAI_CURRENT_API_VERSION;
+  const minApiVersion = manifest.minApiVersion ?? declaredApiVersion;
+
+  if (minApiVersion > CAMELAI_CURRENT_API_VERSION) {
+    return `Requires plugin API v${minApiVersion}, but the host only supports v${CAMELAI_CURRENT_API_VERSION}.`;
+  }
+  if (declaredApiVersion > CAMELAI_CURRENT_API_VERSION) {
+    return `Targets plugin API v${declaredApiVersion}, but the host only supports v${CAMELAI_CURRENT_API_VERSION}.`;
+  }
+  return null;
+}
+
+function createDisposable(callback: () => void | Promise<void>): CamelAIDisposable {
+  let disposed = false;
+  return {
+    async dispose() {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      await callback();
+    },
+  };
+}
+
+function normalizeDisposable(
+  disposable: CamelAIDisposableLike,
+): CamelAIDisposable {
+  if (typeof disposable === "function") {
+    return createDisposable(disposable);
+  }
+  return createDisposable(() => disposable.dispose());
+}
+
 export class CamelAIExtensionHost {
   private readonly options: CamelAIExtensionHostOptions;
   private readonly records = new Map<string, CamelAIRuntimeRecord>();
@@ -225,16 +407,76 @@ export class CamelAIExtensionHost {
 
     const created: CamelAIRuntimeRecord = {
       discovered,
+      enabled: this.options.isPluginEnabled?.(discovered.id, discovered) ?? true,
       activated: false,
       activationError: null,
+      compatibilityError: getCompatibilityError(discovered.manifest),
       views: new Map(),
       panels: new Map(),
       commands: new Map(),
       tools: new Map(),
       handlers: new Map(),
+      disposables: [],
+      deactivate: null,
+      registeredHostMcpServerIds: new Set(),
     };
     this.records.set(discovered.id, created);
     return created;
+  }
+
+  private registerRecordDisposable(
+    record: CamelAIRuntimeRecord,
+    disposable: CamelAIDisposableLike,
+  ): CamelAIDisposable {
+    const normalized = normalizeDisposable(disposable);
+    record.disposables.push(normalized);
+    return normalized;
+  }
+
+  private pluginHasPermission(
+    record: CamelAIRuntimeRecord,
+    permission: DesktopPluginPermission,
+  ): boolean {
+    return (
+      record.discovered.manifest.permissions?.includes(permission) ?? false
+    );
+  }
+
+  private assertPluginPermission(
+    record: CamelAIRuntimeRecord,
+    permission: DesktopPluginPermission,
+  ): void {
+    if (this.pluginHasPermission(record, permission)) {
+      return;
+    }
+    throw new Error(
+      `Plugin ${record.discovered.id} must declare the '${permission}' permission.`,
+    );
+  }
+
+  private async deactivateRecord(record: CamelAIRuntimeRecord): Promise<void> {
+    const explicitDeactivate = record.deactivate;
+    record.deactivate = null;
+
+    try {
+      if (explicitDeactivate) {
+        await explicitDeactivate();
+      }
+    } finally {
+      const disposables = [...record.disposables].reverse();
+      record.disposables = [];
+      for (const disposable of disposables) {
+        await disposable.dispose();
+      }
+
+      record.views.clear();
+      record.panels.clear();
+      record.commands.clear();
+      record.tools.clear();
+      record.handlers.clear();
+      record.registeredHostMcpServerIds.clear();
+      record.activated = false;
+    }
   }
 
   async initialize(context: CamelAIActivationContext): Promise<void> {
@@ -264,6 +506,9 @@ export class CamelAIExtensionHost {
       }
     }
 
+    for (const record of this.records.values()) {
+      await this.deactivateRecord(record);
+    }
     this.records.clear();
     this.initialized = false;
     this.loadGeneration += 1;
@@ -316,32 +561,73 @@ export class CamelAIExtensionHost {
     return {
       pluginId,
       harnessAdapters,
+      registerDisposable: (disposable) =>
+        this.registerRecordDisposable(record, disposable),
       on: (event, handler) => {
         const handlers = record.handlers.get(event) ?? [];
         handlers.push(handler);
         record.handlers.set(event, handlers);
+        return this.registerRecordDisposable(record, () => {
+          const registeredHandlers = record.handlers.get(event) ?? [];
+          const nextHandlers = registeredHandlers.filter(
+            (entry) => entry !== handler,
+          );
+          if (nextHandlers.length === 0) {
+            record.handlers.delete(event);
+            return;
+          }
+          record.handlers.set(event, nextHandlers);
+        });
       },
       registerView: (id, view) => {
         record.views.set(id, view);
+        return this.registerRecordDisposable(record, () => {
+          record.views.delete(id);
+        });
       },
       registerPanel: (id, panel) => {
         record.panels.set(id, panel);
+        return this.registerRecordDisposable(record, () => {
+          record.panels.delete(id);
+        });
       },
       registerCommand: (id, command) => {
         record.commands.set(id, command);
+        return this.registerRecordDisposable(record, () => {
+          record.commands.delete(id);
+        });
       },
       registerTool: (id, tool) => {
         record.tools.set(id, tool);
+        return this.registerRecordDisposable(record, () => {
+          record.tools.delete(id);
+        });
       },
       registerHostMcpServer: (registration) => {
+        this.assertPluginPermission(record, "host-mcp");
         this.options.registerHostMcpServer?.(registration);
+        record.registeredHostMcpServerIds.add(registration.id);
+        return this.registerRecordDisposable(record, () => {
+          if (!record.registeredHostMcpServerIds.delete(registration.id)) {
+            return;
+          }
+          this.options.unregisterHostMcpServer?.(registration.id);
+        });
       },
       unregisterHostMcpServer: (serverId) => {
-        this.options.unregisterHostMcpServer?.(serverId);
+        this.assertPluginPermission(record, "host-mcp");
+        const registered = record.registeredHostMcpServerIds.delete(serverId);
+        if (registered) {
+          this.options.unregisterHostMcpServer?.(serverId);
+        }
+        return registered;
       },
-      listInstalledHostMcpServers: () =>
-        this.options.listInstalledHostMcpServers?.() ?? [],
+      listInstalledHostMcpServers: () => {
+        this.assertPluginPermission(record, "host-mcp");
+        return this.options.listInstalledHostMcpServers?.() ?? [];
+      },
       installStdioHostMcpServer: (server) => {
+        this.assertPluginPermission(record, "host-mcp");
         if (!this.options.installStdioHostMcpServer) {
           throw new Error("Host MCP installation is unavailable.");
         }
@@ -350,8 +636,10 @@ export class CamelAIExtensionHost {
           context.workspaceDirectory,
         );
       },
-      uninstallInstalledHostMcpServer: (serverId) =>
-        this.options.uninstallInstalledHostMcpServer?.(serverId) ?? false,
+      uninstallInstalledHostMcpServer: (serverId) => {
+        this.assertPluginPermission(record, "host-mcp");
+        return this.options.uninstallInstalledHostMcpServer?.(serverId) ?? false;
+      },
       threadState: (threadId = context.activeThreadId) =>
         this.createThreadState(pluginId, threadId ?? null, context),
     };
@@ -361,6 +649,11 @@ export class CamelAIExtensionHost {
     record: CamelAIRuntimeRecord,
     context: CamelAIActivationContext,
   ): Promise<void> {
+    if (!record.enabled || record.compatibilityError) {
+      record.activated = false;
+      record.activationError = null;
+      return;
+    }
     if (record.activated || record.activationError) {
       return;
     }
@@ -389,11 +682,21 @@ export class CamelAIExtensionHost {
       }
 
       if (typeof module.activate === "function") {
-        await module.activate(this.createApi(record, context));
+        const activationResult = await module.activate(
+          this.createApi(record, context),
+        );
+        if (activationResult) {
+          const disposable = normalizeDisposable(activationResult);
+          record.disposables.push(disposable);
+        }
+      }
+      if (typeof module.deactivate === "function") {
+        record.deactivate = () => module.deactivate?.();
       }
       record.activated = true;
       record.activationError = null;
     } catch (error) {
+      await this.deactivateRecord(record);
       record.activated = false;
       record.activationError =
         error instanceof Error ? error.message : String(error);
@@ -402,13 +705,37 @@ export class CamelAIExtensionHost {
 
   private createPluginRecord(record: CamelAIRuntimeRecord): DesktopPluginRecord {
     const { discovered } = record;
+    const settings =
+      typeof discovered.manifest.settings === "string"
+        ? {
+            description: discovered.manifest.settings,
+            fields: [],
+          }
+        : discovered.manifest.settings
+          ? {
+              description: discovered.manifest.settings.description ?? null,
+              fields: Object.entries(discovered.manifest.settings.fields).map(
+                ([fieldId, field]) => ({
+                  id: fieldId,
+                  type: field.type,
+                  label: field.label,
+                  description: field.description ?? null,
+                  required: field.required === true,
+                  options: field.options ?? [],
+                }),
+              ),
+            }
+          : null;
+
     return {
       id: discovered.id,
       name: discovered.manifest.name ?? discovered.id,
       version: discovered.packageVersion,
       description: discovered.manifest.description ?? null,
       source: discovered.builtin ? "builtin" : "user",
-      enabled: true,
+      enabled: record.enabled,
+      disableable:
+        discovered.manifest.disableable ?? !discovered.builtin,
       path: discovered.extensionPath,
       main: discovered.entryPath,
       webviews: Object.entries(discovered.manifest.webviews ?? {}).map(
@@ -417,6 +744,19 @@ export class CamelAIExtensionHost {
           entrypoint: resolveWebviewEntrypoint(discovered, id) ?? entrypoint,
         }),
       ),
+      permissions: discovered.manifest.permissions ?? [],
+      settings,
+      compatibility: {
+        currentApiVersion: CAMELAI_CURRENT_API_VERSION,
+        declaredApiVersion:
+          discovered.manifest.apiVersion ?? CAMELAI_CURRENT_API_VERSION,
+        minApiVersion:
+          discovered.manifest.minApiVersion ??
+          discovered.manifest.apiVersion ??
+          CAMELAI_CURRENT_API_VERSION,
+        compatible: !record.compatibilityError,
+        reason: record.compatibilityError,
+      },
       capabilities: {
         views: Array.from(record.views.entries()).map(([id, view]) => ({
           id,
