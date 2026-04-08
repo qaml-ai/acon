@@ -77,6 +77,7 @@ type HostSurfaceComponentProps = {
   onSetModel: (model: string) => void;
   onStopThread: (threadId: string) => void;
   onSubmitMessage: (threadId: string, content: string) => void;
+  onSendEvent: (event: DesktopClientEvent) => void;
 };
 
 function getActiveThread(
@@ -582,7 +583,8 @@ function ChatThreadView({
 function ExtensionCatalogPane({
   snapshot,
   mode = "full",
-}: Pick<HostSurfaceComponentProps, "snapshot" | "mode">) {
+  onSendEvent,
+}: Pick<HostSurfaceComponentProps, "snapshot" | "mode" | "onSendEvent">) {
   const [isInstallingPlugin, setIsInstallingPlugin] = useState(false);
   const [installFeedback, setInstallFeedback] = useState<{
     tone: "success" | "error";
@@ -633,6 +635,17 @@ function ExtensionCatalogPane({
       });
     }
   }, []);
+
+  const handleSetPluginEnabled = useCallback(
+    (pluginId: string, enabled: boolean) => {
+      onSendEvent({
+        type: "set_plugin_enabled",
+        pluginId,
+        enabled,
+      });
+    },
+    [onSendEvent],
+  );
 
   return (
     <div className="flex min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
@@ -722,6 +735,21 @@ function ExtensionCatalogPane({
                     plugin.runtime.subscribedEvents.length > 0
                       ? plugin.runtime.subscribedEvents.join(", ")
                       : null;
+                  const permissionSummary =
+                    plugin.permissions.length > 0
+                      ? plugin.permissions.join(", ")
+                      : null;
+                  const settingsSummary =
+                    plugin.settings && plugin.settings.fields.length > 0
+                      ? plugin.settings.fields.map((field) => field.id).join(", ")
+                      : null;
+                  const stateLabel = !plugin.enabled
+                    ? "disabled"
+                    : !plugin.compatibility.compatible
+                      ? "incompatible"
+                      : plugin.runtime.activated
+                        ? "activated"
+                        : "discovered";
 
                   return (
                     <div key={plugin.id} className="space-y-3 px-3 py-3 sm:px-4">
@@ -732,11 +760,19 @@ function ExtensionCatalogPane({
                             <Badge variant="secondary">{plugin.source}</Badge>
                             <Badge
                               variant={
-                                plugin.runtime.activated ? "secondary" : "outline"
+                                plugin.enabled && plugin.compatibility.compatible
+                                  ? "secondary"
+                                  : "outline"
                               }
                             >
-                              {plugin.runtime.activated ? "activated" : "discovered"}
+                              {stateLabel}
                             </Badge>
+                            <Badge variant="outline">
+                              {plugin.disableable ? "manageable" : "protected"}
+                            </Badge>
+                            {!plugin.compatibility.compatible ? (
+                              <Badge variant="destructive">api mismatch</Badge>
+                            ) : null}
                             {plugin.runtime.activationError ? (
                               <Badge variant="destructive">activation error</Badge>
                             ) : null}
@@ -745,9 +781,22 @@ function ExtensionCatalogPane({
                             {plugin.description ?? "No plugin description yet."}
                           </CardDescription>
                         </div>
-                        <p className="shrink-0 text-xs text-muted-foreground">
-                          v{plugin.version}
-                        </p>
+                        <div className="flex shrink-0 items-center gap-2 self-start">
+                          <p className="text-xs text-muted-foreground">
+                            v{plugin.version}
+                          </p>
+                          {plugin.disableable ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                handleSetPluginEnabled(plugin.id, !plugin.enabled);
+                              }}
+                            >
+                              {plugin.enabled ? "Disable" : "Enable"}
+                            </Button>
+                          ) : null}
+                        </div>
                       </div>
 
                       <div className="grid gap-3 text-sm xl:grid-cols-[minmax(0,1fr)_minmax(18rem,28rem)]">
@@ -776,9 +825,32 @@ function ExtensionCatalogPane({
                               </span>
                             </p>
                           ) : null}
+
+                          {permissionSummary ? (
+                            <p className="text-sm leading-relaxed text-muted-foreground">
+                              Permissions:{" "}
+                              <span className="break-words text-foreground">
+                                {permissionSummary}
+                              </span>
+                            </p>
+                          ) : null}
+
+                          {settingsSummary ? (
+                            <p className="text-sm leading-relaxed text-muted-foreground">
+                              Settings fields:{" "}
+                              <span className="break-words text-foreground">
+                                {settingsSummary}
+                              </span>
+                            </p>
+                          ) : null}
                         </div>
 
                         <div className="space-y-1 rounded-md border border-border/70 bg-muted/20 px-3 py-2">
+                          <p className="text-xs leading-relaxed text-muted-foreground">
+                            API v{plugin.compatibility.declaredApiVersion} · min v
+                            {plugin.compatibility.minApiVersion} · host v
+                            {plugin.compatibility.currentApiVersion}
+                          </p>
                           <p className="break-all font-mono text-xs leading-relaxed text-foreground">
                             {plugin.id}
                           </p>
@@ -787,6 +859,15 @@ function ExtensionCatalogPane({
                           </p>
                         </div>
                       </div>
+
+                      {!plugin.compatibility.compatible ? (
+                        <Alert variant="destructive">
+                          <AlertTitle>Compatibility issue</AlertTitle>
+                          <AlertDescription className="break-words">
+                            {plugin.compatibility.reason}
+                          </AlertDescription>
+                        </Alert>
+                      ) : null}
 
                       {plugin.runtime.activationError ? (
                         <Alert variant="destructive">
@@ -1631,6 +1712,7 @@ export function App() {
     onSetModel: handleSetModel,
     onStopThread: handleStopThread,
     onSubmitMessage: handleSubmitMessage,
+    onSendEvent: sendEvent,
   } : null;
 
   const activePanelProps = snapshot && activeThreadPanel ? {
@@ -1646,6 +1728,7 @@ export function App() {
     onSetModel: handleSetModel,
     onStopThread: handleStopThread,
     onSubmitMessage: handleSubmitMessage,
+    onSendEvent: sendEvent,
   } : null;
 
   return (

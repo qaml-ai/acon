@@ -69,6 +69,7 @@ describe("DesktopService", () => {
       panels: [],
       plugins: [],
     });
+    vi.spyOn(CamelAIExtensionHost.prototype, "refresh").mockResolvedValue(undefined);
     vi.spyOn(CamelAIExtensionHost.prototype, "applyBeforePrompt").mockImplementation(
       async (_threadId: string, content: string) => ({
         cancelled: false,
@@ -332,5 +333,69 @@ describe("DesktopService", () => {
     expect(
       existsSync(resolve(serverDirectory, "workspace-server.json")),
     ).toBe(false);
+  });
+
+  it("persists plugin enabled state changes and refreshes the extension host", async () => {
+    vi.spyOn(CamelAIExtensionHost.prototype, "getSnapshot").mockReturnValue({
+      views: [],
+      panels: [],
+      plugins: [
+        {
+          id: "user-plugin",
+          name: "User Plugin",
+          version: "0.1.0",
+          description: null,
+          source: "user",
+          enabled: true,
+          disableable: true,
+          path: "/tmp/user-plugin",
+          main: "/tmp/user-plugin/index.mjs",
+          webviews: [],
+          permissions: [],
+          settings: null,
+          compatibility: {
+            currentApiVersion: 1,
+            declaredApiVersion: 1,
+            minApiVersion: 1,
+            compatible: true,
+            reason: null,
+          },
+          capabilities: {
+            views: [],
+            panels: [],
+            commands: [],
+            tools: [],
+          },
+          runtime: {
+            activated: true,
+            activationError: null,
+            subscribedEvents: [],
+            registeredViewIds: [],
+            registeredPanelIds: [],
+            registeredCommandIds: [],
+            registeredToolIds: [],
+          },
+        },
+      ],
+    });
+
+    const { runtime } = createRuntimeManagerStub();
+    const service = new DesktopService(runtime);
+
+    service.handleClientEvent({
+      type: "set_plugin_enabled",
+      pluginId: "user-plugin",
+      enabled: false,
+    });
+
+    await vi.waitFor(() => {
+      const persisted = JSON.parse(
+        readFileSync(resolve(sandboxDataDir, "state.json"), "utf8"),
+      ) as {
+        pluginEnabledById?: Record<string, boolean>;
+      };
+      expect(persisted.pluginEnabledById?.["user-plugin"]).toBe(false);
+      expect(CamelAIExtensionHost.prototype.refresh).toHaveBeenCalled();
+    });
   });
 });
