@@ -1,6 +1,6 @@
 export type CamelAIHarness = "opencode" | "claude-code" | "codex";
 export const CAMELAI_PLUGIN_API_VERSION = 1;
-export type CamelAIPermission = "host-mcp";
+export type CamelAIPermission = "host-mcp" | "serve-mcp";
 export type CamelAISettingFieldType =
   | "boolean"
   | "number"
@@ -122,14 +122,40 @@ export interface CamelAIToolRegistration<TParams = unknown, TResult = unknown> {
   ) => Promise<TResult>;
 }
 
+export interface CamelAIMcpServerSessionContext {
+  pluginId: string;
+  serverId: string;
+  sessionId: string;
+  harness: CamelAIHarness;
+  activeThreadId: string | null;
+  runtimeStatus: {
+    state: string;
+    detail: string;
+    runtimeDirectory?: string | null;
+  };
+  runtimeDirectory: string | null;
+  workspaceDirectory: string;
+  threadState(threadId?: string | null): CamelAIThreadStateStore;
+}
+
 export interface CamelAIHostMcpSessionServer {
   connect(transport: any): Promise<void>;
   close(): Promise<void>;
 }
 
-export interface CamelAIHostMcpServerRegistration {
+export interface CamelAIMcpServerRegistration {
+  name?: string;
+  version?: string;
+  description?: string;
+  createServer: (
+    context: CamelAIMcpServerSessionContext,
+  ) => CamelAIHostMcpSessionServer;
+}
+
+/** @deprecated Use CamelAIMcpServerRegistration with registerMcpServer(id, registration). */
+export interface CamelAIHostMcpServerRegistration
+  extends CamelAIMcpServerRegistration {
   id: string;
-  createServer: () => CamelAIHostMcpSessionServer;
 }
 
 export interface CamelAIHostMcpOAuthConfig {
@@ -226,9 +252,16 @@ export interface CamelAIActivationApi {
     id: string,
     tool: CamelAIToolRegistration<TParams, TResult>,
   ): CamelAIDisposable;
+  registerMcpServer(
+    id: string,
+    registration: CamelAIMcpServerRegistration,
+  ): CamelAIDisposable;
+  unregisterMcpServer(serverId: string): boolean;
+  /** @deprecated Use registerMcpServer(id, registration). */
   registerHostMcpServer(
     registration: CamelAIHostMcpServerRegistration,
   ): CamelAIDisposable;
+  /** @deprecated Use unregisterMcpServer(serverId). */
   unregisterHostMcpServer(serverId: string): boolean;
   listInstalledHostMcpServers(): CamelAIPersistedHostMcpServerRecord[];
   installStdioHostMcpServer(

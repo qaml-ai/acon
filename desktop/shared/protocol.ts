@@ -63,7 +63,7 @@ export interface DesktopPluginWebviewContribution {
   entrypoint: string;
 }
 
-export type DesktopPluginPermission = "host-mcp";
+export type DesktopPluginPermission = "host-mcp" | "serve-mcp";
 
 export type DesktopPluginSettingFieldType =
   | "boolean"

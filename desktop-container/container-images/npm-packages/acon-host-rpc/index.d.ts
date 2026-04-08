@@ -72,6 +72,11 @@ export interface HostRpcFetchResponse {
 
 export interface HostMcpServerSummary {
   id: string;
+  name: string | null;
+  version: string | null;
+  description: string | null;
+  pluginId: string | null;
+  source: "host" | "plugin";
 }
 
 export interface HostMcpToolSummary {
