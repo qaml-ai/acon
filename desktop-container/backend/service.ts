@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 import { DesktopStore } from "./store";
 import { logDesktop } from "../../desktop/backend/log";
 import type {
@@ -24,6 +25,15 @@ import {
 import { CamelAIExtensionHost } from "./extensions/host";
 import { getHarnessAdapterForProvider } from "./extensions/harness-adapters";
 import type { HostMcpServerRegistration } from "./host-mcp";
+import {
+  createPersistedHostMcpServerRegistration,
+  installPersistedHostMcpServer,
+  listPersistedHostMcpServers,
+  uninstallPersistedHostMcpServer,
+  type PersistedHostMcpInstallResult,
+  type PersistedHostMcpServerRecord,
+  type PersistedHostMcpStdioInstallOptions,
+} from "./persisted-host-mcp";
 
 type Listener = (event: DesktopServerEvent) => void;
 
@@ -52,7 +62,8 @@ function extractProviderSessionIdFromRuntimeEvent(
 export class DesktopService {
   private readonly store = new DesktopStore();
   private readonly runtimeManager: RuntimeManager;
-  private readonly extensionHost = new CamelAIExtensionHost();
+  private readonly dataDirectory: string;
+  private readonly extensionHost: CamelAIExtensionHost;
   private readonly activeThreadRuns = new Map<string, ActiveThreadRun>();
   private readonly listeners = new Set<Listener>();
   private runtimeStatus: DesktopRuntimeStatus;
@@ -60,7 +71,24 @@ export class DesktopService {
 
   constructor(runtimeManager: RuntimeManager = new ContainerRuntimeManager()) {
     this.runtimeManager = runtimeManager;
+    this.dataDirectory =
+      process.env.DESKTOP_DATA_DIR?.trim() ||
+      resolve(this.runtimeManager.getRuntimeDirectory(), "..", "data");
     this.runtimeStatus = this.runtimeManager.getCachedStatus();
+    this.loadPersistedHostMcpServers();
+    this.extensionHost = new CamelAIExtensionHost({
+      registerHostMcpServer: (registration) => {
+        this.registerHostMcpServer(registration);
+      },
+      unregisterHostMcpServer: (serverId) => {
+        this.unregisterHostMcpServer(serverId);
+      },
+      listInstalledHostMcpServers: () => this.listInstalledHostMcpServers(),
+      installStdioHostMcpServer: (server, workspaceDirectory) =>
+        this.installStdioHostMcpServer(server, workspaceDirectory),
+      uninstallInstalledHostMcpServer: (serverId) =>
+        this.uninstallInstalledHostMcpServer(serverId),
+    });
     const provider = this.getCurrentProvider();
     const model = this.getCurrentModel(provider);
     logDesktop("desktop-service", "init", {
@@ -105,6 +133,39 @@ export class DesktopService {
     this.runtimeManager.unregisterHostMcpServer(serverId);
   }
 
+  listInstalledHostMcpServers(): PersistedHostMcpServerRecord[] {
+    return listPersistedHostMcpServers({
+      dataDirectory: this.dataDirectory,
+      workspaceDirectory: this.runtimeManager.getWorkspaceDirectory(),
+    });
+  }
+
+  installStdioHostMcpServer(
+    server: PersistedHostMcpStdioInstallOptions,
+    workspaceDirectory = this.runtimeManager.getWorkspaceDirectory(),
+  ): PersistedHostMcpInstallResult {
+    const installed = installPersistedHostMcpServer({
+      dataDirectory: this.dataDirectory,
+      workspaceDirectory,
+      server,
+    });
+    this.runtimeManager.registerHostMcpServer(
+      createPersistedHostMcpServerRegistration(installed),
+    );
+    return installed;
+  }
+
+  uninstallInstalledHostMcpServer(serverId: string): boolean {
+    const removed = uninstallPersistedHostMcpServer({
+      dataDirectory: this.dataDirectory,
+      serverId,
+    });
+    if (removed) {
+      this.runtimeManager.unregisterHostMcpServer(serverId);
+    }
+    return removed;
+  }
+
   emitSnapshot(listener?: Listener): void {
     const event: DesktopServerEvent = {
       type: "snapshot",
@@ -146,6 +207,14 @@ export class DesktopService {
 
   private getRuntimeStatus(): DesktopRuntimeStatus {
     return this.runtimeStatus;
+  }
+
+  private loadPersistedHostMcpServers(): void {
+    for (const server of this.listInstalledHostMcpServers()) {
+      this.runtimeManager.registerHostMcpServer(
+        createPersistedHostMcpServerRegistration(server),
+      );
+    }
   }
 
   private getExtensionActivationContext() {

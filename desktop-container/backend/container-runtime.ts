@@ -5,6 +5,7 @@ import {
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -496,6 +497,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
   private ensureManagedWorkspaceInitialized(): ManagedWorkspaceState {
     const state = this.getManagedWorkspaceState();
     if (existsSync(state.rootPath)) {
+      chmodSync(state.rootPath, 0o777);
       if (!existsSync(state.metadataPath)) {
         this.writeManagedWorkspaceMetadata(state, "empty");
       }
@@ -503,6 +505,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
     }
 
     mkdirSync(state.rootPath, { recursive: true });
+    chmodSync(state.rootPath, 0o777);
     this.writeManagedWorkspaceMetadata(state, "empty");
     logDesktop("desktop-runtime", "managed_workspace:initialized", {
       workspaceId: state.id,
@@ -754,6 +757,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
       const managedWorkspace = this.ensureManagedWorkspaceInitialized();
       const providersDataDirectory = resolve(this.runtimeDirectory, "providers");
       mkdirSync(providersDataDirectory, { recursive: true });
+      chmodSync(providersDataDirectory, 0o777);
       logDesktop("desktop-runtime", "shared_container:start_requested", {
         provider: provider.id,
         containerName: state.containerName,

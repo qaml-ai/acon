@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,6 +18,8 @@ function createRuntimeManagerStub() {
     reject: (error: unknown) => void;
   }> = [];
 
+  const registerHostMcpServer = vi.fn();
+  const unregisterHostMcpServer = vi.fn();
   const runtime: RuntimeManager = {
     getWorkspaceDirectory: () => "/workspace",
     getRuntimeDirectory: () => "/runtime",
@@ -27,8 +29,8 @@ function createRuntimeManagerStub() {
       detail: "Runtime ready",
       helperPath: null,
     }),
-    registerHostMcpServer: () => {},
-    unregisterHostMcpServer: () => {},
+    registerHostMcpServer,
+    unregisterHostMcpServer,
     dispose: () => {},
     ensureRuntime: vi.fn(async () => ({
       state: "running",
@@ -47,6 +49,8 @@ function createRuntimeManagerStub() {
     pendingPrompts,
     streamPrompt: runtime.streamPrompt as ReturnType<typeof vi.fn>,
     cancelPrompt: runtime.cancelPrompt as ReturnType<typeof vi.fn>,
+    registerHostMcpServer,
+    unregisterHostMcpServer,
   };
 }
 
@@ -250,5 +254,83 @@ describe("DesktopService", () => {
         persisted.providerStateByThread?.[threadId]?.claude?.sessionId,
       ).toBe("acp-session-123");
     });
+  });
+
+  it("loads, installs, and removes persisted host MCP servers", () => {
+    const serverDirectory = resolve(sandboxDataDir, "host-mcp", "servers");
+    mkdirSync(serverDirectory, { recursive: true });
+    writeFileSync(
+      resolve(serverDirectory, "persisted-server.json"),
+      `${JSON.stringify(
+        {
+          id: "persisted-server",
+          transport: "stdio",
+          command: "node",
+          args: ["server.js"],
+          cwd: "fixtures",
+          env: {
+            NODE_ENV: "test",
+          },
+          name: "Persisted Server",
+          version: "1.2.3",
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    const { runtime, registerHostMcpServer, unregisterHostMcpServer } =
+      createRuntimeManagerStub();
+    const service = new DesktopService(runtime);
+
+    expect(registerHostMcpServer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "persisted-server",
+      }),
+    );
+    expect(service.listInstalledHostMcpServers()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "persisted-server",
+          cwd: "/workspace/fixtures",
+        }),
+      ]),
+    );
+
+    const installed = service.installStdioHostMcpServer(
+      {
+        id: "workspace-server",
+        command: "node",
+        args: ["scripts/mcp-server.js"],
+        cwd: "tools",
+        env: {
+          FROM_TEST: "1",
+        },
+      },
+      "/host/workspace",
+    );
+
+    expect(installed).toEqual(
+      expect.objectContaining({
+        id: "workspace-server",
+        cwd: "/host/workspace/tools",
+        replaced: false,
+      }),
+    );
+    expect(registerHostMcpServer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "workspace-server",
+      }),
+    );
+    expect(
+      existsSync(resolve(serverDirectory, "workspace-server.json")),
+    ).toBe(true);
+
+    expect(service.uninstallInstalledHostMcpServer("workspace-server")).toBe(true);
+    expect(unregisterHostMcpServer).toHaveBeenCalledWith("workspace-server");
+    expect(
+      existsSync(resolve(serverDirectory, "workspace-server.json")),
+    ).toBe(false);
   });
 });

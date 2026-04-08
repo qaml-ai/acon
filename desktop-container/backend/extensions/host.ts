@@ -8,6 +8,7 @@ import type {
 } from "../../../desktop/shared/protocol";
 import builtinChatCore from "../../plugins/builtin/chat-core/index";
 import builtinExtensionLab from "../../plugins/builtin/extension-lab/index";
+import builtinHostMcpManager from "../../plugins/builtin/host-mcp-manager/index";
 import builtinThreadJournal from "../../plugins/builtin/thread-journal/index";
 import {
   getHarnessAdapterForProvider,
@@ -23,7 +24,11 @@ import type {
   CamelAIEventHandler,
   CamelAIEventName,
   CamelAIExtensionModule,
+  CamelAIHostMcpServerRegistration,
+  CamelAIInstallHostMcpServerResult,
+  CamelAIInstallStdioHostMcpServerOptions,
   CamelAIManifest,
+  CamelAIPersistedHostMcpServerRecord,
   CamelAIPluginApi,
   CamelAIRuntimeRecord,
   CamelAIToolRegistration,
@@ -47,8 +52,20 @@ const DEFAULT_EXTENSION_DIRECTORIES = [
 const BUILTIN_EXTENSION_MODULES: Record<string, CamelAIExtensionModule> = {
   "chat-core": builtinChatCore as unknown as CamelAIExtensionModule,
   "extension-lab": builtinExtensionLab as unknown as CamelAIExtensionModule,
+  "host-mcp-manager": builtinHostMcpManager as unknown as CamelAIExtensionModule,
   "thread-journal": builtinThreadJournal as unknown as CamelAIExtensionModule,
 };
+
+export interface CamelAIExtensionHostOptions {
+  registerHostMcpServer?: (registration: CamelAIHostMcpServerRegistration) => void;
+  unregisterHostMcpServer?: (serverId: string) => void;
+  listInstalledHostMcpServers?: () => CamelAIPersistedHostMcpServerRecord[];
+  installStdioHostMcpServer?: (
+    server: CamelAIInstallStdioHostMcpServerOptions,
+    workspaceDirectory: string,
+  ) => CamelAIInstallHostMcpServerResult;
+  uninstallInstalledHostMcpServer?: (serverId: string) => boolean;
+}
 
 function isDirectory(path: string): boolean {
   try {
@@ -188,10 +205,15 @@ function resolveWebviewEntrypoint(
 }
 
 export class CamelAIExtensionHost {
+  private readonly options: CamelAIExtensionHostOptions;
   private readonly records = new Map<string, CamelAIRuntimeRecord>();
   private initializePromise: Promise<void> | null = null;
   private initialized = false;
   private loadGeneration = 0;
+
+  constructor(options: CamelAIExtensionHostOptions = {}) {
+    this.options = options;
+  }
 
   private ensureRecord(
     discovered: DiscoveredCamelAIExtension,
@@ -311,6 +333,25 @@ export class CamelAIExtensionHost {
       registerTool: (id, tool) => {
         record.tools.set(id, tool);
       },
+      registerHostMcpServer: (registration) => {
+        this.options.registerHostMcpServer?.(registration);
+      },
+      unregisterHostMcpServer: (serverId) => {
+        this.options.unregisterHostMcpServer?.(serverId);
+      },
+      listInstalledHostMcpServers: () =>
+        this.options.listInstalledHostMcpServers?.() ?? [],
+      installStdioHostMcpServer: (server) => {
+        if (!this.options.installStdioHostMcpServer) {
+          throw new Error("Host MCP installation is unavailable.");
+        }
+        return this.options.installStdioHostMcpServer(
+          server,
+          context.workspaceDirectory,
+        );
+      },
+      uninstallInstalledHostMcpServer: (serverId) =>
+        this.options.uninstallInstalledHostMcpServer?.(serverId) ?? false,
       threadState: (threadId = context.activeThreadId) =>
         this.createThreadState(pluginId, threadId ?? null, context),
     };

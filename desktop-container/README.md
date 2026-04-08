@@ -59,6 +59,8 @@ Notes:
 Host MCP notes:
 
 - Host code can register MCP servers on `DesktopService` with `registerHostMcpServer({ id, createServer })`.
+- Persisted stdio host MCP server registrations live under the desktop data directory at `host-mcp/servers/*.json`.
+- The builtin `host-mcp-manager` plugin registers a host MCP server that can list, install, and remove persisted stdio host MCP servers from inside the guest.
 - Inside the container, `acon-mcp --help` shows the CLI surface.
 - `acon-mcp servers` lists the host MCP servers that the Electron app has registered for that backend session.
 - `acon-mcp tools <server-id>` lists the tools exposed by one registered host MCP server.
@@ -112,7 +114,7 @@ export ANTHROPIC_API_KEY=...
 - `desktop-container/backend/extensions/thread-state.ts` provides a persistent per-thread plugin state store under the desktop runtime directory so workbench views, companion panels, and runtime hooks can share thread-scoped JSON state.
 - `desktop-container/backend/extensions/harness-adapters.ts` is the abstraction layer between supported harnesses and the unified extension model; it currently includes `codex`, `claude-code`, and `opencode` adapter identities.
 - `desktop/electron/main.mjs` exposes the desktop-shell install flow for user plugins, including folder selection, copying into the user plugin directory, and triggering a live catalog refresh.
-- `desktop-container/plugins/` contains repo-shipped V2 plugins, with `plugins/builtin/` reserved for curated builtins. The current builtin set includes `chat-core`, `extension-lab`, and `thread-journal`.
+- `desktop-container/plugins/` contains repo-shipped V2 plugins, with `plugins/builtin/` reserved for curated builtins. The current builtin set includes `chat-core`, `extension-lab`, `host-mcp-manager`, and `thread-journal`.
 - `desktop-container/sdk/index.ts` contains the extension-facing V2 manifest and activation API types.
 - `desktop-container/electron/main.mjs` loads the desktop backend service directly into the Electron main process via `tsx`.
 - The shared desktop renderer (`desktop/renderer/src/App.tsx`) renders a plugin-contributed workbench. Chat itself is a builtin `chat-core` view instead of a renderer special case, companion panels remain thread-scoped, host-rendered surfaces are resolved from a trusted renderer registry, and plugin-owned webviews can render `http:`, `https:`, `data:`, and plugin-local HTML entrypoints in a sandboxed iframe via the desktop file/webview bridge.
