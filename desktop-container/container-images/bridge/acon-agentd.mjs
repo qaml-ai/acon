@@ -69,6 +69,7 @@ This environment is for \`acon\`, the standalone camelAI desktop app.
  *     name: string;
  *     input?: unknown;
  *   }>;
+ *   process: ClaudeProcessState | null;
  *   activePrompt: ClaudePromptState | null;
  * }} ClaudeSessionState
  */
@@ -89,11 +90,26 @@ This environment is for \`acon\`, the standalone camelAI desktop app.
 /**
  * @typedef {{
  *   child: import("node:child_process").ChildProcessWithoutNullStreams;
+ *   stdoutBuffer: string;
+ *   stderr: string;
+ *   launchedModel: string;
+ *   pendingControlRequests: Map<string, {
+ *     resolve: (value: unknown) => void;
+ *     reject: (error: Error) => void;
+ *     timer: NodeJS.Timeout | null;
+ *   }>;
+ * }} ClaudeProcessState
+ */
+
+/**
+ * @typedef {{
  *   finalText: string;
  *   stopReason: string | null;
  *   cancelled: boolean;
- *   resolve: (value: { sessionId: string; finalText: string; stopReason: string | null }) => void;
- *   reject: (error: Error) => void;
+ *   waiters: Array<{
+ *     resolve: (value: { sessionId: string; finalText: string; stopReason: string | null }) => void;
+ *     reject: (error: Error) => void;
+ *   }>;
  * }} ClaudePromptState
  */
 
@@ -976,6 +992,7 @@ function createClaudeSession(sessionName, model, sessionId = null, hasStarted = 
     sessionId: sessionId ?? randomUUID(),
     hasStarted,
     toolUseCache: {},
+    process: null,
     activePrompt: null,
   };
 }
@@ -1056,6 +1073,7 @@ async function ensureSession(params) {
       : createClaudeSession(sessionName, model, sessionId, Boolean(sessionId));
     sessions.set(key, session);
   }
+  const previousModel = session.model;
   session.model = model;
 
   if (provider === "codex") {
@@ -1075,10 +1093,17 @@ async function ensureSession(params) {
 
   ensureProviderHomes("claude");
   const claudeSession = /** @type {ClaudeSessionState} */ (session);
+  if (claudeSession.process && previousModel !== model) {
+    if (claudeSession.activePrompt) {
+      throw new Error(`Claude session ${sessionName} cannot switch models while prompting.`);
+    }
+    resetClaudeProcess(claudeSession);
+  }
   if (sessionId && claudeSession.sessionId !== sessionId) {
     if (claudeSession.activePrompt) {
       throw new Error(`Claude session ${sessionName} cannot switch session ids while prompting.`);
     }
+    resetClaudeProcess(claudeSession);
     claudeSession.sessionId = sessionId;
     claudeSession.hasStarted = true;
   }
@@ -1087,10 +1112,12 @@ async function ensureSession(params) {
   };
 }
 
-function createClaudeArgs(session, content) {
+function createClaudeArgs(session) {
   const baseArgs = [
     "-p",
     "--verbose",
+    "--input-format",
+    "stream-json",
     "--output-format",
     "stream-json",
     "--include-partial-messages",
@@ -1107,7 +1134,21 @@ function createClaudeArgs(session, content) {
   return {
     command: "claude",
     args: baseArgs,
-    stdin: `${content}\n`,
+  };
+}
+
+function createClaudeUserMessage(content) {
+  return {
+    type: "user",
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: content,
+        },
+      ],
+    },
   };
 }
 
@@ -1172,12 +1213,157 @@ function emitClaudeRuntimeEvent(session, message) {
   }
 }
 
-async function promptClaudeSession(session, content) {
-  if (session.activePrompt) {
-    throw new Error(`Claude session ${session.sessionName} is already running a prompt.`);
+function resetClaudeProcess(session) {
+  const processState = session.process;
+  session.process = null;
+  if (!processState) {
+    return;
   }
+  for (const [requestId, pending] of processState.pendingControlRequests.entries()) {
+    if (pending.timer) {
+      clearTimeout(pending.timer);
+    }
+    pending.reject(new Error("Claude process stopped before control request completed."));
+    processState.pendingControlRequests.delete(requestId);
+  }
+  if (processState.child.exitCode === null) {
+    processState.child.kill("SIGTERM");
+  }
+}
+
+function rejectClaudePrompt(promptState, error) {
+  for (const waiter of promptState.waiters) {
+    waiter.reject(error);
+  }
+}
+
+function resolveClaudePrompt(session, promptState, stopReason) {
+  for (const waiter of promptState.waiters) {
+    waiter.resolve({
+      sessionId: session.sessionId,
+      finalText: promptState.finalText,
+      stopReason,
+    });
+  }
+}
+
+function handleClaudeProcessMessage(session, message) {
+  if (
+    message.type === "control_response" &&
+    message.response &&
+    typeof message.response === "object" &&
+    typeof message.response.request_id === "string"
+  ) {
+    const pending = session.process?.pendingControlRequests.get(message.response.request_id);
+    if (!pending) {
+      return;
+    }
+    session.process?.pendingControlRequests.delete(message.response.request_id);
+    if (pending.timer) {
+      clearTimeout(pending.timer);
+    }
+    if (message.response.subtype === "success") {
+      pending.resolve(message.response.response ?? null);
+    } else {
+      pending.reject(
+        new Error(
+          typeof message.response.error === "string"
+            ? message.response.error
+            : "Claude control request failed.",
+        ),
+      );
+    }
+    return;
+  }
+  if (typeof message.session_id === "string" && message.session_id.trim()) {
+    session.sessionId = message.session_id.trim();
+  }
+  const activePrompt = session.activePrompt;
+  if (activePrompt) {
+    const delta = extractClaudeDeltaText(message);
+    if (delta) {
+      activePrompt.finalText += delta;
+    }
+  }
+  emitClaudeRuntimeEvent(session, message);
+  if (message.type !== "result" || !activePrompt) {
+    return;
+  }
+
+  session.hasStarted = true;
+  const interrupted =
+    activePrompt.cancelled ||
+    message.terminal_reason === "aborted_streaming" ||
+    message.subtype === "error_during_execution";
+  activePrompt.stopReason =
+    interrupted
+      ? "cancelled"
+      : typeof message.stop_reason === "string"
+        ? message.stop_reason
+        : null;
+  if (typeof message.result === "string") {
+    activePrompt.finalText = message.result;
+  }
+  session.activePrompt = null;
+  resolveClaudePrompt(session, activePrompt, activePrompt.stopReason);
+}
+
+async function sendClaudeControlRequest(session, subtype) {
+  const processState = session.process;
+  if (!processState || processState.child.stdin.destroyed) {
+    throw new Error("Claude process is not ready.");
+  }
+  const requestId = randomUUID();
+  return await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      processState.pendingControlRequests.delete(requestId);
+      reject(new Error(`Claude control request ${subtype} timed out.`));
+    }, 10_000);
+    processState.pendingControlRequests.set(requestId, {
+      resolve,
+      reject,
+      timer,
+    });
+    processState.child.stdin.write(
+      `${JSON.stringify({
+        type: "control_request",
+        request_id: requestId,
+        request: {
+          subtype,
+        },
+      })}\n`,
+      (error) => {
+        if (!error) {
+          return;
+        }
+        const pending = processState.pendingControlRequests.get(requestId);
+        if (!pending) {
+          return;
+        }
+        processState.pendingControlRequests.delete(requestId);
+        if (pending.timer) {
+          clearTimeout(pending.timer);
+        }
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
+
+async function ensureClaudeProcess(session) {
   ensureProviderHomes("claude");
-  const { command, args, stdin } = createClaudeArgs(session, content);
+  const processState = session.process;
+  if (processState) {
+    if (processState.child.exitCode === null && processState.launchedModel === session.model) {
+      return processState;
+    }
+    if (session.activePrompt) {
+      throw new Error(`Claude session ${session.sessionName} cannot restart while prompting.`);
+    }
+    resetClaudeProcess(session);
+  }
+
+  const { command, args } = createClaudeArgs(session);
   const child = spawn(command, args, {
     cwd: workspaceRoot,
     env: getProviderEnv("claude", session.model),
@@ -1185,113 +1371,144 @@ async function promptClaudeSession(session, content) {
   });
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
+  /** @type {ClaudeProcessState} */
+  const nextProcessState = {
+    child,
+    stdoutBuffer: "",
+    stderr: "",
+    launchedModel: session.model,
+    pendingControlRequests: new Map(),
+  };
+  session.process = nextProcessState;
 
+  child.stdout.on("data", (chunk) => {
+    if (session.process !== nextProcessState) {
+      return;
+    }
+    nextProcessState.stdoutBuffer += chunk.toString("utf8");
+    while (true) {
+      const newlineIndex = nextProcessState.stdoutBuffer.indexOf("\n");
+      if (newlineIndex === -1) {
+        break;
+      }
+      const line = nextProcessState.stdoutBuffer.slice(0, newlineIndex).trim();
+      nextProcessState.stdoutBuffer = nextProcessState.stdoutBuffer.slice(newlineIndex + 1);
+      if (!line) {
+        continue;
+      }
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch (error) {
+        const parseError = error instanceof Error
+          ? error
+          : new Error(`Claude emitted invalid JSON: ${line}`);
+        const activePrompt = session.activePrompt;
+        session.activePrompt = null;
+        resetClaudeProcess(session);
+        if (activePrompt) {
+          rejectClaudePrompt(activePrompt, parseError);
+        }
+        return;
+      }
+      handleClaudeProcessMessage(session, message);
+    }
+  });
+
+  child.stderr.on("data", (chunk) => {
+    if (session.process !== nextProcessState) {
+      return;
+    }
+    nextProcessState.stderr += chunk.toString("utf8");
+    logStderr(`claude stderr: ${chunk.toString("utf8").trim()}`);
+  });
+
+  child.on("error", (error) => {
+    if (session.process !== nextProcessState) {
+      return;
+    }
+    for (const [requestId, pending] of nextProcessState.pendingControlRequests.entries()) {
+      if (pending.timer) {
+        clearTimeout(pending.timer);
+      }
+      pending.reject(error instanceof Error ? error : new Error(String(error)));
+      nextProcessState.pendingControlRequests.delete(requestId);
+    }
+    session.process = null;
+    const activePrompt = session.activePrompt;
+    session.activePrompt = null;
+    if (activePrompt) {
+      rejectClaudePrompt(activePrompt, error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+
+  child.on("exit", (code, signal) => {
+    if (session.process !== nextProcessState) {
+      return;
+    }
+    for (const [requestId, pending] of nextProcessState.pendingControlRequests.entries()) {
+      if (pending.timer) {
+        clearTimeout(pending.timer);
+      }
+      pending.reject(
+        new Error(
+          nextProcessState.stderr.trim() ||
+            `Claude exited before control request completion (code=${code}, signal=${signal}).`,
+        ),
+      );
+      nextProcessState.pendingControlRequests.delete(requestId);
+    }
+    session.process = null;
+    const activePrompt = session.activePrompt;
+    session.activePrompt = null;
+    if (!activePrompt) {
+      return;
+    }
+    if (activePrompt.cancelled) {
+      resolveClaudePrompt(session, activePrompt, "cancelled");
+      return;
+    }
+    rejectClaudePrompt(
+      activePrompt,
+      new Error(
+        nextProcessState.stderr.trim() ||
+          `Claude exited before prompt completion (code=${code}, signal=${signal}).`,
+      ),
+    );
+  });
+
+  return nextProcessState;
+}
+
+async function promptClaudeSession(session, content) {
+  const processState = await ensureClaudeProcess(session);
   return await new Promise((resolve, reject) => {
-    /** @type {ClaudePromptState} */
-    const promptState = {
-      child,
+    const promptState = session.activePrompt ?? {
       finalText: "",
       stopReason: null,
       cancelled: false,
-      resolve,
-      reject,
+      waiters: [],
     };
-    session.activePrompt = promptState;
-    let stdoutBuffer = "";
-    let stderr = "";
-    let settled = false;
-
-    function finishWithError(error) {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      session.activePrompt = null;
-      reject(error);
+    if (!session.activePrompt) {
+      session.activePrompt = promptState;
     }
-
-    function finishWithResult(stopReason) {
-      if (settled) {
+    promptState.waiters.push({ resolve, reject });
+    const payload = `${JSON.stringify(createClaudeUserMessage(content))}\n`;
+    processState.child.stdin.write(payload, (error) => {
+      if (!error) {
         return;
       }
-      settled = true;
+      const currentPrompt = session.activePrompt;
       session.activePrompt = null;
-      resolve({
-        sessionId: session.sessionId,
-        finalText: promptState.finalText,
-        stopReason,
-      });
-    }
-
-    child.stdout.on("data", (chunk) => {
-      stdoutBuffer += chunk.toString("utf8");
-      while (true) {
-        const newlineIndex = stdoutBuffer.indexOf("\n");
-        if (newlineIndex === -1) {
-          break;
-        }
-        const line = stdoutBuffer.slice(0, newlineIndex).trim();
-        stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
-        if (!line) {
-          continue;
-        }
-        let message;
-        try {
-          message = JSON.parse(line);
-        } catch (error) {
-          finishWithError(
-            error instanceof Error
-              ? error
-              : new Error(`Claude emitted invalid JSON: ${line}`),
-          );
-          return;
-        }
-        if (typeof message.session_id === "string" && message.session_id.trim()) {
-          session.sessionId = message.session_id.trim();
-        }
-        const delta = extractClaudeDeltaText(message);
-        if (delta) {
-          promptState.finalText += delta;
-        }
-        emitClaudeRuntimeEvent(session, message);
-        if (message.type === "result") {
-          session.hasStarted = true;
-          promptState.stopReason =
-            typeof message.stop_reason === "string" ? message.stop_reason : null;
-          if (typeof message.result === "string") {
-            promptState.finalText = message.result;
-          }
-        }
+      if (currentPrompt) {
+        rejectClaudePrompt(
+          currentPrompt,
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      } else {
+        reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8");
-      logStderr(`claude stderr: ${chunk.toString("utf8").trim()}`);
-    });
-
-    child.on("error", (error) => {
-      finishWithError(error);
-    });
-
-    child.on("exit", (code, signal) => {
-      if (promptState.cancelled) {
-        finishWithResult("cancelled");
-        return;
-      }
-      if (code === 0) {
-        finishWithResult(promptState.stopReason);
-        return;
-      }
-      finishWithError(
-        new Error(
-          stderr.trim() ||
-            `Claude exited before prompt completion (code=${code}, signal=${signal}).`,
-        ),
-      );
-    });
-
-    child.stdin.end(stdin);
   });
 }
 
@@ -1454,14 +1671,9 @@ async function cancelSession(params) {
 
   if (provider === "claude") {
     const claudeSession = /** @type {ClaudeSessionState} */ (session);
-    if (claudeSession.activePrompt?.child && claudeSession.activePrompt.child.exitCode === null) {
+    if (claudeSession.activePrompt && claudeSession.process?.child.exitCode === null) {
       claudeSession.activePrompt.cancelled = true;
-      claudeSession.activePrompt.child.kill("SIGTERM");
-      setTimeout(() => {
-        if (claudeSession.activePrompt?.child?.exitCode === null) {
-          claudeSession.activePrompt.child.kill("SIGKILL");
-        }
-      }, 1_000).unref();
+      await sendClaudeControlRequest(claudeSession, "interrupt");
     }
     return { ok: true };
   }
@@ -1690,8 +1902,8 @@ function shutdown() {
   closeAllSockets();
   cleanupSocketFile();
   for (const session of sessions.values()) {
-    if (session.provider === "claude" && session.activePrompt?.child) {
-      session.activePrompt.child.kill("SIGTERM");
+    if (session.provider === "claude" && session.process?.child.exitCode === null) {
+      session.process.child.kill("SIGTERM");
     }
   }
   codexAppServer.stop();
