@@ -59,8 +59,9 @@ Notes:
 Host MCP notes:
 
 - Host code can register MCP servers on `DesktopService` with `registerHostMcpServer({ id, createServer })`.
-- Persisted stdio host MCP server registrations live under the desktop data directory at `host-mcp/servers/*.json`.
-- The builtin `host-mcp-manager` plugin registers a host MCP server that can list, install, and remove persisted stdio host MCP servers from inside the guest.
+- Persisted host MCP server registrations live under the desktop data directory at `host-mcp/servers/*.json`.
+- Persisted remote MCP servers can use `streamable-http` or legacy `sse` transport, and optional OAuth tokens/client state are kept on the host under `host-mcp/oauth/*.json`.
+- The builtin `host-mcp-manager` plugin registers a host MCP server that can list, install, and remove persisted stdio and remote HTTP host MCP servers from inside the guest.
 - Inside the container, `acon-mcp --help` shows the CLI surface.
 - `acon-mcp servers` lists the host MCP servers that the Electron app has registered for that backend session.
 - `acon-mcp tools <server-id>` lists the tools exposed by one registered host MCP server.

@@ -1,15 +1,29 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, extname, isAbsolute, resolve } from "node:path";
 import {
+  createRemoteProxyHostMcpServer,
   createStdioProxyHostMcpServer,
+  type HostMcpRemoteTransport,
   type HostMcpServerRegistration,
 } from "./host-mcp";
+import {
+  type HostMcpOAuthConfig,
+  type HostMcpOAuthManager,
+} from "./host-mcp-oauth";
 
 const HOST_MCP_DIRECTORY_NAME = "host-mcp";
 const HOST_MCP_SERVERS_DIRECTORY_NAME = "servers";
 const HOST_MCP_SERVER_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 
-export interface PersistedHostMcpServerRecord {
+export interface PersistedHostMcpStdioServerRecord {
   id: string;
   transport: "stdio";
   command: string;
@@ -20,15 +34,43 @@ export interface PersistedHostMcpServerRecord {
   version: string | null;
 }
 
-export interface PersistedHostMcpStdioInstallOptions {
+export interface PersistedHostMcpHttpServerRecord {
+  headers: Record<string, string>;
   id: string;
-  command: string;
+  name: string | null;
+  oauth: HostMcpOAuthConfig | null;
+  transport: HostMcpRemoteTransport;
+  url: string;
+  version: string | null;
+}
+
+export type PersistedHostMcpServerRecord =
+  | PersistedHostMcpStdioServerRecord
+  | PersistedHostMcpHttpServerRecord;
+
+export interface PersistedHostMcpStdioInstallOptions {
   args?: string[];
+  command: string;
   cwd?: string | null;
   env?: Record<string, string>;
+  id: string;
   name?: string | null;
   version?: string | null;
 }
+
+export interface PersistedHostMcpHttpInstallOptions {
+  headers?: Record<string, string>;
+  id: string;
+  name?: string | null;
+  oauth?: Partial<HostMcpOAuthConfig> | null;
+  transport?: HostMcpRemoteTransport;
+  url: string;
+  version?: string | null;
+}
+
+export type PersistedHostMcpInstallOptions =
+  | PersistedHostMcpStdioInstallOptions
+  | PersistedHostMcpHttpInstallOptions;
 
 export interface PersistedHostMcpInstallResult extends PersistedHostMcpServerRecord {
   configPath: string;
@@ -71,22 +113,25 @@ function normalizeStringArray(value: unknown, label: string): string[] {
   });
 }
 
-function normalizeEnv(value: unknown): Record<string, string> {
+function normalizeStringRecord(
+  value: unknown,
+  label: string,
+): Record<string, string> {
   if (value === undefined || value === null) {
     return {};
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Host MCP server env must be an object of string values.");
+    throw new Error(`${label} must be an object of string values.`);
   }
 
-  const env: Record<string, string> = {};
+  const normalized: Record<string, string> = {};
   for (const [key, rawValue] of Object.entries(value)) {
     if (typeof rawValue !== "string") {
-      throw new Error("Host MCP server env must only contain string values.");
+      throw new Error(`${label} must only contain string values.`);
     }
-    env[key] = rawValue;
+    normalized[key] = rawValue;
   }
-  return env;
+  return normalized;
 }
 
 function normalizeOptionalString(
@@ -103,6 +148,79 @@ function normalizeOptionalString(
   return normalized ? normalized : null;
 }
 
+function normalizeCwd(
+  cwd: string | null,
+  workspaceDirectory: string,
+): string | null {
+  if (!cwd) {
+    return null;
+  }
+
+  return isAbsolute(cwd) ? cwd : resolve(workspaceDirectory, cwd);
+}
+
+function normalizeUrl(value: unknown): string {
+  const raw = normalizeOptionalString(value, "Host MCP url");
+  if (!raw) {
+    throw new Error("Host MCP url must be a non-empty string.");
+  }
+
+  const url = new URL(raw);
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("Host MCP url must use http:// or https://.");
+  }
+  return url.toString();
+}
+
+function normalizeTransport(value: unknown): PersistedHostMcpServerRecord["transport"] {
+  const normalized =
+    typeof value === "string" && value.trim()
+      ? value.trim()
+      : "stdio";
+  if (
+    normalized !== "stdio" &&
+    normalized !== "streamable-http" &&
+    normalized !== "sse"
+  ) {
+    throw new Error(`Unsupported persisted host MCP transport: ${normalized}.`);
+  }
+  return normalized;
+}
+
+function normalizeOauthConfig(value: unknown): HostMcpOAuthConfig | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Host MCP OAuth config must be an object when provided.");
+  }
+
+  const record = value as Record<string, unknown>;
+  const oauth: HostMcpOAuthConfig = {
+    clientId: normalizeOptionalString(record.clientId, "Host MCP OAuth clientId"),
+    clientMetadataUrl: normalizeOptionalString(
+      record.clientMetadataUrl,
+      "Host MCP OAuth clientMetadataUrl",
+    ),
+    clientName: normalizeOptionalString(
+      record.clientName,
+      "Host MCP OAuth clientName",
+    ),
+    clientSecret: normalizeOptionalString(
+      record.clientSecret,
+      "Host MCP OAuth clientSecret",
+    ),
+    clientUri: normalizeOptionalString(record.clientUri, "Host MCP OAuth clientUri"),
+    scope: normalizeOptionalString(record.scope, "Host MCP OAuth scope"),
+    tokenEndpointAuthMethod: normalizeOptionalString(
+      record.tokenEndpointAuthMethod,
+      "Host MCP OAuth tokenEndpointAuthMethod",
+    ),
+  };
+
+  return Object.values(oauth).some((entry) => entry !== null) ? oauth : null;
+}
+
 function getHostMcpServerDirectory(dataDirectory: string): string {
   return resolve(
     dataDirectory,
@@ -113,17 +231,6 @@ function getHostMcpServerDirectory(dataDirectory: string): string {
 
 function getHostMcpServerConfigPath(dataDirectory: string, serverId: string): string {
   return resolve(getHostMcpServerDirectory(dataDirectory), `${serverId}.json`);
-}
-
-function normalizeCwd(
-  cwd: string | null,
-  workspaceDirectory: string,
-): string | null {
-  if (!cwd) {
-    return null;
-  }
-
-  return isAbsolute(cwd) ? cwd : resolve(workspaceDirectory, cwd);
 }
 
 export function normalizePersistedHostMcpServerRecord(
@@ -137,29 +244,40 @@ export function normalizePersistedHostMcpServerRecord(
   }
 
   const record = raw as Record<string, unknown>;
-  const transport =
-    typeof record.transport === "string" ? record.transport.trim() : "stdio";
-  if (transport !== "stdio") {
-    throw new Error(`Unsupported persisted host MCP transport: ${transport}.`);
-  }
+  const transport = normalizeTransport(record.transport);
+  const id = normalizeServerId(String(record.id ?? ""));
+  const name = normalizeOptionalString(record.name, "Host MCP name");
+  const version = normalizeOptionalString(record.version, "Host MCP version");
 
-  const command = normalizeOptionalString(record.command, "Host MCP command");
-  if (!command) {
-    throw new Error("Host MCP command must be a non-empty string.");
+  if (transport === "stdio") {
+    const command = normalizeOptionalString(record.command, "Host MCP command");
+    if (!command) {
+      throw new Error("Host MCP command must be a non-empty string.");
+    }
+
+    return {
+      id,
+      transport: "stdio",
+      command,
+      args: normalizeStringArray(record.args, "Host MCP args"),
+      cwd: normalizeCwd(
+        normalizeOptionalString(record.cwd, "Host MCP cwd"),
+        options.workspaceDirectory,
+      ),
+      env: normalizeStringRecord(record.env, "Host MCP env"),
+      name,
+      version,
+    };
   }
 
   return {
-    id: normalizeServerId(String(record.id ?? "")),
-    transport: "stdio",
-    command,
-    args: normalizeStringArray(record.args, "Host MCP args"),
-    cwd: normalizeCwd(
-      normalizeOptionalString(record.cwd, "Host MCP cwd"),
-      options.workspaceDirectory,
-    ),
-    env: normalizeEnv(record.env),
-    name: normalizeOptionalString(record.name, "Host MCP name"),
-    version: normalizeOptionalString(record.version, "Host MCP version"),
+    headers: normalizeStringRecord(record.headers, "Host MCP headers"),
+    id,
+    name,
+    oauth: normalizeOauthConfig(record.oauth),
+    transport,
+    url: normalizeUrl(record.url),
+    version,
   };
 }
 
@@ -199,17 +317,13 @@ export function listPersistedHostMcpServers(options: {
 export function installPersistedHostMcpServer(options: {
   dataDirectory: string;
   workspaceDirectory: string;
-  server: PersistedHostMcpStdioInstallOptions;
+  server: PersistedHostMcpInstallOptions & {
+    transport: PersistedHostMcpServerRecord["transport"];
+  };
 }): PersistedHostMcpInstallResult {
-  const normalized = normalizePersistedHostMcpServerRecord(
-    {
-      ...options.server,
-      transport: "stdio",
-    },
-    {
-      workspaceDirectory: options.workspaceDirectory,
-    },
-  );
+  const normalized = normalizePersistedHostMcpServerRecord(options.server, {
+    workspaceDirectory: options.workspaceDirectory,
+  });
   const directory = getHostMcpServerDirectory(options.dataDirectory);
   const configPath = getHostMcpServerConfigPath(options.dataDirectory, normalized.id);
   const replaced = existsSync(configPath);
@@ -217,14 +331,7 @@ export function installPersistedHostMcpServer(options: {
   mkdirSync(directory, { recursive: true });
   writeFileSync(
     configPath,
-    `${JSON.stringify(
-      {
-        ...normalized,
-        cwd: normalized.cwd,
-      },
-      null,
-      2,
-    )}\n`,
+    `${JSON.stringify(normalized, null, 2)}\n`,
     "utf8",
   );
 
@@ -233,6 +340,34 @@ export function installPersistedHostMcpServer(options: {
     configPath,
     replaced,
   };
+}
+
+export function installPersistedHostMcpStdioServer(options: {
+  dataDirectory: string;
+  workspaceDirectory: string;
+  server: PersistedHostMcpStdioInstallOptions;
+}): PersistedHostMcpInstallResult {
+  return installPersistedHostMcpServer({
+    ...options,
+    server: {
+      ...options.server,
+      transport: "stdio",
+    },
+  });
+}
+
+export function installPersistedHostMcpHttpServer(options: {
+  dataDirectory: string;
+  workspaceDirectory: string;
+  server: PersistedHostMcpHttpInstallOptions;
+}): PersistedHostMcpInstallResult {
+  return installPersistedHostMcpServer({
+    ...options,
+    server: {
+      ...options.server,
+      transport: options.server.transport ?? "streamable-http",
+    },
+  });
 }
 
 export function uninstallPersistedHostMcpServer(options: {
@@ -251,20 +386,46 @@ export function uninstallPersistedHostMcpServer(options: {
 
 export function createPersistedHostMcpServerRegistration(
   server: PersistedHostMcpServerRecord,
+  options: {
+    dataDirectory: string;
+    oauthManager?: HostMcpOAuthManager | null;
+  },
 ): HostMcpServerRegistration {
+  if (server.transport === "stdio") {
+    return {
+      id: server.id,
+      createServer: () =>
+        createStdioProxyHostMcpServer(
+          {
+            command: server.command,
+            args: server.args,
+            cwd: server.cwd ?? undefined,
+            env: {
+              ...process.env,
+              ...server.env,
+            },
+            stderr: "pipe",
+          },
+          {
+            name: server.name ?? server.id,
+            version: server.version ?? "1.0.0",
+          },
+        ),
+    };
+  }
+
   return {
     id: server.id,
     createServer: () =>
-      createStdioProxyHostMcpServer(
+      createRemoteProxyHostMcpServer(
         {
-          command: server.command,
-          args: server.args,
-          cwd: server.cwd ?? undefined,
-          env: {
-            ...process.env,
-            ...server.env,
-          },
-          stderr: "pipe",
+          dataDirectory: options.dataDirectory,
+          headers: server.headers,
+          oauth: server.oauth,
+          oauthManager: options.oauthManager ?? null,
+          serverId: server.id,
+          transport: server.transport,
+          url: server.url,
         },
         {
           name: server.name ?? server.id,

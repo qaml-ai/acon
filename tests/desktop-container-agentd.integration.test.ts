@@ -1336,6 +1336,7 @@ integrationDescribe("desktop-container agent runtime integration", () => {
               const toolList = await client.listTools();
               expect(toolList.tools.map((tool) => tool.name)).toEqual(
                 expect.arrayContaining([
+                  "install_http_server",
                   "install_stdio_server",
                   "list_installed_servers",
                   "uninstall_server",

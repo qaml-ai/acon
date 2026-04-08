@@ -94,7 +94,17 @@ export interface CamelAIHostMcpServerRegistration {
   createServer: () => CamelAIHostMcpSessionServer;
 }
 
-export interface CamelAIPersistedHostMcpServerRecord {
+export interface CamelAIHostMcpOAuthConfig {
+  clientId: string | null;
+  clientSecret: string | null;
+  clientName: string | null;
+  clientUri: string | null;
+  clientMetadataUrl: string | null;
+  scope: string | null;
+  tokenEndpointAuthMethod: string | null;
+}
+
+export interface CamelAIPersistedHostMcpStdioServerRecord {
   id: string;
   transport: "stdio";
   command: string;
@@ -104,6 +114,20 @@ export interface CamelAIPersistedHostMcpServerRecord {
   name: string | null;
   version: string | null;
 }
+
+export interface CamelAIPersistedHostMcpHttpServerRecord {
+  id: string;
+  transport: "streamable-http" | "sse";
+  url: string;
+  headers: Record<string, string>;
+  oauth: CamelAIHostMcpOAuthConfig | null;
+  name: string | null;
+  version: string | null;
+}
+
+export type CamelAIPersistedHostMcpServerRecord =
+  | CamelAIPersistedHostMcpStdioServerRecord
+  | CamelAIPersistedHostMcpHttpServerRecord;
 
 export interface CamelAIInstallHostMcpServerResult
   extends CamelAIPersistedHostMcpServerRecord {
@@ -117,6 +141,16 @@ export interface CamelAIInstallStdioHostMcpServerOptions {
   args?: string[];
   cwd?: string | null;
   env?: Record<string, string>;
+  name?: string | null;
+  version?: string | null;
+}
+
+export interface CamelAIInstallHttpHostMcpServerOptions {
+  id: string;
+  url: string;
+  transport?: "streamable-http" | "sse";
+  headers?: Record<string, string>;
+  oauth?: Partial<CamelAIHostMcpOAuthConfig> | null;
   name?: string | null;
   version?: string | null;
 }
@@ -156,6 +190,9 @@ export interface CamelAIActivationApi {
   listInstalledHostMcpServers(): CamelAIPersistedHostMcpServerRecord[];
   installStdioHostMcpServer(
     server: CamelAIInstallStdioHostMcpServerOptions,
+  ): CamelAIInstallHostMcpServerResult;
+  installHttpHostMcpServer(
+    server: CamelAIInstallHttpHostMcpServerOptions,
   ): CamelAIInstallHostMcpServerResult;
   uninstallInstalledHostMcpServer(serverId: string): boolean;
   threadState(threadId?: string | null): CamelAIThreadStateStore;

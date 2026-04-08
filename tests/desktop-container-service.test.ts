@@ -327,10 +327,49 @@ describe("DesktopService", () => {
       existsSync(resolve(serverDirectory, "workspace-server.json")),
     ).toBe(true);
 
+    const remoteInstalled = service.installHttpHostMcpServer(
+      {
+        id: "remote-server",
+        transport: "streamable-http",
+        url: "https://example.com/mcp",
+        headers: {
+          "x-test": "1",
+        },
+        oauth: {
+          clientName: "Acon Test Client",
+          scope: "tools.read",
+        },
+      },
+      "/host/workspace",
+    );
+
+    expect(remoteInstalled).toEqual(
+      expect.objectContaining({
+        id: "remote-server",
+        transport: "streamable-http",
+        url: "https://example.com/mcp",
+        replaced: false,
+      }),
+    );
+    expect(registerHostMcpServer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "remote-server",
+      }),
+    );
+    expect(
+      existsSync(resolve(serverDirectory, "remote-server.json")),
+    ).toBe(true);
+
     expect(service.uninstallInstalledHostMcpServer("workspace-server")).toBe(true);
     expect(unregisterHostMcpServer).toHaveBeenCalledWith("workspace-server");
     expect(
       existsSync(resolve(serverDirectory, "workspace-server.json")),
+    ).toBe(false);
+
+    expect(service.uninstallInstalledHostMcpServer("remote-server")).toBe(true);
+    expect(unregisterHostMcpServer).toHaveBeenCalledWith("remote-server");
+    expect(
+      existsSync(resolve(serverDirectory, "remote-server.json")),
     ).toBe(false);
   });
 });

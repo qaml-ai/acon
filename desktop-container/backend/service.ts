@@ -26,10 +26,16 @@ import { CamelAIExtensionHost } from "./extensions/host";
 import { getHarnessAdapterForProvider } from "./extensions/harness-adapters";
 import type { HostMcpServerRegistration } from "./host-mcp";
 import {
+  HostMcpOAuthManager,
+  type HostMcpBrowserOpener,
+} from "./host-mcp-oauth";
+import {
   createPersistedHostMcpServerRegistration,
-  installPersistedHostMcpServer,
+  installPersistedHostMcpHttpServer,
+  installPersistedHostMcpStdioServer,
   listPersistedHostMcpServers,
   uninstallPersistedHostMcpServer,
+  type PersistedHostMcpHttpInstallOptions,
   type PersistedHostMcpInstallResult,
   type PersistedHostMcpServerRecord,
   type PersistedHostMcpStdioInstallOptions,
@@ -42,6 +48,10 @@ interface ActiveThreadRun {
 }
 
 const INTERRUPTED_MESSAGE_TEXT = "[Request interrupted by user]";
+
+export interface DesktopServiceOptions {
+  hostMcpBrowserOpener?: HostMcpBrowserOpener;
+}
 
 function extractProviderSessionIdFromRuntimeEvent(
   _providerId: "claude" | "codex",
@@ -63,17 +73,24 @@ export class DesktopService {
   private readonly store = new DesktopStore();
   private readonly runtimeManager: RuntimeManager;
   private readonly dataDirectory: string;
+  private readonly hostMcpOAuthManager: HostMcpOAuthManager;
   private readonly extensionHost: CamelAIExtensionHost;
   private readonly activeThreadRuns = new Map<string, ActiveThreadRun>();
   private readonly listeners = new Set<Listener>();
   private runtimeStatus: DesktopRuntimeStatus;
   private runtimeStartupPromise: Promise<void> | null = null;
 
-  constructor(runtimeManager: RuntimeManager = new ContainerRuntimeManager()) {
+  constructor(
+    runtimeManager: RuntimeManager = new ContainerRuntimeManager(),
+    options: DesktopServiceOptions = {},
+  ) {
     this.runtimeManager = runtimeManager;
     this.dataDirectory =
       process.env.DESKTOP_DATA_DIR?.trim() ||
       resolve(this.runtimeManager.getRuntimeDirectory(), "..", "data");
+    this.hostMcpOAuthManager = new HostMcpOAuthManager({
+      browserOpener: options.hostMcpBrowserOpener,
+    });
     this.runtimeStatus = this.runtimeManager.getCachedStatus();
     this.loadPersistedHostMcpServers();
     this.extensionHost = new CamelAIExtensionHost({
@@ -86,6 +103,8 @@ export class DesktopService {
       listInstalledHostMcpServers: () => this.listInstalledHostMcpServers(),
       installStdioHostMcpServer: (server, workspaceDirectory) =>
         this.installStdioHostMcpServer(server, workspaceDirectory),
+      installHttpHostMcpServer: (server, workspaceDirectory) =>
+        this.installHttpHostMcpServer(server, workspaceDirectory),
       uninstallInstalledHostMcpServer: (serverId) =>
         this.uninstallInstalledHostMcpServer(serverId),
     });
@@ -120,6 +139,7 @@ export class DesktopService {
   }
 
   dispose(): void {
+    this.hostMcpOAuthManager.dispose();
     this.runtimeManager.dispose();
     this.listeners.clear();
     this.activeThreadRuns.clear();
@@ -144,13 +164,34 @@ export class DesktopService {
     server: PersistedHostMcpStdioInstallOptions,
     workspaceDirectory = this.runtimeManager.getWorkspaceDirectory(),
   ): PersistedHostMcpInstallResult {
-    const installed = installPersistedHostMcpServer({
+    const installed = installPersistedHostMcpStdioServer({
       dataDirectory: this.dataDirectory,
       workspaceDirectory,
       server,
     });
     this.runtimeManager.registerHostMcpServer(
-      createPersistedHostMcpServerRegistration(installed),
+      createPersistedHostMcpServerRegistration(installed, {
+        dataDirectory: this.dataDirectory,
+        oauthManager: this.hostMcpOAuthManager,
+      }),
+    );
+    return installed;
+  }
+
+  installHttpHostMcpServer(
+    server: PersistedHostMcpHttpInstallOptions,
+    workspaceDirectory = this.runtimeManager.getWorkspaceDirectory(),
+  ): PersistedHostMcpInstallResult {
+    const installed = installPersistedHostMcpHttpServer({
+      dataDirectory: this.dataDirectory,
+      workspaceDirectory,
+      server,
+    });
+    this.runtimeManager.registerHostMcpServer(
+      createPersistedHostMcpServerRegistration(installed, {
+        dataDirectory: this.dataDirectory,
+        oauthManager: this.hostMcpOAuthManager,
+      }),
     );
     return installed;
   }
@@ -212,7 +253,10 @@ export class DesktopService {
   private loadPersistedHostMcpServers(): void {
     for (const server of this.listInstalledHostMcpServers()) {
       this.runtimeManager.registerHostMcpServer(
-        createPersistedHostMcpServerRegistration(server),
+        createPersistedHostMcpServerRegistration(server, {
+          dataDirectory: this.dataDirectory,
+          oauthManager: this.hostMcpOAuthManager,
+        }),
       );
     }
   }
