@@ -28,8 +28,8 @@ import { CAMELAI_CURRENT_API_VERSION } from "./types";
 import type {
   CamelAIThreadCreateOptions,
   CamelAIThreadEventHandler,
-  CamelAIThreadMetadataUpdate,
   CamelAIThreadRecord,
+  CamelAIThreadUpdate,
   CamelAIActivationContext,
   CamelAIDisposable,
   CamelAIDisposableLike,
@@ -116,9 +116,9 @@ export interface CamelAIExtensionHostOptions {
   createThread?: (options?: CamelAIThreadCreateOptions) => CamelAIThreadRecord;
   sendMessage?: (threadId: string, content: string) => Promise<void>;
   stopThread?: (threadId: string) => Promise<boolean>;
-  updateThreadMetadata?: (
+  updateThread?: (
     threadId: string,
-    update: CamelAIThreadMetadataUpdate,
+    update: CamelAIThreadUpdate,
   ) => CamelAIThreadRecord;
   listInstalledHostMcpServers?: () => CamelAIPersistedHostMcpServerRecord[];
   installStdioHostMcpServer?: (
@@ -904,11 +904,11 @@ export class CamelAIExtensionHost {
         }
         return await this.options.stopThread(threadId);
       },
-      updateThreadMetadata: (threadId, update) => {
-        if (!this.options.updateThreadMetadata) {
-          throw new Error("Thread metadata updates are unavailable.");
+      updateThread: (threadId, update) => {
+        if (!this.options.updateThread) {
+          throw new Error("Thread updates are unavailable.");
         }
-        return this.options.updateThreadMetadata(threadId, update);
+        return this.options.updateThread(threadId, update);
       },
       registerView: (id, view) => {
         record.views.set(id, view);

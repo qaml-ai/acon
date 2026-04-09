@@ -234,21 +234,28 @@ type MockDesktopShell = {
 
 function createSnapshot(): DesktopSnapshot {
   const now = Date.now();
+  const groupId = "group-1";
   return {
+    threadGroups: [
+      {
+        id: groupId,
+        title: "Default Group",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
     threads: [
       {
         id: "thread-1",
+        groupId,
         provider: "claude",
         title: "Claude test thread",
         createdAt: now,
         updatedAt: now,
         lastMessagePreview: null,
-        metadata: {
-          status: null,
-          lane: null,
-          archived: false,
-          archivedAt: null,
-        },
+        status: null,
+        lane: null,
+        archivedAt: null,
       },
     ],
     messagesByThread: {
@@ -268,6 +275,7 @@ function createSnapshot(): DesktopSnapshot {
     ],
     activeTabId: "tab-thread-1",
     activeThreadId: "thread-1",
+    activeGroupId: groupId,
     activeViewId: "plugin:chat:chat.thread",
     threadPreviewStateById: {
       "thread-1": {
