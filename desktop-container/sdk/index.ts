@@ -141,6 +141,15 @@ export interface CamelAIViewRegistration {
     | { kind: "webview"; webviewId: string };
 }
 
+export interface CamelAISidebarPanelRegistration {
+  title: string;
+  description?: string;
+  icon?: string;
+  placement?: "content" | "footer";
+  order?: number;
+  render: { kind: "host"; component: string };
+}
+
 export interface CamelAICommandRegistration {
   title: string;
   description?: string;
@@ -334,6 +343,10 @@ export interface CamelAIActivationApi {
     update: CamelAIThreadMetadataUpdate,
   ): CamelAIThreadRecord;
   registerView(id: string, view: CamelAIViewRegistration): CamelAIDisposable;
+  registerSidebarPanel(
+    id: string,
+    panel: CamelAISidebarPanelRegistration,
+  ): CamelAIDisposable;
   registerCommand(
     id: string,
     command: CamelAICommandRegistration,

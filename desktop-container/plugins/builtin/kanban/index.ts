@@ -2,14 +2,14 @@ import type { CamelAIExtensionModule } from "../../../sdk";
 
 const extension: CamelAIExtensionModule = {
   activate(api) {
-    api.registerView("extension-lab.home", {
-      title: "Extension Lab",
-      description: "Inspect the new V2 extension runtime and installed plugins.",
-      icon: "Blocks",
+    api.registerView("kanban.board", {
+      title: "Kanban",
+      description: "Manage local chat threads across workflow lanes.",
+      icon: "KanbanSquare",
       scope: "workspace",
       render: {
         kind: "host",
-        component: "catalog",
+        component: "board",
       },
     });
   },
