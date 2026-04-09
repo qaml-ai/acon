@@ -812,8 +812,8 @@ describe("host MCP remote proxy", () => {
         {
           id: "rest-api",
           transport: "stdio",
-          command: process.execPath,
-          args: [resolve(process.cwd(), "desktop-container/mcp-servers/rest-api.mjs")],
+          command: resolve(process.cwd(), "desktop-container/bin/acon-mcp-builtin.mjs"),
+          args: ["rest-api"],
           cwd: null,
           env: {
             REST_API_BASE_URL: `http://127.0.0.1:${address.port}/api`,

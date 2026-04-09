@@ -65,6 +65,7 @@ Host MCP notes:
 - Persisted stdio MCP servers can attach `envSecretRefs`, and persisted remote HTTP MCP servers can attach `headerSecretRefs`, so secrets stay in the host vault and are only resolved at launch time.
 - Persisted host MCP servers can also use the `http-wrapper` transport, which exposes a single `fetch` MCP tool against a configured `baseUrl` and can inject bearer or header auth from a host secret reference.
 - The builtin `host-mcp-manager` plugin registers a host MCP server that can list, install, and remove persisted host MCP servers, prompt the user to store secrets in the host vault, and install the repo-local `rest-api` stdio MCP server.
+- Repo-shipped builtin stdio servers should be launched through `desktop-container/bin/acon-mcp-builtin.mjs <name>` so persisted configs stay stable even if the underlying implementation files move.
 - The builtin `preview-control` plugin registers a host MCP server that can open, replace, clear, and hide/show thread preview items for workspace files and URLs in the right-side preview pane.
 - Inside the container, `acon-mcp --help` shows the CLI surface.
 - `acon-mcp servers` lists the host MCP servers that the Electron app has registered for that backend session.

@@ -334,8 +334,8 @@ describe("CamelAIExtensionHost", () => {
       configPath: "/tmp/host-mcp/servers/linear-rest.json",
       id: "linear-rest",
       transport: "stdio",
-      command: process.execPath,
-      args: ["/tmp/rest-api.mjs"],
+      command: "/tmp/acon-mcp-builtin.mjs",
+      args: ["rest-api"],
       cwd: null,
       env: {
         REST_API_BASE_URL: "https://api.linear.app/graphql",
@@ -447,8 +447,8 @@ describe("CamelAIExtensionHost", () => {
       expect(installStdioHostMcpServer).toHaveBeenCalledWith(
         expect.objectContaining({
           id: "linear-rest",
-          command: process.execPath,
-          args: [expect.stringContaining("/desktop-container/mcp-servers/rest-api.mjs")],
+          command: expect.stringContaining("/desktop-container/bin/acon-mcp-builtin.mjs"),
+          args: ["rest-api"],
           env: expect.objectContaining({
             REST_API_BASE_URL: "https://api.linear.app/graphql",
             REST_API_AUTH_TYPE: "bearer",

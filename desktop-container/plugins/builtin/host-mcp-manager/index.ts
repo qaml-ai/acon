@@ -6,13 +6,13 @@ import type { CamelAIExtensionModule } from "../../../sdk";
 
 const HOST_MCP_MANAGER_ID = "host-mcp-manager";
 const HOST_MCP_MANAGER_DIRECTORY = dirname(fileURLToPath(import.meta.url));
-const REST_API_SERVER_PATH = resolve(
+const BUILTIN_MCP_LAUNCHER_PATH = resolve(
   HOST_MCP_MANAGER_DIRECTORY,
   "..",
   "..",
   "..",
-  "mcp-servers",
-  "rest-api.mjs",
+  "bin",
+  "acon-mcp-builtin.mjs",
 );
 
 const oauthConfigSchema = z.object({
@@ -249,8 +249,8 @@ const extension: CamelAIExtensionModule = {
             };
             const installed = await api.installStdioHostMcpServer({
               id: input.id,
-              command: process.execPath,
-              args: [REST_API_SERVER_PATH],
+              command: BUILTIN_MCP_LAUNCHER_PATH,
+              args: ["rest-api"],
               env: {
                 REST_API_BASE_URL: input.baseUrl,
                 REST_API_AUTH_TYPE: auth.type,
