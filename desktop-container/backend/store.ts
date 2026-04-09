@@ -725,6 +725,36 @@ export class DesktopStore {
     return cloneThreadGroup(group);
   }
 
+  deleteThreadGroup(groupId: string): void {
+    const group = this.findThreadGroup(groupId);
+    if (!group) {
+      throw new Error(`Thread group ${groupId} does not exist`);
+    }
+
+    const defaultGroupId = this.getDefaultThreadGroupId();
+    if (group.id === defaultGroupId) {
+      throw new Error("Default group cannot be deleted");
+    }
+
+    const timestamp = now();
+    for (const thread of this.state.threads) {
+      if (thread.groupId === group.id) {
+        thread.groupId = defaultGroupId;
+        thread.updatedAt = timestamp;
+      }
+    }
+
+    this.state.threadGroups = (this.state.threadGroups ?? []).filter(
+      (entry) => entry.id !== group.id,
+    );
+    if (this.state.activeGroupId === group.id) {
+      this.state.activeGroupId = defaultGroupId;
+    }
+    this.touchThreadGroup(defaultGroupId, timestamp);
+    this.sortThreads();
+    this.persist();
+  }
+
   setActiveGroup(groupId: string): void {
     const group = this.findThreadGroup(groupId);
     if (!group) {

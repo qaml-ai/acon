@@ -358,6 +358,10 @@ export type DesktopClientEvent =
       title: string;
     }
   | {
+      type: "delete_group";
+      groupId: string;
+    }
+  | {
       type: "create_thread";
       title?: string;
       groupId?: string;

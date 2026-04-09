@@ -255,6 +255,11 @@ export class DesktopService {
     this.emitSnapshot();
   }
 
+  deleteGroup(groupId: string): void {
+    this.store.deleteThreadGroup(groupId);
+    this.emitSnapshot();
+  }
+
   selectGroup(groupId: string): void {
     this.store.setActiveGroup(groupId);
     this.emitSnapshot();
@@ -763,6 +768,10 @@ export class DesktopService {
       }
       case "update_group": {
         this.updateGroup(event.groupId, event.title);
+        return;
+      }
+      case "delete_group": {
+        this.deleteGroup(event.groupId);
         return;
       }
       case "select_thread": {

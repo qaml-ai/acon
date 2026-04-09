@@ -302,6 +302,35 @@ describe("DesktopService", () => {
     expect(snapshot.threadGroups.find((group) => group.id === groupId)?.title).toBe("Planning");
   });
 
+  it("deletes a non-default group and moves its threads to the default group", () => {
+    const { runtime } = createRuntimeManagerStub();
+    const service = new DesktopService(runtime);
+    const defaultGroupId = service.getSnapshot().threadGroups[0]!.id;
+
+    service.handleClientEvent({ type: "create_group", title: "Bugs" });
+    const createdGroupId = service
+      .getSnapshot()
+      .threadGroups.find((group) => group.title === "Bugs")!.id;
+
+    service.handleClientEvent({
+      type: "create_thread",
+      groupId: createdGroupId,
+    });
+    const movedThreadId = service.getSnapshot().activeThreadId!;
+
+    service.handleClientEvent({
+      type: "delete_group",
+      groupId: createdGroupId,
+    });
+
+    const snapshot = service.getSnapshot();
+    expect(snapshot.threadGroups.some((group) => group.id === createdGroupId)).toBe(false);
+    expect(snapshot.threads.find((thread) => thread.id === movedThreadId)?.groupId).toBe(
+      defaultGroupId,
+    );
+    expect(snapshot.activeGroupId).toBe(defaultGroupId);
+  });
+
   it("stops the active turn with runtime cancellation", async () => {
     const { runtime, pendingPrompts, streamPrompt, cancelPrompt } = createRuntimeManagerStub();
     const service = new DesktopService(runtime);

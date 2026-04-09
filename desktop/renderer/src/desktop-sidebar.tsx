@@ -8,6 +8,7 @@ import {
   Plus,
   Settings,
   TerminalSquare,
+  Trash2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -45,10 +46,11 @@ interface DesktopSidebarProps {
   activeThreadId: string | null;
   activeViewId: string | null;
   connectionState: "connecting" | "open" | "closed";
-  onCreateGroup: (title?: string) => void;
+  onRequestCreateGroup: () => void;
   onCreateThread: (groupId?: string) => void;
   onOpenSettings: () => void;
-  onRenameGroup: (groupId: string, title: string) => void;
+  onRequestDeleteGroup: (groupId: string) => void;
+  onRequestRenameGroup: (groupId: string) => void;
   onSelectGroup: (groupId: string) => void;
   onSelectThread: (threadId: string) => void;
   onSelectView: (viewId: string) => void;
@@ -63,9 +65,10 @@ type SidebarPanelComponentProps = Pick<
   DesktopSidebarProps,
   | "activeThreadId"
   | "activeViewId"
-  | "onCreateGroup"
+  | "onRequestCreateGroup"
   | "onCreateThread"
-  | "onRenameGroup"
+  | "onRequestDeleteGroup"
+  | "onRequestRenameGroup"
   | "onSelectGroup"
   | "onSelectThread"
   | "onSelectView"
@@ -97,9 +100,10 @@ function shouldShowRuntimeCard(snapshot: DesktopSnapshot | null): boolean {
 
 function ChatRecentThreadsSidebarPanel({
   activeThreadId,
-  onCreateGroup,
+  onRequestCreateGroup,
   onCreateThread,
-  onRenameGroup,
+  onRequestDeleteGroup,
+  onRequestRenameGroup,
   onSelectGroup,
   onSelectThread,
   snapshot,
@@ -107,9 +111,10 @@ function ChatRecentThreadsSidebarPanel({
 }: Pick<
   SidebarPanelComponentProps,
   | "activeThreadId"
-  | "onCreateGroup"
+  | "onRequestCreateGroup"
   | "onCreateThread"
-  | "onRenameGroup"
+  | "onRequestDeleteGroup"
+  | "onRequestRenameGroup"
   | "onSelectGroup"
   | "onSelectThread"
   | "snapshot"
@@ -135,13 +140,7 @@ function ChatRecentThreadsSidebarPanel({
       <SidebarGroupLabel>Chats</SidebarGroupLabel>
       <SidebarGroupAction
         aria-label="Create new group"
-        onClick={() => {
-          const title = window.prompt("Name the new group", "New group");
-          if (!title || !title.trim()) {
-            return;
-          }
-          onCreateGroup(title.trim());
-        }}
+        onClick={onRequestCreateGroup}
       >
         <Plus />
       </SidebarGroupAction>
@@ -200,16 +199,20 @@ function ChatRecentThreadsSidebarPanel({
                       size="icon-xs"
                       variant="ghost"
                       aria-label={`Rename ${group.title}`}
-                      onClick={() => {
-                        const title = window.prompt("Rename group", group.title);
-                        if (!title || !title.trim() || title.trim() === group.title) {
-                          return;
-                        }
-                        onRenameGroup(group.id, title.trim());
-                      }}
+                      onClick={() => onRequestRenameGroup(group.id)}
                     >
                       <Pencil />
                     </Button>
+                    {group.id !== groups[0]?.id ? (
+                      <Button
+                        size="icon-xs"
+                        variant="ghost"
+                        aria-label={`Delete ${group.title}`}
+                        onClick={() => onRequestDeleteGroup(group.id)}
+                      >
+                        <Trash2 />
+                      </Button>
+                    ) : null}
                     <Button
                       size="icon-xs"
                       variant="ghost"
@@ -315,10 +318,11 @@ export function DesktopSidebar({
   activeThreadId,
   activeViewId,
   connectionState,
-  onCreateGroup,
+  onRequestCreateGroup,
   onCreateThread,
   onOpenSettings,
-  onRenameGroup,
+  onRequestDeleteGroup,
+  onRequestRenameGroup,
   onSelectGroup,
   onSelectThread,
   onSelectView,
@@ -408,9 +412,10 @@ export function DesktopSidebar({
                 <HostComponent
                   activeThreadId={activeThreadId}
                   activeViewId={activeViewId}
-                  onCreateGroup={onCreateGroup}
+                  onRequestCreateGroup={onRequestCreateGroup}
                   onCreateThread={onCreateThread}
-                  onRenameGroup={onRenameGroup}
+                  onRequestDeleteGroup={onRequestDeleteGroup}
+                  onRequestRenameGroup={onRequestRenameGroup}
                   onSelectGroup={onSelectGroup}
                   onSelectThread={onSelectThread}
                   onSelectView={onSelectView}
@@ -442,9 +447,10 @@ export function DesktopSidebar({
               key={panel.id}
               activeThreadId={activeThreadId}
               activeViewId={activeViewId}
-              onCreateGroup={onCreateGroup}
+              onRequestCreateGroup={onRequestCreateGroup}
               onCreateThread={onCreateThread}
-              onRenameGroup={onRenameGroup}
+              onRequestDeleteGroup={onRequestDeleteGroup}
+              onRequestRenameGroup={onRequestRenameGroup}
               onSelectGroup={onSelectGroup}
               onSelectThread={onSelectThread}
               onSelectView={onSelectView}
