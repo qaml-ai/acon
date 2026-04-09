@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
@@ -10,6 +10,7 @@ const stageRendererRoot = resolve(stageDesktopRoot, "renderer");
 const stagePluginsRoot = resolve(stageDesktopRoot, "plugins");
 const stageBinRoot = resolve(stageDesktopRoot, "bin");
 const stageLibexecRoot = resolve(stageDesktopRoot, "libexec");
+const stageMcpServersRoot = resolve(stageDesktopRoot, "mcp-servers");
 const stageImagesRoot = resolve(stageDesktopRoot, "container-images");
 const vendorAppleContainerRoot = resolve(
   repoRoot,
@@ -19,6 +20,8 @@ const builtinPluginsRoot = resolve(
   repoRoot,
   "desktop-container/plugins/builtin",
 );
+const builtinMcpBinRoot = resolve(repoRoot, "desktop-container/bin");
+const builtinMcpServersRoot = resolve(repoRoot, "desktop-container/mcp-servers");
 const rendererDistRoot = resolve(repoRoot, "desktop/renderer-dist");
 const backendBundleEntry = resolve(stageBackendRoot, "index.mjs");
 const bundleManifestPath = resolve(stageRoot, "bundle-manifest.json");
@@ -67,6 +70,7 @@ function cleanStageRoot() {
   mkdirSync(stagePluginsRoot, { recursive: true });
   mkdirSync(stageBinRoot, { recursive: true });
   mkdirSync(stageLibexecRoot, { recursive: true });
+  mkdirSync(stageMcpServersRoot, { recursive: true });
   mkdirSync(stageImagesRoot, { recursive: true });
 }
 
@@ -127,6 +131,21 @@ function stageBuiltinPlugins() {
   });
 }
 
+function stageBuiltinMcpLaunchers() {
+  ensureExists(builtinMcpBinRoot, "builtin MCP launcher scripts");
+  ensureExists(builtinMcpServersRoot, "builtin MCP server scripts");
+  log("staging builtin MCP launchers");
+  cpSync(builtinMcpBinRoot, stageBinRoot, {
+    force: true,
+    recursive: true,
+  });
+  cpSync(builtinMcpServersRoot, stageMcpServersRoot, {
+    force: true,
+    recursive: true,
+  });
+  chmodSync(resolve(stageBinRoot, "acon-mcp-builtin.mjs"), 0o755);
+}
+
 function writeManifest() {
   const manifest = {
     builtAt: new Date().toISOString(),
@@ -162,6 +181,7 @@ function main() {
   stageBackend();
   stageAppleContainerRuntime();
   stageBuiltinPlugins();
+  stageBuiltinMcpLaunchers();
   writeManifest();
   packageAppBundle();
 

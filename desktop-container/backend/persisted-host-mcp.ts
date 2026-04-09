@@ -20,6 +20,11 @@ import {
   type HostMcpOAuthConfig,
   type HostMcpOAuthManager,
 } from "./host-mcp-oauth";
+import {
+  deletePersistedHostSecret,
+  getPersistedHostSecret,
+  resolvePersistedSecretRefs,
+} from "./host-secrets";
 
 const HOST_MCP_DIRECTORY_NAME = "host-mcp";
 const HOST_MCP_SERVERS_DIRECTORY_NAME = "servers";
@@ -32,12 +37,14 @@ export interface PersistedHostMcpStdioServerRecord {
   args: string[];
   cwd: string | null;
   env: Record<string, string>;
+  envSecretRefs: Record<string, string>;
   name: string | null;
   version: string | null;
 }
 
 export interface PersistedHostMcpHttpServerRecord {
   headers: Record<string, string>;
+  headerSecretRefs: Record<string, string>;
   id: string;
   name: string | null;
   oauth: HostMcpOAuthConfig | null;
@@ -55,6 +62,7 @@ export interface PersistedHostMcpStdioInstallOptions {
   command: string;
   cwd?: string | null;
   env?: Record<string, string>;
+  envSecretRefs?: Record<string, string>;
   id: string;
   name?: string | null;
   version?: string | null;
@@ -62,8 +70,10 @@ export interface PersistedHostMcpStdioInstallOptions {
 
 export interface PersistedHostMcpHttpInstallOptions {
   headers?: Record<string, string>;
+  headerSecretRefs?: Record<string, string>;
   id: string;
   name?: string | null;
+  oauth?: HostMcpOAuthConfig | null;
   transport?: HostMcpRemoteTransport;
   url: string;
   version?: string | null;
@@ -135,6 +145,19 @@ function normalizeStringRecord(
   return normalized;
 }
 
+function normalizeSecretRefRecord(
+  value: unknown,
+  label: string,
+): Record<string, string> {
+  const normalized = normalizeStringRecord(value, label);
+  for (const [key, secretRef] of Object.entries(normalized)) {
+    if (!secretRef.trim()) {
+      throw new Error(`${label} secret ref for ${key} must be a non-empty string.`);
+    }
+  }
+  return normalized;
+}
+
 function normalizeOptionalString(
   value: unknown,
   label: string,
@@ -199,6 +222,10 @@ function normalizeOauthConfig(value: unknown): HostMcpOAuthConfig | null {
   const record = value as Record<string, unknown>;
   const oauth: HostMcpOAuthConfig = {
     clientId: normalizeOptionalString(record.clientId, "Host MCP OAuth clientId"),
+    clientSecretRef: normalizeOptionalString(
+      record.clientSecretRef,
+      "Host MCP OAuth clientSecretRef",
+    ),
     clientMetadataUrl: normalizeOptionalString(
       record.clientMetadataUrl,
       "Host MCP OAuth clientMetadataUrl",
@@ -206,10 +233,6 @@ function normalizeOauthConfig(value: unknown): HostMcpOAuthConfig | null {
     clientName: normalizeOptionalString(
       record.clientName,
       "Host MCP OAuth clientName",
-    ),
-    clientSecret: normalizeOptionalString(
-      record.clientSecret,
-      "Host MCP OAuth clientSecret",
     ),
     clientUri: normalizeOptionalString(record.clientUri, "Host MCP OAuth clientUri"),
     scope: normalizeOptionalString(record.scope, "Host MCP OAuth scope"),
@@ -266,6 +289,10 @@ export function normalizePersistedHostMcpServerRecord(
         options.workspaceDirectory,
       ),
       env: normalizeStringRecord(record.env, "Host MCP env"),
+      envSecretRefs: normalizeSecretRefRecord(
+        record.envSecretRefs,
+        "Host MCP envSecretRefs",
+      ),
       name,
       version,
     };
@@ -273,6 +300,10 @@ export function normalizePersistedHostMcpServerRecord(
 
   return {
     headers: normalizeStringRecord(record.headers, "Host MCP headers"),
+    headerSecretRefs: normalizeSecretRefRecord(
+      record.headerSecretRefs,
+      "Host MCP headerSecretRefs",
+    ),
     id,
     name,
     oauth: normalizeOauthConfig(record.oauth),
@@ -352,6 +383,7 @@ export function installPersistedHostMcpStdioServer(options: {
     ...options,
     server: {
       ...options.server,
+      envSecretRefs: options.server.envSecretRefs ?? {},
       transport: "stdio",
     },
   });
@@ -362,14 +394,23 @@ export function installPersistedHostMcpHttpServer(options: {
   workspaceDirectory: string;
   server: PersistedHostMcpHttpInstallOptions;
 }): PersistedHostMcpInstallResult {
-  return installPersistedHostMcpServer({
+  const clientSecretRef =
+    typeof options.server.oauth?.clientSecretRef === "string"
+      ? options.server.oauth.clientSecretRef.trim() || null
+      : null;
+  const installed = installPersistedHostMcpServer({
     ...options,
     server: {
       ...options.server,
-      oauth: createDefaultHostMcpOAuthConfig(),
+      headerSecretRefs: options.server.headerSecretRefs ?? {},
+      oauth: {
+        ...(options.server.oauth ?? createDefaultHostMcpOAuthConfig()),
+        clientSecretRef,
+      },
       transport: options.server.transport ?? "streamable-http",
     },
   });
+  return installed;
 }
 
 export function uninstallPersistedHostMcpServer(options: {
@@ -380,6 +421,29 @@ export function uninstallPersistedHostMcpServer(options: {
   const configPath = getHostMcpServerConfigPath(options.dataDirectory, serverId);
   if (!existsSync(configPath)) {
     return false;
+  }
+
+  try {
+    const existing = normalizePersistedHostMcpServerRecord(
+      JSON.parse(readFileSync(configPath, "utf8")) as unknown,
+      {
+        workspaceDirectory: process.cwd(),
+      },
+    );
+    if (existing.transport === "stdio") {
+      for (const secretRef of Object.values(existing.envSecretRefs)) {
+        deletePersistedHostSecret(options.dataDirectory, secretRef);
+      }
+    } else if (existing.transport === "streamable-http" || existing.transport === "sse") {
+      for (const secretRef of Object.values(existing.headerSecretRefs)) {
+        deletePersistedHostSecret(options.dataDirectory, secretRef);
+      }
+      if (existing.oauth?.clientSecretRef) {
+        deletePersistedHostSecret(options.dataDirectory, existing.oauth.clientSecretRef);
+      }
+    }
+  } catch {
+    // Keep uninstall best-effort even if the persisted config can no longer be parsed.
   }
 
   rmSync(configPath, { force: true });
@@ -411,6 +475,11 @@ export function createPersistedHostMcpServerRegistration(
             env: {
               ...process.env,
               ...server.env,
+              ...resolvePersistedSecretRefs(
+                options.dataDirectory,
+                server.envSecretRefs,
+                `Host MCP stdio server ${server.id} env`,
+              ),
             },
             stderr: "pipe",
           },
@@ -421,6 +490,8 @@ export function createPersistedHostMcpServerRegistration(
         ),
     };
   }
+
+  const hydratedOauth = server.oauth;
 
   return {
     id: server.id,
@@ -433,8 +504,15 @@ export function createPersistedHostMcpServerRegistration(
       createRemoteProxyHostMcpServer(
         {
           dataDirectory: options.dataDirectory,
-          headers: server.headers,
-          oauth: server.oauth,
+          headers: {
+            ...server.headers,
+            ...resolvePersistedSecretRefs(
+              options.dataDirectory,
+              server.headerSecretRefs,
+              `Host MCP remote server ${server.id} header`,
+            ),
+          },
+          oauth: hydratedOauth,
           oauthManager: options.oauthManager ?? null,
           serverId: server.id,
           transport: server.transport,

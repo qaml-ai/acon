@@ -1,42 +1,11 @@
 export const DEFAULT_HOST_RPC_SOCKET_PATH: "/data/host-rpc/bridge.sock";
 export const DEFAULT_HOST_RPC_TIMEOUT_MS: 30000;
 export const DEFAULT_MCP_PROTOCOL_VERSION: "2025-03-26";
+export const DEFAULT_MCP_CLIENT_VERSION: "0.1.0";
 export const DEFAULT_MCP_CLIENT_INFO: Readonly<{
   name: "@acon/host-rpc";
-  version: "1.0.0";
+  version: typeof DEFAULT_MCP_CLIENT_VERSION;
 }>;
-
-export type JsonRpcId = string | number | null;
-
-export interface JsonRpcErrorObject {
-  code?: string | number | null;
-  message?: string;
-  data?: unknown;
-}
-
-export interface JsonRpcRequestMessage {
-  jsonrpc: "2.0";
-  id?: JsonRpcId;
-  method: string;
-  params?: unknown;
-}
-
-export interface JsonRpcResultMessage<TResult = unknown> {
-  jsonrpc: "2.0";
-  id: JsonRpcId;
-  result: TResult;
-}
-
-export interface JsonRpcErrorMessage {
-  jsonrpc: "2.0";
-  id: JsonRpcId;
-  error: JsonRpcErrorObject;
-}
-
-export type JsonRpcMessage =
-  | JsonRpcRequestMessage
-  | JsonRpcResultMessage
-  | JsonRpcErrorMessage;
 
 export interface HostRpcClientOptions {
   env?: NodeJS.ProcessEnv;
@@ -88,19 +57,117 @@ export interface HostMcpToolSummary {
   [key: string]: unknown;
 }
 
-export interface HostRpcMcpCloseResponse {
-  ok: boolean;
-}
-
 export interface HostRpcMcpClientInfo {
   name?: string;
   version?: string;
 }
 
-export interface HostRpcListMcpToolsOptions {
-  sessionId?: string;
+export interface HostRpcMcpRequestOptions {
   protocolVersion?: string;
   clientInfo?: HostRpcMcpClientInfo;
+}
+
+export type HostRpcListMcpToolsOptions = HostRpcMcpRequestOptions;
+export type HostRpcCallMcpToolOptions = HostRpcMcpRequestOptions;
+export type HostRpcListMcpPromptsOptions = HostRpcMcpRequestOptions;
+export type HostRpcGetMcpPromptOptions = HostRpcMcpRequestOptions;
+export type HostRpcListMcpResourcesOptions = HostRpcMcpRequestOptions;
+export type HostRpcListMcpResourceTemplatesOptions = HostRpcMcpRequestOptions;
+export type HostRpcReadMcpResourceOptions = HostRpcMcpRequestOptions;
+
+export interface HostMcpPromptArgumentSummary {
+  name: string;
+  title?: string;
+  description?: string;
+  required?: boolean;
+}
+
+export interface HostMcpPromptSummary {
+  name: string;
+  title?: string;
+  description?: string;
+  arguments?: HostMcpPromptArgumentSummary[];
+  _meta?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface HostMcpContentBlock {
+  type: string;
+  [key: string]: unknown;
+}
+
+export interface HostMcpPromptMessage {
+  role: string;
+  content: HostMcpContentBlock;
+}
+
+export interface HostMcpPromptResult {
+  description?: string;
+  messages: HostMcpPromptMessage[];
+  _meta?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface HostMcpResourceSummary {
+  name: string;
+  title?: string;
+  uri: string;
+  description?: string;
+  mimeType?: string;
+  annotations?: Record<string, unknown>;
+  size?: number;
+  _meta?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface HostMcpResourceTemplateSummary {
+  name: string;
+  title?: string;
+  uriTemplate: string;
+  description?: string;
+  mimeType?: string;
+  annotations?: Record<string, unknown>;
+  _meta?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface HostMcpTextResourceContents {
+  uri: string;
+  mimeType?: string;
+  text: string;
+  _meta?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface HostMcpBlobResourceContents {
+  uri: string;
+  mimeType?: string;
+  blob: string;
+  _meta?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface HostMcpReadResourceResult {
+  contents: Array<HostMcpTextResourceContents | HostMcpBlobResourceContents>;
+  _meta?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface HostRpcMcpSession {
+  serverId: string;
+  listTools(): Promise<HostMcpToolSummary[]>;
+  callTool<TResult = unknown>(
+    toolName: string,
+    toolArguments?: unknown,
+  ): Promise<TResult | null>;
+  listPrompts(): Promise<HostMcpPromptSummary[]>;
+  getPrompt(
+    promptName: string,
+    promptArguments?: Record<string, string>,
+  ): Promise<HostMcpPromptResult | null>;
+  listResources(): Promise<HostMcpResourceSummary[]>;
+  listResourceTemplates(): Promise<HostMcpResourceTemplateSummary[]>;
+  readResource(uri: string): Promise<HostMcpReadResourceResult | null>;
 }
 
 export class HostRpcError extends Error {
@@ -121,23 +188,48 @@ export function createHostRpcClient(options?: HostRpcClientOptions): HostRpcClie
 
 export class HostRpcClient {
   constructor(options?: HostRpcClientOptions);
-  readonly socketPath: string;
-  readonly timeoutMs: number;
+  socketPath: string;
+  timeoutMs: number;
   request<TResult = unknown>(method: string, params?: unknown): Promise<TResult>;
   ping(params?: unknown): Promise<HostRpcPingResponse>;
   fetch(params: HostRpcFetchRequest): Promise<HostRpcFetchResponse>;
   listMcpServers(): Promise<HostMcpServerSummary[]>;
-  mcpRequest(
+  withMcpSession<TResult = unknown>(
     serverId: string,
-    sessionId: string,
-    message: JsonRpcMessage,
-  ): Promise<JsonRpcMessage[]>;
-  closeMcpSession(
-    serverId: string,
-    sessionId: string,
-  ): Promise<HostRpcMcpCloseResponse>;
+    callback: (session: HostRpcMcpSession) => Promise<TResult> | TResult,
+    options?: HostRpcMcpRequestOptions,
+  ): Promise<TResult>;
   listMcpTools(
     serverId: string,
     options?: HostRpcListMcpToolsOptions,
   ): Promise<HostMcpToolSummary[]>;
+  callMcpTool<TResult = unknown>(
+    serverId: string,
+    toolName: string,
+    toolArguments?: unknown,
+    options?: HostRpcCallMcpToolOptions,
+  ): Promise<TResult | null>;
+  listMcpPrompts(
+    serverId: string,
+    options?: HostRpcListMcpPromptsOptions,
+  ): Promise<HostMcpPromptSummary[]>;
+  getMcpPrompt(
+    serverId: string,
+    promptName: string,
+    promptArguments?: Record<string, string>,
+    options?: HostRpcGetMcpPromptOptions,
+  ): Promise<HostMcpPromptResult | null>;
+  listMcpResources(
+    serverId: string,
+    options?: HostRpcListMcpResourcesOptions,
+  ): Promise<HostMcpResourceSummary[]>;
+  listMcpResourceTemplates(
+    serverId: string,
+    options?: HostRpcListMcpResourceTemplatesOptions,
+  ): Promise<HostMcpResourceTemplateSummary[]>;
+  readMcpResource(
+    serverId: string,
+    uri: string,
+    options?: HostRpcReadMcpResourceOptions,
+  ): Promise<HostMcpReadResourceResult | null>;
 }

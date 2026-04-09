@@ -238,15 +238,9 @@ export interface CamelAIMcpServerRegistration {
   ) => CamelAIHostMcpSessionServer;
 }
 
-/** @deprecated Use CamelAIMcpServerRegistration with registerMcpServer(id, registration). */
-export interface CamelAIHostMcpServerRegistration
-  extends CamelAIMcpServerRegistration {
-  id: string;
-}
-
 export interface CamelAIHostMcpOAuthConfig {
   clientId: string | null;
-  clientSecret: string | null;
+  clientSecretRef: string | null;
   clientName: string | null;
   clientUri: string | null;
   clientMetadataUrl: string | null;
@@ -261,6 +255,7 @@ export interface CamelAIPersistedHostMcpStdioServerRecord {
   args: string[];
   cwd: string | null;
   env: Record<string, string>;
+  envSecretRefs: Record<string, string>;
   name: string | null;
   version: string | null;
 }
@@ -270,6 +265,7 @@ export interface CamelAIPersistedHostMcpHttpServerRecord {
   transport: "streamable-http" | "sse";
   url: string;
   headers: Record<string, string>;
+  headerSecretRefs: Record<string, string>;
   oauth: CamelAIHostMcpOAuthConfig | null;
   name: string | null;
   version: string | null;
@@ -291,6 +287,7 @@ export interface CamelAIInstallStdioHostMcpServerOptions {
   args?: string[];
   cwd?: string | null;
   env?: Record<string, string>;
+  envSecretRefs?: Record<string, string>;
   name?: string | null;
   version?: string | null;
 }
@@ -312,8 +309,21 @@ export interface CamelAIInstallHttpHostMcpServerOptions {
   url: string;
   transport?: "streamable-http" | "sse";
   headers?: Record<string, string>;
+  headerSecretRefs?: Record<string, string>;
+  oauth?: CamelAIHostMcpOAuthConfig | null;
   name?: string | null;
   version?: string | null;
+}
+
+export interface CamelAIPromptToStoreSecretOptions {
+  secretRef?: string | null;
+  title: string;
+  message?: string | null;
+  fieldLabel?: string | null;
+}
+
+export interface CamelAIStoredSecretResult {
+  secretRef: string;
 }
 
 export interface CamelAIBeforePromptEvent {
@@ -408,12 +418,6 @@ export interface CamelAIPluginApi {
     registration: CamelAIMcpServerRegistration,
   ): CamelAIDisposable;
   unregisterMcpServer(serverId: string): boolean;
-  /** @deprecated Use registerMcpServer(id, registration). */
-  registerHostMcpServer(
-    registration: CamelAIHostMcpServerRegistration,
-  ): CamelAIDisposable;
-  /** @deprecated Use unregisterMcpServer(serverId). */
-  unregisterHostMcpServer(serverId: string): boolean;
   listInstalledHostMcpServers(): CamelAIPersistedHostMcpServerRecord[];
   installStdioHostMcpServer(
     server: CamelAIInstallStdioHostMcpServerOptions,
@@ -421,6 +425,9 @@ export interface CamelAIPluginApi {
   installHttpHostMcpServer(
     server: CamelAIInstallHttpHostMcpServerOptions,
   ): Promise<CamelAIInstallHostMcpServerResult>;
+  promptToStoreSecret(
+    options: CamelAIPromptToStoreSecretOptions,
+  ): Promise<CamelAIStoredSecretResult>;
   uninstallInstalledHostMcpServer(serverId: string): Promise<boolean>;
   openThreadPreviewItem(
     target: DesktopPreviewTarget,

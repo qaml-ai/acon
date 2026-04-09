@@ -7,7 +7,7 @@
     "name": "Preview Control",
     "description": "Registers a host-side MCP server that can open and manage thread preview items in the desktop app side pane.",
     "icon": "PanelRightOpen",
-    "permissions": ["thread-preview", "host-mcp"],
+    "permissions": ["thread-preview", "host-mcp", "serve-mcp"],
     "main": "./index.ts"
   }
 }
