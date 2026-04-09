@@ -209,6 +209,50 @@ export interface CamelAIMcpServerRegistration {
   ) => CamelAIHostMcpSessionServer;
 }
 
+/** @deprecated Use CamelAIMcpServerRegistration with registerMcpServer(id, registration). */
+export interface CamelAIHostMcpServerRegistration
+  extends CamelAIMcpServerRegistration {
+  id: string;
+}
+
+export type CamelAIPreviewSelector =
+  | {
+      kind: "fileExtension";
+      value: string;
+    }
+  | {
+      kind: "glob";
+      value: string;
+    }
+  | {
+      kind: "mime";
+      value: string;
+    }
+  | {
+      kind: "url";
+      value: string;
+    }
+  | {
+      kind: "urlHost";
+      value: string;
+    }
+  | {
+      kind: "urlRegex";
+      value: string;
+    };
+
+export type CamelAIPreviewProviderPriority = "option" | "default" | "builtin";
+
+export interface CamelAIPreviewProviderRegistration {
+  title: string;
+  description?: string;
+  selectors: CamelAIPreviewSelector[];
+  priority?: CamelAIPreviewProviderPriority;
+  render: {
+    kind: "webview";
+    webviewId: string;
+  };
+}
 export type CamelAIPreviewTarget =
   | {
       kind: "file";
@@ -360,6 +404,10 @@ export interface CamelAIActivationApi {
   registerCommand(
     id: string,
     command: CamelAICommandRegistration,
+  ): CamelAIDisposable;
+  registerPreviewProvider(
+    id: string,
+    provider: CamelAIPreviewProviderRegistration,
   ): CamelAIDisposable;
   registerTool<TParams = unknown, TResult = unknown>(
     id: string,

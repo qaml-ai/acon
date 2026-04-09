@@ -1,7 +1,8 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
+  DesktopPreviewRenderer,
   DesktopPreviewTarget,
   DesktopPluginPermission,
   DesktopPluginRecord,
@@ -14,6 +15,7 @@ import builtinExtensionLab from "../../plugins/builtin/extension-lab/index";
 import builtinHostMcpManager from "../../plugins/builtin/host-mcp-manager/index";
 import builtinKanban from "../../plugins/builtin/kanban/index";
 import builtinPreviewControl from "../../plugins/builtin/preview-control/index";
+import builtinSpreadsheetPreview from "../../plugins/builtin/spreadsheet-preview/index";
 import builtinThreadJournal from "../../plugins/builtin/thread-journal/index";
 import type { HostMcpServerRegistration } from "../host-mcp";
 import {
@@ -44,6 +46,7 @@ import type {
   CamelAIInstallStdioHostMcpServerOptions,
   CamelAIManifest,
   CamelAIPersistedHostMcpServerRecord,
+  CamelAIPreviewProviderRegistration,
   CamelAIPluginApi,
   CamelAIRuntimeRecord,
   CamelAIToolRegistration,
@@ -86,6 +89,7 @@ const BUILTIN_EXTENSION_MODULES: Record<string, CamelAIExtensionModule> = {
   "host-mcp-manager": builtinHostMcpManager as unknown as CamelAIExtensionModule,
   kanban: builtinKanban as unknown as CamelAIExtensionModule,
   "preview-control": builtinPreviewControl as unknown as CamelAIExtensionModule,
+  "spreadsheet-preview": builtinSpreadsheetPreview as unknown as CamelAIExtensionModule,
   "thread-journal": builtinThreadJournal as unknown as CamelAIExtensionModule,
 };
 const VALID_PLUGIN_PERMISSIONS = new Set<DesktopPluginPermission>([
@@ -407,6 +411,163 @@ function resolveWebviewEntrypoint(
   return resolve(extension.extensionPath, webviewPath);
 }
 
+function getPreviewFileExtension(target: Extract<DesktopPreviewTarget, { kind: "file" }>): string {
+  const filename = target.filename?.trim() || basename(target.path.trim());
+  const dotIndex = filename.lastIndexOf(".");
+  if (dotIndex === -1 || dotIndex === filename.length - 1) {
+    return "";
+  }
+  return filename.slice(dotIndex).toLowerCase();
+}
+
+function escapeRegexCharacter(char: string): string {
+  return /[\\^$+?.()|[\]{}]/.test(char) ? `\\${char}` : char;
+}
+
+function globToRegExp(pattern: string): RegExp {
+  let source = "^";
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index];
+    if (char === "*") {
+      if (pattern[index + 1] === "*") {
+        source += ".*";
+        index += 1;
+      } else {
+        source += "[^/]*";
+      }
+      continue;
+    }
+    if (char === "?") {
+      source += ".";
+      continue;
+    }
+    source += escapeRegexCharacter(char);
+  }
+  source += "$";
+  return new RegExp(source, "i");
+}
+
+function countSpecificCharacters(value: string): number {
+  return value.replace(/[\*\?]/g, "").length;
+}
+
+function getPreviewProviderPriorityScore(
+  provider: CamelAIPreviewProviderRegistration,
+): number {
+  switch (provider.priority) {
+    case "builtin":
+      return 3000;
+    case "option":
+      return 1000;
+    case "default":
+    default:
+      return 2000;
+  }
+}
+
+function getPreviewSelectorSpecificity(
+  selector: CamelAIPreviewProviderRegistration["selectors"][number],
+  target: DesktopPreviewTarget,
+): number | null {
+  if (selector.kind === "fileExtension") {
+    if (target.kind !== "file") {
+      return null;
+    }
+    const normalizedExtension = selector.value.trim().toLowerCase();
+    if (!normalizedExtension) {
+      return null;
+    }
+    const expectedExtension = normalizedExtension.startsWith(".")
+      ? normalizedExtension
+      : `.${normalizedExtension}`;
+    return getPreviewFileExtension(target) === expectedExtension
+      ? 300 + expectedExtension.length
+      : null;
+  }
+
+  if (selector.kind === "glob") {
+    if (target.kind !== "file") {
+      return null;
+    }
+    const pattern = selector.value.trim();
+    if (!pattern) {
+      return null;
+    }
+    try {
+      const regex = globToRegExp(pattern);
+      const candidates = [
+        target.path.trim(),
+        target.path.trim().replace(/^\/+/, ""),
+        target.filename?.trim() || basename(target.path.trim()),
+      ];
+      return candidates.some((candidate) => regex.test(candidate))
+        ? 400 + countSpecificCharacters(pattern)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  if (selector.kind === "mime") {
+    if (target.kind !== "file" || !target.contentType) {
+      return null;
+    }
+    const expectedMime = selector.value.trim().toLowerCase();
+    const actualMime = target.contentType.trim().toLowerCase();
+    if (!expectedMime || !actualMime) {
+      return null;
+    }
+    if (expectedMime.endsWith("/*")) {
+      const prefix = expectedMime.slice(0, -1);
+      return actualMime.startsWith(prefix) ? 350 + prefix.length : null;
+    }
+    return actualMime === expectedMime ? 450 + expectedMime.length : null;
+  }
+
+  if (target.kind !== "url") {
+    return null;
+  }
+
+  const actualUrl = target.url.trim();
+  if (!actualUrl) {
+    return null;
+  }
+
+  if (selector.kind === "url") {
+    const expectedUrl = selector.value.trim();
+    return expectedUrl && expectedUrl === actualUrl
+      ? 700 + expectedUrl.length
+      : null;
+  }
+
+  if (selector.kind === "urlHost") {
+    const expectedHost = selector.value.trim().toLowerCase();
+    if (!expectedHost) {
+      return null;
+    }
+    try {
+      const hostname = new URL(actualUrl).hostname.toLowerCase();
+      return hostname === expectedHost ? 500 + expectedHost.length : null;
+    } catch {
+      return null;
+    }
+  }
+
+  if (selector.kind === "urlRegex") {
+    const pattern = selector.value.trim();
+    if (!pattern) {
+      return null;
+    }
+    try {
+      return new RegExp(pattern).test(actualUrl) ? 600 + pattern.length : null;
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
 function getCompatibilityError(manifest: CamelAIManifest): string | null {
   const declaredApiVersion =
     manifest.apiVersion ?? CAMELAI_CURRENT_API_VERSION;
@@ -471,6 +632,7 @@ export class CamelAIExtensionHost {
       views: new Map(),
       sidebarPanels: new Map(),
       commands: new Map(),
+      previewProviders: new Map(),
       tools: new Map(),
       handlers: new Map(),
       disposables: [],
@@ -529,6 +691,7 @@ export class CamelAIExtensionHost {
       record.views.clear();
       record.sidebarPanels.clear();
       record.commands.clear();
+      record.previewProviders.clear();
       record.tools.clear();
       record.handlers.clear();
       record.registeredHostMcpServerIds.clear();
@@ -765,6 +928,12 @@ export class CamelAIExtensionHost {
           record.commands.delete(id);
         });
       },
+      registerPreviewProvider: (id, provider) => {
+        record.previewProviders.set(id, provider);
+        return this.registerRecordDisposable(record, () => {
+          record.previewProviders.delete(id);
+        });
+      },
       registerTool: (id, tool) => {
         record.tools.set(id, tool);
         return this.registerRecordDisposable(record, () => {
@@ -927,6 +1096,83 @@ export class CamelAIExtensionHost {
       record.activationError =
         error instanceof Error ? error.message : String(error);
     }
+  }
+
+  resolvePreviewRenderer(target: DesktopPreviewTarget): DesktopPreviewRenderer | null {
+    let bestMatch:
+      | {
+          priority: number;
+          specificity: number;
+          order: number;
+          renderer: DesktopPreviewRenderer;
+        }
+      | null = null;
+    let order = 0;
+
+    for (const record of this.records.values()) {
+      if (
+        !record.enabled ||
+        !record.activated ||
+        record.activationError ||
+        record.compatibilityError
+      ) {
+        continue;
+      }
+
+      for (const [providerId, provider] of record.previewProviders.entries()) {
+        order += 1;
+        const specificity = provider.selectors.reduce<number | null>(
+          (best, selector) => {
+            const score = getPreviewSelectorSpecificity(selector, target);
+            if (score === null) {
+              return best;
+            }
+            return best === null || score > best ? score : best;
+          },
+          null,
+        );
+        if (specificity === null) {
+          continue;
+        }
+
+        const entrypoint = resolveWebviewEntrypoint(
+          record.discovered,
+          provider.render.webviewId,
+        );
+        if (!entrypoint) {
+          continue;
+        }
+
+        const candidate = {
+          priority: getPreviewProviderPriorityScore(provider),
+          specificity,
+          order,
+          renderer: {
+            pluginId: record.discovered.id,
+            providerId: getContributionId(record.discovered.id, providerId),
+            title: provider.title,
+            render: {
+              kind: "webview",
+              entrypoint,
+            },
+          } satisfies DesktopPreviewRenderer,
+        };
+
+        if (
+          !bestMatch ||
+          candidate.priority > bestMatch.priority ||
+          (candidate.priority === bestMatch.priority &&
+            candidate.specificity > bestMatch.specificity) ||
+          (candidate.priority === bestMatch.priority &&
+            candidate.specificity === bestMatch.specificity &&
+            candidate.order < bestMatch.order)
+        ) {
+          bestMatch = candidate;
+        }
+      }
+    }
+
+    return bestMatch?.renderer ?? null;
   }
 
   private createPluginRecord(record: CamelAIRuntimeRecord): DesktopPluginRecord {

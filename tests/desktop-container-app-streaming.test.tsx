@@ -1018,6 +1018,58 @@ describe("desktop container renderer streaming", () => {
     );
   });
 
+  it("renders a plugin-owned custom preview renderer for spreadsheet files", async () => {
+    const snapshot = createSnapshot();
+    snapshot.threadPreviewStateById["thread-1"] = {
+      visible: true,
+      activeItemId: "file:workspace:/reports/data.csv",
+      items: [
+        {
+          id: "file:workspace:/reports/data.csv",
+          title: "data.csv",
+          target: {
+            kind: "file",
+            source: "workspace",
+            path: "/reports/data.csv",
+            filename: "data.csv",
+            title: "data.csv",
+            contentType: "text/csv",
+            workspaceId: null,
+          },
+          src: "desktop-plugin://local/tmp/reports/data.csv",
+          contentType: "text/csv",
+          renderer: {
+            pluginId: "spreadsheet-preview",
+            providerId: "plugin:spreadsheet-preview:spreadsheet.table",
+            title: "Spreadsheet Preview",
+            render: {
+              kind: "webview",
+              entrypoint: "/tmp/spreadsheet-preview/webviews/spreadsheet-preview.html",
+            },
+          },
+        },
+      ],
+    };
+
+    await renderAppWithShell(snapshot);
+
+    await waitFor(() => {
+      expect(screen.getByTitle("data.csv custom preview")).toBeInTheDocument();
+    });
+
+    expect(screen.getByText("Spreadsheet Preview")).toBeInTheDocument();
+    expect(screen.getByTitle("data.csv custom preview")).toHaveAttribute(
+      "src",
+      expect.stringContaining(
+        "desktop-plugin://local/tmp/spreadsheet-preview/webviews/spreadsheet-preview.html",
+      ),
+    );
+    expect(screen.getByTitle("data.csv custom preview")).toHaveAttribute(
+      "src",
+      expect.stringContaining("previewSrc=desktop-plugin%3A%2F%2Flocal%2Ftmp%2Freports%2Fdata.csv"),
+    );
+  });
+
   it("keeps the preview iframe mounted while chat messages stream", async () => {
     const snapshot = createSnapshot();
     snapshot.threadPreviewStateById["thread-1"] = {

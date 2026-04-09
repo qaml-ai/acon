@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CamelAIExtensionHost } from "../desktop-container/backend/extensions/host";
 import { HostMcpRegistry } from "../desktop-container/backend/host-mcp";
@@ -30,6 +30,7 @@ function writeUserPlugin(
     id: string;
     manifest?: Record<string, unknown>;
     code: string;
+    files?: Record<string, string>;
   },
 ) {
   const pluginDirectory = resolve(dataDir, "plugins", options.id);
@@ -53,6 +54,11 @@ function writeUserPlugin(
     ),
   );
   writeFileSync(resolve(pluginDirectory, "index.mjs"), options.code);
+  for (const [relativePath, contents] of Object.entries(options.files ?? {})) {
+    const filePath = resolve(pluginDirectory, relativePath);
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, contents);
+  }
 }
 
 async function initializeRegistryServer(
@@ -122,7 +128,7 @@ describe("CamelAIExtensionHost", () => {
     rmSync(sandboxDataDir, { recursive: true, force: true });
   });
 
-  it("discovers builtin v2 extensions and exposes workbench views plus panels", async () => {
+  it("discovers builtin v2 extensions and exposes workbench views", async () => {
     const host = new CamelAIExtensionHost();
     const context = createActivationContext();
 
@@ -134,6 +140,7 @@ describe("CamelAIExtensionHost", () => {
         "extension-lab",
         "host-mcp-manager",
         "preview-control",
+        "spreadsheet-preview",
         "thread-journal",
       ]),
     );
@@ -146,6 +153,9 @@ describe("CamelAIExtensionHost", () => {
           isDefault: false,
         }),
       ]),
+    );
+    expect(host.getDefaultViewId("workspace")).toBe(
+      "plugin:extension-lab:extension-lab.home",
     );
     expect(snapshot.panels).toBeUndefined();
     expect(host.getDefaultViewId("thread")).toBe(null);
@@ -169,6 +179,26 @@ describe("CamelAIExtensionHost", () => {
       .getSnapshot(context)
       .plugins.find((plugin) => plugin.id === "thread-journal");
     expect(threadJournal?.runtime.subscribedEvents).toContain("before_prompt");
+  });
+
+  it("activates the builtin spreadsheet preview plugin", async () => {
+    const host = new CamelAIExtensionHost();
+    const context = createActivationContext();
+
+    await host.initialize(context);
+
+    const plugin = host
+      .getSnapshot(context)
+      .plugins.find((entry) => entry.id === "spreadsheet-preview");
+
+    expect(plugin).toMatchObject({
+      id: "spreadsheet-preview",
+      enabled: true,
+      runtime: {
+        activated: true,
+        activationError: null,
+      },
+    });
   });
 
   it("registers the builtin host MCP manager server", async () => {
@@ -563,14 +593,22 @@ describe("CamelAIExtensionHost", () => {
     await host.initialize(context);
     await host.refresh(context);
 
-    expect(registerMcpServer).toHaveBeenCalledTimes(2);
+    expect(registerMcpServer).toHaveBeenCalledTimes(4);
     expect(registerMcpServer).toHaveBeenCalledWith(
       expect.objectContaining({
         id: "plugin:host-mcp-manager:host-mcp-manager",
       }),
     );
+    expect(registerMcpServer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "plugin:preview-control:preview-control",
+      }),
+    );
     expect(unregisterMcpServer).toHaveBeenCalledWith(
       "plugin:host-mcp-manager:host-mcp-manager",
+    );
+    expect(unregisterMcpServer).toHaveBeenCalledWith(
+      "plugin:preview-control:preview-control",
     );
   });
 });
