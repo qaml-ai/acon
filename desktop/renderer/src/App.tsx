@@ -1933,84 +1933,88 @@ function WorkbenchTabStrip({
   }
 
   return (
-    <div
-      role="tablist"
-      aria-label="Open workbench tabs"
-      className="desktop-workbench-tablist desktop-no-drag"
-    >
-      {tabs.map((tab) => {
-        const TabIcon = getDesktopIcon(tab.icon);
-        const isActive = tab.id === activeTabId;
-        const runtime = tab.threadId ? threadRuntimeById[tab.threadId] : null;
-        const closeLabel =
-          tab.kind === "thread"
-            ? `Close ${tab.title} chat tab`
-            : `Close ${tab.title} tab`;
+    <div className="desktop-workbench-tabstrip">
+      <div
+        role="tablist"
+        aria-label="Open workbench tabs"
+        className="desktop-workbench-tablist desktop-no-drag"
+      >
+        {tabs.map((tab) => {
+          const TabIcon = getDesktopIcon(tab.icon);
+          const isActive = tab.id === activeTabId;
+          const runtime = tab.threadId ? threadRuntimeById[tab.threadId] : null;
+          const closeLabel =
+            tab.kind === "thread"
+              ? `Close ${tab.title} chat tab`
+              : `Close ${tab.title} tab`;
 
-        return (
-          <div
-            key={tab.id}
-            className={cn("desktop-workbench-tab group/tab", isActive && "is-active")}
-          >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={isActive}
-              data-tab-id={tab.id}
-              tabIndex={isActive ? 0 : -1}
-              className="desktop-workbench-tab-button"
-              onClick={() => onSelectTab(tab.id)}
-              onKeyDown={(event) => {
-                if (event.key === "ArrowRight") {
-                  event.preventDefault();
-                  onCycleTabs(1);
-                  return;
-                }
-                if (event.key === "ArrowLeft") {
-                  event.preventDefault();
-                  onCycleTabs(-1);
-                  return;
-                }
-                if (event.key === "Home") {
-                  event.preventDefault();
-                  const firstTabId = tabs[0]?.id ?? tab.id;
-                  onSelectTab(firstTabId);
-                  focusWorkbenchTab(firstTabId);
-                  return;
-                }
-                if (event.key === "End") {
-                  event.preventDefault();
-                  const lastTabId = tabs[tabs.length - 1]?.id ?? tab.id;
-                  onSelectTab(lastTabId);
-                  focusWorkbenchTab(lastTabId);
-                }
-              }}
+          return (
+            <div
+              key={tab.id}
+              className={cn("desktop-workbench-tab group/tab", isActive && "is-active")}
             >
-              <TabIcon className="desktop-workbench-tab-icon" />
-              <ThreadRuntimeIndicator runtime={runtime} />
-              <span className="desktop-workbench-tab-title">{tab.title}</span>
-              {tab.subtitle ? (
-                <span className="desktop-workbench-tab-subtitle">
-                  {tab.subtitle}
-                </span>
-              ) : null}
-            </button>
-            {tab.closable ? (
               <button
                 type="button"
-                aria-label={closeLabel}
-                className="desktop-workbench-tab-close"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onCloseTab(tab.id);
+                role="tab"
+                aria-selected={isActive}
+                data-tab-id={tab.id}
+                tabIndex={isActive ? 0 : -1}
+                className="desktop-workbench-tab-button"
+                onClick={() => onSelectTab(tab.id)}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowRight") {
+                    event.preventDefault();
+                    onCycleTabs(1);
+                    return;
+                  }
+                  if (event.key === "ArrowLeft") {
+                    event.preventDefault();
+                    onCycleTabs(-1);
+                    return;
+                  }
+                  if (event.key === "Home") {
+                    event.preventDefault();
+                    const firstTabId = tabs[0]?.id ?? tab.id;
+                    onSelectTab(firstTabId);
+                    focusWorkbenchTab(firstTabId);
+                    return;
+                  }
+                  if (event.key === "End") {
+                    event.preventDefault();
+                    const lastTabId = tabs[tabs.length - 1]?.id ?? tab.id;
+                    onSelectTab(lastTabId);
+                    focusWorkbenchTab(lastTabId);
+                  }
                 }}
               >
-                <X className="size-3" />
+                <TabIcon className="desktop-workbench-tab-icon" />
+                <span className="desktop-workbench-tab-copy">
+                  <ThreadRuntimeIndicator runtime={runtime} className="desktop-workbench-tab-runtime" />
+                  <span className="desktop-workbench-tab-title">{tab.title}</span>
+                  {tab.subtitle ? (
+                    <span className="desktop-workbench-tab-subtitle">
+                      {tab.subtitle}
+                    </span>
+                  ) : null}
+                </span>
               </button>
-            ) : null}
-          </div>
-        );
-      })}
+              {tab.closable ? (
+                <button
+                  type="button"
+                  aria-label={closeLabel}
+                  className="desktop-workbench-tab-close"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onCloseTab(tab.id);
+                  }}
+                >
+                  <X className="size-3" />
+                </button>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
