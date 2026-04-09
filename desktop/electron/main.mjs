@@ -71,6 +71,199 @@ async function showHostMcpPermissionDialog(request) {
   return response.response === 0;
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+async function showSecretPromptDialog(request) {
+  const parentWindow =
+    BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? undefined;
+  const channel = `acon-secret-prompt:${request.id}`;
+
+  return await new Promise((resolve) => {
+    let settled = false;
+    const window = new BrowserWindow({
+      parent: parentWindow,
+      modal: Boolean(parentWindow),
+      width: 460,
+      height: 280,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      show: false,
+      autoHideMenuBar: true,
+      title: request.title || 'Store Secret',
+      backgroundColor: getWindowBackgroundColor(),
+      webPreferences: {
+        nodeIntegration: true,
+        contextIsolation: false,
+      },
+    });
+
+    const cleanup = () => {
+      ipcMain.removeAllListeners(channel);
+    };
+
+    ipcMain.once(channel, (_event, payload) => {
+      settled = true;
+      cleanup();
+      const secretValue =
+        payload && typeof payload === 'object' && typeof payload.secretValue === 'string'
+          ? payload.secretValue
+          : null;
+      window.close();
+      resolve({
+        approved: Boolean(secretValue && secretValue.trim()),
+        secretValue,
+      });
+    });
+
+    window.on('closed', () => {
+      if (settled) {
+        return;
+      }
+      cleanup();
+      resolve({
+        approved: false,
+        secretValue: null,
+      });
+    });
+
+    const html = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(request.title || 'Store Secret')}</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #0f172a;
+        color: #e2e8f0;
+      }
+      main {
+        width: min(26rem, calc(100vw - 2rem));
+        padding: 1.25rem;
+        border-radius: 0.9rem;
+        background: rgba(15, 23, 42, 0.96);
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+        border: 1px solid rgba(148, 163, 184, 0.18);
+      }
+      h1 {
+        margin: 0 0 0.75rem;
+        font-size: 1.1rem;
+      }
+      p {
+        margin: 0 0 0.9rem;
+        line-height: 1.5;
+        color: #cbd5e1;
+        white-space: pre-wrap;
+      }
+      .meta {
+        margin-bottom: 0.9rem;
+        font-size: 0.85rem;
+        color: #94a3b8;
+      }
+      label {
+        display: block;
+        margin-bottom: 0.4rem;
+        font-size: 0.9rem;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 0.65rem 0.75rem;
+        border-radius: 0.6rem;
+        border: 1px solid rgba(148, 163, 184, 0.24);
+        background: rgba(15, 23, 42, 0.85);
+        color: inherit;
+      }
+      .actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.75rem;
+        margin-top: 1rem;
+      }
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 0.6rem 0.95rem;
+        cursor: pointer;
+      }
+      .cancel {
+        background: rgba(51, 65, 85, 0.9);
+        color: #e2e8f0;
+      }
+      .submit {
+        background: #e2e8f0;
+        color: #0f172a;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>${escapeHtml(request.title || 'Store Secret')}</h1>
+      ${
+        request.message
+          ? `<p>${escapeHtml(request.message)}</p>`
+          : ''
+      }
+      <div class="meta">Reference: ${escapeHtml(request.secretRef)}</div>
+      <label for="secret-input">${escapeHtml(request.fieldLabel || 'Secret')}</label>
+      <input id="secret-input" type="password" autocomplete="off" autofocus />
+      <div class="actions">
+        <button class="cancel" type="button" id="cancel-button">Cancel</button>
+        <button class="submit" type="button" id="submit-button">Store</button>
+      </div>
+    </main>
+    <script>
+      const { ipcRenderer } = require('electron');
+      const channel = ${JSON.stringify(channel)};
+      const input = document.getElementById('secret-input');
+      document.getElementById('cancel-button').addEventListener('click', () => {
+        window.close();
+      });
+      document.getElementById('submit-button').addEventListener('click', () => {
+        ipcRenderer.send(channel, { secretValue: input.value });
+      });
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          ipcRenderer.send(channel, { secretValue: input.value });
+        }
+        if (event.key === 'Escape') {
+          window.close();
+        }
+      });
+    </script>
+  </body>
+</html>`;
+
+    window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(
+      () => {
+        window.close();
+      },
+    );
+    window.once('ready-to-show', () => {
+      applyWindowAppearance(window);
+      window.show();
+    });
+  });
+}
+
 function getWindowBackgroundColor() {
   return nativeTheme.shouldUseDarkColors ? '#09090b' : '#f5f5f4';
 }
@@ -431,6 +624,27 @@ function publishBackendEvent(event) {
       )
       .catch((error) => {
         console.error('[desktop-backend] failed to resolve permission request', error);
+        return sendBackendEvent({
+          type: 'respond_permission_request',
+          requestId: event.request.id,
+          decision: 'deny',
+        });
+      });
+    return;
+  }
+
+  if (event.type === 'permission_request' && event.request.kind === 'secret_prompt') {
+    void showSecretPromptDialog(event.request)
+      .then((result) =>
+        sendBackendEvent({
+          type: 'respond_permission_request',
+          requestId: event.request.id,
+          decision: result.approved ? 'approve' : 'deny',
+          secretValue: result.secretValue ?? null,
+        }),
+      )
+      .catch((error) => {
+        console.error('[desktop-backend] failed to resolve secret prompt', error);
         return sendBackendEvent({
           type: 'respond_permission_request',
           requestId: event.request.id,

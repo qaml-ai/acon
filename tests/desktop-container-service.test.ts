@@ -2,6 +2,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getPersistedHostMcpOAuthClientSecret } from "../desktop-container/backend/host-mcp-oauth";
+import { getPersistedHostSecret } from "../desktop-container/backend/host-secrets";
+import { getPersistedHttpWrapperSecret } from "../desktop-container/backend/http-wrapper-mcp";
 import { DesktopService } from "../desktop-container/backend/service";
 import { CamelAIExtensionHost } from "../desktop-container/backend/extensions/host";
 import type {
@@ -75,9 +78,12 @@ async function waitFor<T>(assertion: () => T, timeoutMs = 5_000): Promise<T> {
 describe("DesktopService", () => {
   let sandboxDataDir: string;
   let previousDataDir: string | undefined;
+  let previousSecretStoreBackend: string | undefined;
 
   beforeEach(() => {
     previousDataDir = process.env.DESKTOP_DATA_DIR;
+    previousSecretStoreBackend = process.env.ACON_SECRET_STORE_BACKEND;
+    process.env.ACON_SECRET_STORE_BACKEND = "file";
     sandboxDataDir = mkdtempSync(join(tmpdir(), "acon-service-test-"));
     process.env.DESKTOP_DATA_DIR = sandboxDataDir;
 
@@ -103,6 +109,11 @@ describe("DesktopService", () => {
       delete process.env.DESKTOP_DATA_DIR;
     } else {
       process.env.DESKTOP_DATA_DIR = previousDataDir;
+    }
+    if (previousSecretStoreBackend === undefined) {
+      delete process.env.ACON_SECRET_STORE_BACKEND;
+    } else {
+      process.env.ACON_SECRET_STORE_BACKEND = previousSecretStoreBackend;
     }
     rmSync(sandboxDataDir, { recursive: true, force: true });
   });
@@ -332,6 +343,62 @@ describe("DesktopService", () => {
     unsubscribe();
   });
 
+  it("prompts for a secret and stores it without exposing the value in the request", async () => {
+    const { runtime } = createRuntimeManagerStub();
+    const service = new DesktopService(runtime);
+    const events: DesktopServerEvent[] = [];
+    service.subscribe((event) => {
+      events.push(event);
+    });
+
+    const pendingSecret = service.promptToStoreSecret(
+      {
+        secretRef: "linear-api-key",
+        title: "Store Linear API key",
+        message: "Enter the API key for the Linear MCP server.",
+        fieldLabel: "API key",
+      },
+      {
+        pluginId: "host-mcp-manager",
+        harness: "codex",
+        threadId: "thread-1",
+      },
+    );
+
+    const permissionEvent = await waitFor(() => {
+      const match = events.find(
+        (event): event is Extract<DesktopServerEvent, { type: "permission_request" }> =>
+          event.type === "permission_request" && event.request.kind === "secret_prompt",
+      );
+      expect(match).toBeTruthy();
+      return match!;
+    });
+
+    expect(permissionEvent.request).toEqual(
+      expect.objectContaining({
+        kind: "secret_prompt",
+        pluginId: "host-mcp-manager",
+        secretRef: "linear-api-key",
+        title: "Store Linear API key",
+      }),
+    );
+    expect(JSON.stringify(permissionEvent.request)).not.toContain("test-secret-123");
+
+    service.handleClientEvent({
+      type: "respond_permission_request",
+      requestId: permissionEvent.request.id,
+      decision: "approve",
+      secretValue: "test-secret-123",
+    });
+
+    await expect(pendingSecret).resolves.toEqual({
+      secretRef: "linear-api-key",
+    });
+    expect(getPersistedHostSecret(sandboxDataDir, "linear-api-key")).toBe(
+      "test-secret-123",
+    );
+  });
+
   it("loads, installs, and removes persisted host MCP servers", async () => {
     const serverDirectory = resolve(sandboxDataDir, "host-mcp", "servers");
     mkdirSync(serverDirectory, { recursive: true });
@@ -411,6 +478,15 @@ describe("DesktopService", () => {
         headers: {
           "x-test": "1",
         },
+        oauth: {
+          clientId: "client-123",
+          clientMetadataUrl: null,
+          clientName: "Acon",
+          clientSecret: "secret-123",
+          clientUri: null,
+          scope: "tools.read",
+          tokenEndpointAuthMethod: "client_secret_post",
+        },
       },
       "/host/workspace",
     );
@@ -419,7 +495,7 @@ describe("DesktopService", () => {
       expect.objectContaining({
         id: "remote-server",
         oauth: expect.objectContaining({
-          tokenEndpointAuthMethod: "none",
+          tokenEndpointAuthMethod: "client_secret_post",
         }),
         transport: "streamable-http",
         url: "https://example.com/mcp",
@@ -434,26 +510,63 @@ describe("DesktopService", () => {
     expect(
       existsSync(resolve(serverDirectory, "remote-server.json")),
     ).toBe(true);
-    const oauthDirectory = resolve(sandboxDataDir, "host-mcp", "oauth");
-    mkdirSync(oauthDirectory, { recursive: true });
-    writeFileSync(
-      resolve(oauthDirectory, "remote-server.json"),
-      `${JSON.stringify(
-        {
-          tokens: {
-            access_token: "access-123",
-            refresh_token: "refresh-123",
-            token_type: "Bearer",
-          },
-        },
-        null,
-        2,
-      )}\n`,
-      "utf8",
+    expect(
+      JSON.parse(
+        readFileSync(resolve(serverDirectory, "remote-server.json"), "utf8"),
+      ) as {
+        oauth?: {
+          clientSecret?: string | null;
+        };
+      },
+    ).toEqual(
+      expect.objectContaining({
+        oauth: expect.objectContaining({
+          clientSecret: null,
+        }),
+      }),
     );
     expect(
-      existsSync(resolve(oauthDirectory, "remote-server.json")),
-    ).toBe(true);
+      getPersistedHostMcpOAuthClientSecret(sandboxDataDir, "remote-server"),
+    ).toBe("secret-123");
+
+    service.storeHttpWrapperSecret("wrapper-token", "wrapper-secret-123");
+    const wrappedInstalled = await service.installHttpWrapperHostMcpServer(
+      {
+        id: "wrapped-server",
+        baseUrl: "https://api.example.com/v1",
+        auth: {
+          type: "header",
+          secretRef: "wrapper-token",
+          headerName: "x-api-key",
+        },
+      },
+      "/host/workspace",
+    );
+    expect(wrappedInstalled).toEqual(
+      expect.objectContaining({
+        id: "wrapped-server",
+        transport: "http-wrapper",
+        baseUrl: "https://api.example.com/v1",
+      }),
+    );
+    expect(
+      getPersistedHttpWrapperSecret(sandboxDataDir, "wrapper-token"),
+    ).toBe("wrapper-secret-123");
+    expect(
+      JSON.parse(
+        readFileSync(resolve(serverDirectory, "wrapped-server.json"), "utf8"),
+      ) as {
+        auth?: {
+          secretRef?: string | null;
+        };
+      },
+    ).toEqual(
+      expect.objectContaining({
+        auth: expect.objectContaining({
+          secretRef: "wrapper-token",
+        }),
+      }),
+    );
 
     expect(await service.uninstallInstalledHostMcpServer("workspace-server")).toBe(
       true,
@@ -471,8 +584,18 @@ describe("DesktopService", () => {
       existsSync(resolve(serverDirectory, "remote-server.json")),
     ).toBe(false);
     expect(
-      existsSync(resolve(oauthDirectory, "remote-server.json")),
+      getPersistedHostMcpOAuthClientSecret(sandboxDataDir, "remote-server"),
+    ).toBe(null);
+    expect(await service.uninstallInstalledHostMcpServer("wrapped-server")).toBe(
+      true,
+    );
+    expect(unregisterHostMcpServer).toHaveBeenCalledWith("wrapped-server");
+    expect(
+      existsSync(resolve(serverDirectory, "wrapped-server.json")),
     ).toBe(false);
+    expect(
+      getPersistedHttpWrapperSecret(sandboxDataDir, "wrapper-token"),
+    ).toBe("wrapper-secret-123");
   });
 
   it("persists plugin enabled state changes and refreshes the extension host", async () => {

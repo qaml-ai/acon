@@ -239,7 +239,7 @@ export interface DesktopPermissionRequestHostMcpMutation {
   harness: DesktopHarness;
   action: "create" | "update" | "delete";
   serverId: string;
-  transport: "stdio" | "streamable-http" | "sse";
+  transport: "stdio" | "streamable-http" | "sse" | "http-wrapper";
   command: string | null;
   args: string[];
   cwd: string | null;
@@ -248,7 +248,21 @@ export interface DesktopPermissionRequestHostMcpMutation {
   version: string | null;
 }
 
-export type DesktopPermissionRequest = DesktopPermissionRequestHostMcpMutation;
+export interface DesktopPermissionRequestSecretPrompt {
+  kind: "secret_prompt";
+  id: string;
+  threadId: string | null;
+  pluginId: string;
+  harness: DesktopHarness;
+  secretRef: string;
+  title: string;
+  message: string | null;
+  fieldLabel: string | null;
+}
+
+export type DesktopPermissionRequest =
+  | DesktopPermissionRequestHostMcpMutation
+  | DesktopPermissionRequestSecretPrompt;
 
 export interface DesktopSnapshot {
   threads: DesktopThread[];
@@ -358,6 +372,7 @@ export type DesktopClientEvent =
       type: "respond_permission_request";
       requestId: string;
       decision: "approve" | "deny";
+      secretValue?: string | null;
     };
 
 export type DesktopServerEvent =
