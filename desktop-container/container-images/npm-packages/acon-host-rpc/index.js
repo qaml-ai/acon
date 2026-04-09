@@ -4,10 +4,15 @@ import { createConnection } from "node:net";
 export const DEFAULT_HOST_RPC_SOCKET_PATH = "/data/host-rpc/bridge.sock";
 export const DEFAULT_HOST_RPC_TIMEOUT_MS = 30_000;
 export const DEFAULT_MCP_PROTOCOL_VERSION = "2025-03-26";
+export const DEFAULT_MCP_CLIENT_VERSION = "0.1.0";
 export const DEFAULT_MCP_CLIENT_INFO = Object.freeze({
   name: "@acon/host-rpc",
-  version: "1.0.0",
+  version: DEFAULT_MCP_CLIENT_VERSION,
 });
+
+const INITIALIZE_REQUEST_ID = 1;
+const TOOLS_LIST_REQUEST_ID = 2;
+const TOOLS_CALL_REQUEST_ID = 3;
 
 export class HostRpcError extends Error {
   constructor(message, options = {}) {
@@ -199,14 +204,18 @@ export class HostRpcClient {
     });
   }
 
-  async listMcpTools(serverId, options = {}) {
-    const sessionId = options.sessionId?.trim() || randomUUID();
-    const shouldCloseSession = !options.sessionId;
+  async #withManagedMcpSession(serverId, options = {}, callback) {
+    const sessionId = options.sessionId?.trim();
+    if (sessionId) {
+      return await callback(sessionId);
+    }
+
+    const managedSessionId = randomUUID();
 
     try {
-      await this.mcpRequest(serverId, sessionId, {
+      await this.mcpRequest(serverId, managedSessionId, {
         jsonrpc: "2.0",
-        id: 1,
+        id: INITIALIZE_REQUEST_ID,
         method: "initialize",
         params: {
           protocolVersion:
@@ -218,17 +227,29 @@ export class HostRpcClient {
           },
         },
       });
-      await this.mcpRequest(serverId, sessionId, {
+      await this.mcpRequest(serverId, managedSessionId, {
         jsonrpc: "2.0",
         method: "notifications/initialized",
       });
+      return await callback(managedSessionId);
+    } finally {
+      try {
+        await this.closeMcpSession(serverId, managedSessionId);
+      } catch {
+        // Best effort only.
+      }
+    }
+  }
+
+  async listMcpTools(serverId, options = {}) {
+    return await this.#withManagedMcpSession(serverId, options, async (sessionId) => {
       const messages = await this.mcpRequest(serverId, sessionId, {
         jsonrpc: "2.0",
-        id: 2,
+        id: TOOLS_LIST_REQUEST_ID,
         method: "tools/list",
         params: {},
       });
-      const errorMessage = getJsonRpcErrorMessage(messages, 2);
+      const errorMessage = getJsonRpcErrorMessage(messages, TOOLS_LIST_REQUEST_ID);
       if (errorMessage) {
         throw new HostRpcError(errorMessage, {
           code: "MCP_TOOLS_LIST_FAILED",
@@ -236,17 +257,33 @@ export class HostRpcClient {
         });
       }
 
-      const resultMessage = getJsonRpcResultMessage(messages, 2);
+      const resultMessage = getJsonRpcResultMessage(messages, TOOLS_LIST_REQUEST_ID);
       return Array.isArray(resultMessage?.result?.tools) ? resultMessage.result.tools : [];
-    } finally {
-      if (shouldCloseSession) {
-        try {
-          await this.closeMcpSession(serverId, sessionId);
-        } catch {
-          // Best effort only.
-        }
+    });
+  }
+
+  async callMcpTool(serverId, toolName, toolArguments = {}, options = {}) {
+    return await this.#withManagedMcpSession(serverId, options, async (sessionId) => {
+      const messages = await this.mcpRequest(serverId, sessionId, {
+        jsonrpc: "2.0",
+        id: TOOLS_CALL_REQUEST_ID,
+        method: "tools/call",
+        params: {
+          name: toolName,
+          arguments: toolArguments,
+        },
+      });
+      const errorMessage = getJsonRpcErrorMessage(messages, TOOLS_CALL_REQUEST_ID);
+      if (errorMessage) {
+        throw new HostRpcError(errorMessage, {
+          code: "MCP_TOOL_CALL_FAILED",
+          method: "tools/call",
+        });
       }
-    }
+
+      const resultMessage = getJsonRpcResultMessage(messages, TOOLS_CALL_REQUEST_ID);
+      return resultMessage?.result ?? null;
+    });
   }
 }
 

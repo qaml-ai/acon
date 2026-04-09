@@ -1191,6 +1191,24 @@ integrationDescribe("desktop-container agent runtime integration", () => {
           expect(helpResult.stdout).toContain("acon-mcp servers [--json]");
           expect(helpResult.stdout).toContain("acon-mcp tools <server-id> [--json]");
 
+          const serversHelpResult = await runContainerCommand(
+            harness.userDataDir,
+            providerCase.id,
+            ["acon-mcp", "servers", "--help"],
+          );
+          expect(serversHelpResult.stderr.trim()).toBe("");
+          expect(serversHelpResult.stdout).toContain("acon-mcp servers [--json]");
+          expect(serversHelpResult.stdout).toContain("Print the full server records as JSON.");
+
+          const toolsHelpResult = await runContainerCommand(
+            harness.userDataDir,
+            providerCase.id,
+            ["acon-mcp", "tools", "--help"],
+          );
+          expect(toolsHelpResult.stderr.trim()).toBe("");
+          expect(toolsHelpResult.stdout).toContain("acon-mcp tools <server-id> [--json]");
+          expect(toolsHelpResult.stdout).toContain("The registered host MCP server id.");
+
           const jsClientResult = await runContainerCommand(
             harness.userDataDir,
             providerCase.id,
@@ -1203,17 +1221,24 @@ integrationDescribe("desktop-container agent runtime integration", () => {
                 'import { createHostRpcClient } from "@acon/host-rpc";',
                 'const client = createHostRpcClient();',
                 'const servers = await client.listMcpServers();',
+                `const toolResult = await client.callMcpTool("${HOST_MCP_TEST_SERVER_ID}", "host_echo", { provider: "${providerCase.id}", text: "container-js" });`,
                 'process.stdout.write(JSON.stringify({',
                 '  typedPackageLinked: existsSync("/workspace/node_modules/@acon/host-rpc/index.d.ts"),',
                 '  serverIds: servers.map((server) => server.id).sort(),',
+                '  echoedText: toolResult?.structuredContent?.echoedText ?? null,',
+                '  provider: toolResult?.structuredContent?.provider ?? null,',
                 '}) + "\\n");',
               ].join(" "),
             ],
           );
-          expect(JSON.parse(jsClientResult.stdout)).toEqual({
-            typedPackageLinked: true,
-            serverIds: [HOST_MCP_TEST_SERVER_ID],
-          });
+          expect(JSON.parse(jsClientResult.stdout)).toEqual(
+            expect.objectContaining({
+              typedPackageLinked: true,
+              serverIds: expect.arrayContaining([HOST_MCP_TEST_SERVER_ID]),
+              echoedText: "container-js",
+              provider: providerCase.id,
+            }),
+          );
 
           const serversResult = await runContainerCommand(
             harness.userDataDir,

@@ -69,7 +69,21 @@ Host MCP notes:
 - `acon-mcp tools <server-id>` lists the tools exposed by one registered host MCP server.
 - `acon-mcp <server-id>` exposes that registered host MCP server over stdio for any MCP client running in the guest.
 - Inside the container, `@acon/host-rpc` is preinstalled and copied into `/workspace/node_modules/@acon/host-rpc` so guest JavaScript or TypeScript can call the same host RPC bridge directly.
-- `createHostRpcClient()` exposes typed helpers for `ping`, `fetch`, `listMcpServers`, `listMcpTools`, `mcpRequest`, and `closeMcpSession`.
+- `createHostRpcClient()` exposes typed helpers for `ping`, `fetch`, `listMcpServers`, `listMcpTools`, `callMcpTool`, `mcpRequest`, and `closeMcpSession`.
+- Prefer `listMcpServers()`, `listMcpTools(serverId)`, and `callMcpTool(serverId, toolName, args)` for one-shot guest MCP usage. Reserve `mcpRequest()` for cases that need explicit MCP session control or raw JSON-RPC messages.
+- Example:
+
+```js
+import { createHostRpcClient } from "@acon/host-rpc";
+
+const client = createHostRpcClient();
+const servers = await client.listMcpServers();
+const tools = await client.listMcpTools("server-id");
+const result = await client.callMcpTool("server-id", "tool-name", {
+  example: true,
+});
+```
+
 - The daemon-backed guest-to-host bridge is internal. The positive loopback and host-MCP cases are covered by the integration test in `tests/desktop-container-agentd.integration.test.ts`.
 
 ## Environment
