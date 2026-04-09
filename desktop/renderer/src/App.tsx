@@ -6,8 +6,17 @@ import {
   useRef,
   useState,
   type ComponentType,
+  type DragEvent,
 } from "react";
-import { ExternalLink, Loader2, PanelRightClose, X } from "lucide-react";
+import {
+  Archive,
+  ArrowLeft,
+  ArrowRight,
+  ExternalLink,
+  Loader2,
+  PanelRightClose,
+  X,
+} from "lucide-react";
 import { ChatPreviewProvider } from "@/components/chat-preview/preview-context";
 import { FilePreviewContent } from "@/components/chat-file-preview";
 import { ContentBlockRenderer } from "@/components/message-bubble";
@@ -65,6 +74,30 @@ import { getDesktopIcon } from "./desktop-icons";
 const desktopShell = window.desktopShell;
 const fallbackBackendUrl = "http://127.0.0.1:4315";
 const EMPTY_THREAD_DRAFT_KEY = "__no_thread__";
+const KANBAN_LANES = [
+  {
+    id: "drafts",
+    title: "Drafts",
+    description: "Fresh threads that have not started yet.",
+  },
+  {
+    id: "in_progress",
+    title: "In Progress",
+    description: "Sessions that are currently running or being worked.",
+  },
+  {
+    id: "ready_for_review",
+    title: "Ready for Review",
+    description: "Finished passes that may still need a follow-up.",
+  },
+  {
+    id: "finished",
+    title: "Finished",
+    description: "Archived work you want to keep around.",
+  },
+] as const;
+
+type KanbanLaneId = (typeof KANBAN_LANES)[number]["id"];
 
 type HostSurfaceComponentProps = {
   snapshot: DesktopSnapshot;
@@ -604,6 +637,302 @@ function ChatThreadView({
   );
 }
 
+function formatKanbanTimestamp(timestamp: number): string {
+  return new Date(timestamp).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function resolveKanbanLane(
+  snapshot: DesktopSnapshot,
+  thread: DesktopThread,
+): KanbanLaneId {
+  const runtime = snapshot.threadRuntimeById[thread.id];
+  if (thread.metadata.archived) {
+    return "finished";
+  }
+  if (runtime?.isRunning) {
+    return "in_progress";
+  }
+  switch (thread.metadata.lane) {
+    case "drafts":
+    case "in_progress":
+    case "ready_for_review":
+    case "finished":
+      return thread.metadata.lane;
+    default:
+      return runtime?.hasMessages ? "ready_for_review" : "drafts";
+  }
+}
+
+function metadataForKanbanLane(lane: KanbanLaneId): {
+  status: string;
+  lane: KanbanLaneId;
+  archived: boolean;
+} {
+  switch (lane) {
+    case "drafts":
+      return { status: "draft", lane, archived: false };
+    case "in_progress":
+      return { status: "in_progress", lane, archived: false };
+    case "ready_for_review":
+      return { status: "ready_for_review", lane, archived: false };
+    case "finished":
+      return { status: "finished", lane, archived: true };
+  }
+}
+
+function KanbanBoardPane({
+  snapshot,
+  onSendEvent,
+}: Pick<HostSurfaceComponentProps, "snapshot" | "onSendEvent">) {
+  const [draggedThreadId, setDraggedThreadId] = useState<string | null>(null);
+
+  const lanes = useMemo(
+    () =>
+      KANBAN_LANES.map((lane) => ({
+        ...lane,
+        threads: snapshot.threads.filter(
+          (thread) => resolveKanbanLane(snapshot, thread) === lane.id,
+        ),
+      })),
+    [snapshot],
+  );
+
+  const handleCreateDraft = useCallback(() => {
+    onSendEvent({
+      type: "create_thread",
+      metadata: metadataForKanbanLane("drafts"),
+    });
+  }, [onSendEvent]);
+
+  const handleMoveThread = useCallback(
+    (threadId: string, lane: KanbanLaneId) => {
+      onSendEvent({
+        type: "update_thread_metadata",
+        threadId,
+        metadata: metadataForKanbanLane(lane),
+      });
+    },
+    [onSendEvent],
+  );
+
+  const handleOpenThread = useCallback(
+    (threadId: string) => {
+      onSendEvent({
+        type: "select_thread",
+        threadId,
+      });
+    },
+    [onSendEvent],
+  );
+
+  const handleDrop =
+    (lane: KanbanLaneId) => (event: DragEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      if (draggedThreadId) {
+        handleMoveThread(draggedThreadId, lane);
+      }
+      setDraggedThreadId(null);
+    };
+
+  return (
+    <div className="flex min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+      <div className="mx-auto flex min-h-0 w-full max-w-[1600px] flex-col gap-6 px-4 pb-8 pt-5 md:px-6">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-1">
+            <h2 className="font-heading text-lg font-semibold">Kanban</h2>
+            <p className="max-w-3xl text-sm text-muted-foreground">
+              Organize local chat threads as drafts, active work, review-ready
+              sessions, and finished archives.
+            </p>
+          </div>
+          <Button size="sm" onClick={handleCreateDraft}>
+            New Draft
+          </Button>
+        </div>
+
+        <div className="grid min-h-0 gap-4 xl:grid-cols-4">
+          {lanes.map((lane, laneIndex) => (
+            <section
+              key={lane.id}
+              className="flex min-h-[28rem] flex-col rounded-2xl border border-border/70 bg-muted/25"
+              onDragOver={(event) => {
+                event.preventDefault();
+              }}
+              onDrop={handleDrop(lane.id)}
+            >
+              <div className="border-b border-border/60 px-4 py-4">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-semibold uppercase tracking-[0.16em] text-foreground/85">
+                      {lane.title}
+                    </h3>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {lane.description}
+                    </p>
+                  </div>
+                  <Badge variant="secondary">{lane.threads.length}</Badge>
+                </div>
+              </div>
+
+              <div className="flex flex-1 flex-col gap-3 p-3">
+                {lane.threads.length === 0 ? (
+                  <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-border/70 bg-background/60 px-4 py-6 text-center text-sm text-muted-foreground">
+                    Drop a thread here.
+                  </div>
+                ) : (
+                  lane.threads.map((thread) => {
+                    const runtime = snapshot.threadRuntimeById[thread.id];
+                    return (
+                      <Card
+                        key={thread.id}
+                        size="sm"
+                        draggable
+                        onDragStart={() => {
+                          setDraggedThreadId(thread.id);
+                        }}
+                        onDragEnd={() => {
+                          setDraggedThreadId(null);
+                        }}
+                        className="cursor-grab border-border/70 bg-background/95 active:cursor-grabbing"
+                      >
+                        <CardHeader className="gap-3">
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div className="space-y-1">
+                              <CardTitle className="text-sm leading-snug">
+                                {thread.title}
+                              </CardTitle>
+                              <CardDescription className="text-xs">
+                                Updated {formatKanbanTimestamp(thread.updatedAt)}
+                              </CardDescription>
+                            </div>
+                            <div className="flex flex-wrap gap-1">
+                              <Badge variant="outline">{thread.provider}</Badge>
+                              {runtime?.isRunning ? (
+                                <Badge variant="default">
+                                  {runtime.stopRequested ? "Stopping" : "Running"}
+                                </Badge>
+                              ) : null}
+                              {thread.metadata.archived ? (
+                                <Badge variant="secondary">Archived</Badge>
+                              ) : null}
+                            </div>
+                          </div>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                          <p className="min-h-12 line-clamp-3 text-sm text-muted-foreground">
+                            {thread.lastMessagePreview ??
+                              "No messages yet. This thread is still a draft."}
+                          </p>
+
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => {
+                                handleOpenThread(thread.id);
+                              }}
+                            >
+                              Open
+                            </Button>
+                            {runtime?.isRunning ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => {
+                                  onSendEvent({
+                                    type: "stop_thread",
+                                    threadId: thread.id,
+                                  });
+                                }}
+                              >
+                                Stop
+                              </Button>
+                            ) : null}
+                            {lane.id === "finished" ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => {
+                                  handleMoveThread(thread.id, "ready_for_review");
+                                }}
+                              >
+                                <ArrowLeft className="size-4" />
+                                Restore
+                              </Button>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => {
+                                  handleMoveThread(thread.id, "finished");
+                                }}
+                              >
+                                <Archive className="size-4" />
+                                Finish
+                              </Button>
+                            )}
+                          </div>
+
+                          <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                            <span>
+                              {runtime?.hasMessages ? "Has messages" : "Empty thread"}
+                            </span>
+                            <div className="flex items-center gap-1">
+                              {laneIndex > 0 ? (
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="size-7"
+                                  onClick={() => {
+                                    handleMoveThread(
+                                      thread.id,
+                                      KANBAN_LANES[laneIndex - 1].id,
+                                    );
+                                  }}
+                                >
+                                  <ArrowLeft className="size-3.5" />
+                                </Button>
+                              ) : (
+                                <span className="size-7" />
+                              )}
+                              {laneIndex < KANBAN_LANES.length - 1 ? (
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="size-7"
+                                  onClick={() => {
+                                    handleMoveThread(
+                                      thread.id,
+                                      KANBAN_LANES[laneIndex + 1].id,
+                                    );
+                                  }}
+                                >
+                                  <ArrowRight className="size-3.5" />
+                                </Button>
+                              ) : (
+                                <span className="size-7" />
+                              )}
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    );
+                  })
+                )}
+              </div>
+            </section>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ExtensionCatalogPane({
   snapshot,
   onSendEvent,
@@ -822,6 +1151,7 @@ function ExtensionCatalogPane({
                         <div className="space-y-2">
                           <p className="text-sm text-muted-foreground">
                             {plugin.capabilities.views.length} views ·{" "}
+                            {plugin.capabilities.sidebarPanels.length} sidebar panels ·{" "}
                             {plugin.capabilities.commands.length} commands ·{" "}
                             {plugin.capabilities.tools.length} tools
                           </p>
@@ -911,8 +1241,9 @@ const HOST_SURFACE_COMPONENTS: Record<
   string,
   ComponentType<HostSurfaceComponentProps>
 > = {
-  "chat-thread": ChatThreadView,
-  "extension-catalog": ExtensionCatalogPane,
+  "chat:thread-view": ChatThreadView,
+  "extension-lab:catalog": ExtensionCatalogPane,
+  "kanban:board": KanbanBoardPane,
 };
 
 function GenericHostDataPane({
@@ -1109,8 +1440,12 @@ function WorkbenchSurfacePane(props: HostSurfaceComponentProps) {
   const { surface } = props;
 
   if (surface.render.kind === "host") {
+    const componentKey =
+      surface.pluginId && surface.render.component
+        ? `${surface.pluginId}:${surface.render.component}`
+        : surface.render.component ?? "";
     const HostComponent = surface.render.component
-      ? HOST_SURFACE_COMPONENTS[surface.render.component]
+      ? HOST_SURFACE_COMPONENTS[componentKey]
       : null;
     if (HostComponent) {
       return (
@@ -1941,6 +2276,7 @@ export function App() {
               onOpenSettings={() => setShowSettings(true)}
               onSelectThread={(threadId) => { setShowSettings(false); handleSelectThread(threadId); }}
               onSelectView={(viewId) => { setShowSettings(false); handleSelectView(viewId); }}
+              sidebarPanels={snapshot?.sidebarPanels ?? []}
               showSettings={showSettings}
               snapshot={snapshot}
               threads={snapshot?.threads ?? []}

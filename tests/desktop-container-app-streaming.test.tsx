@@ -240,6 +240,12 @@ function createSnapshot(): DesktopSnapshot {
         createdAt: now,
         updatedAt: now,
         lastMessagePreview: null,
+        metadata: {
+          status: null,
+          lane: null,
+          archived: false,
+          archivedAt: null,
+        },
       },
     ],
     messagesByThread: {
@@ -250,7 +256,7 @@ function createSnapshot(): DesktopSnapshot {
         id: "tab-thread-1",
         kind: "thread",
         threadId: "thread-1",
-        viewId: "core:chat-thread",
+        viewId: "plugin:chat:chat.thread",
         title: "Claude test thread",
         subtitle: null,
         icon: "MessagesSquare",
@@ -259,12 +265,21 @@ function createSnapshot(): DesktopSnapshot {
     ],
     activeTabId: "tab-thread-1",
     activeThreadId: "thread-1",
-    activeViewId: "core:chat-thread",
+    activeViewId: "plugin:chat:chat.thread",
     threadPreviewStateById: {
       "thread-1": {
         visible: false,
         activeItemId: null,
         items: [],
+      },
+    },
+    threadRuntimeById: {
+      "thread-1": {
+        active: true,
+        hasMessages: false,
+        sessionId: null,
+        isRunning: false,
+        stopRequested: false,
       },
     },
     provider: "claude",
@@ -295,16 +310,16 @@ function createSnapshot(): DesktopSnapshot {
     },
     views: [
       {
-        id: "core:chat-thread",
+        id: "plugin:chat:chat.thread",
         title: "Chat",
         description: "Thread-focused chat workspace.",
         icon: "MessagesSquare",
-        pluginId: null,
+        pluginId: "chat",
         scope: "thread",
         isDefault: true,
         render: {
           kind: "host",
-          component: "chat-thread",
+          component: "thread-view",
         },
         hostData: null,
       },
@@ -318,12 +333,87 @@ function createSnapshot(): DesktopSnapshot {
         isDefault: false,
         render: {
           kind: "host",
-          component: "extension-catalog",
+          component: "catalog",
+        },
+        hostData: null,
+      },
+      {
+        id: "plugin:kanban:kanban.board",
+        title: "Kanban",
+        description: "Manage local chat threads across workflow lanes.",
+        icon: "KanbanSquare",
+        pluginId: "kanban",
+        scope: "workspace",
+        isDefault: false,
+        render: {
+          kind: "host",
+          component: "board",
+        },
+        hostData: null,
+      },
+    ],
+    sidebarPanels: [
+      {
+        id: "plugin:chat:chat.recent-threads",
+        title: "Recent Chats",
+        description: "Browse and resume local chat threads.",
+        icon: "MessagesSquare",
+        pluginId: "chat",
+        placement: "content",
+        order: 100,
+        render: {
+          kind: "host",
+          component: "recent-threads",
         },
         hostData: null,
       },
     ],
     plugins: [
+      {
+        id: "kanban",
+        name: "Kanban",
+        version: "0.1.0",
+        description: "Provides a board view for organizing local chat threads.",
+        source: "builtin",
+        enabled: true,
+        disableable: false,
+        path: "/tmp/kanban",
+        main: "/tmp/kanban/index.ts",
+        webviews: [],
+        permissions: [],
+        settings: null,
+        compatibility: {
+          currentApiVersion: 1,
+          declaredApiVersion: 1,
+          minApiVersion: 1,
+          compatible: true,
+          reason: null,
+        },
+        capabilities: {
+          views: [
+            {
+              id: "kanban.board",
+              title: "Kanban",
+              description: "Manage local chat threads across workflow lanes.",
+              icon: "KanbanSquare",
+              scope: "workspace",
+              default: false,
+            },
+          ],
+          sidebarPanels: [],
+          commands: [],
+          tools: [],
+        },
+        runtime: {
+          activated: true,
+          activationError: null,
+          subscribedEvents: [],
+          registeredViewIds: ["kanban.board"],
+          registeredSidebarPanelIds: [],
+          registeredCommandIds: [],
+          registeredToolIds: [],
+        },
+      },
       {
         id: "extension-lab",
         name: "Extension Lab",
@@ -355,6 +445,7 @@ function createSnapshot(): DesktopSnapshot {
               default: false,
             },
           ],
+          sidebarPanels: [],
           commands: [],
           tools: [],
         },
@@ -363,6 +454,7 @@ function createSnapshot(): DesktopSnapshot {
           activationError: null,
           subscribedEvents: [],
           registeredViewIds: ["extension-lab.home"],
+          registeredSidebarPanelIds: [],
           registeredCommandIds: [],
           registeredToolIds: [],
         },
@@ -394,6 +486,7 @@ function createSnapshot(): DesktopSnapshot {
         },
         capabilities: {
           views: [],
+          sidebarPanels: [],
           commands: [],
           tools: [],
         },
@@ -402,6 +495,7 @@ function createSnapshot(): DesktopSnapshot {
           activationError: null,
           subscribedEvents: [],
           registeredViewIds: [],
+          registeredSidebarPanelIds: [],
           registeredCommandIds: [],
           registeredToolIds: [],
         },
@@ -428,6 +522,7 @@ function createSnapshot(): DesktopSnapshot {
         },
         capabilities: {
           views: [],
+          sidebarPanels: [],
           commands: [
             {
               id: "thread-journal.reset",
@@ -450,13 +545,14 @@ function createSnapshot(): DesktopSnapshot {
           activationError: null,
           subscribedEvents: ["before_prompt"],
           registeredViewIds: [],
+          registeredSidebarPanelIds: [],
           registeredCommandIds: ["thread-journal.reset"],
           registeredToolIds: ["thread-journal.snapshot"],
         },
       },
     ],
     pendingPermissionRequest: null,
-  };
+  } as DesktopSnapshot;
 }
 
 function createAcpRuntimeEvent(update: Record<string, unknown>): DesktopServerEvent {
@@ -610,6 +706,31 @@ describe("desktop container renderer streaming", () => {
     expect(screen.queryByLabelText("Prompt input")).toBeNull();
   });
 
+  it("renders the kanban workspace view with thread lanes", async () => {
+    const snapshot = createSnapshot();
+    snapshot.tabs.push({
+      id: "tab-kanban",
+      kind: "workspace",
+      threadId: null,
+      viewId: "plugin:kanban:kanban.board",
+      title: "Kanban",
+      subtitle: null,
+      icon: "KanbanSquare",
+      closable: true,
+    });
+    snapshot.activeTabId = "tab-kanban";
+    snapshot.activeViewId = "plugin:kanban:kanban.board";
+
+    await renderAppWithShell(snapshot);
+
+    expect(
+      screen.getByRole("heading", { name: "Kanban" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Drafts")).toBeInTheDocument();
+    expect(screen.getByText("Ready for Review")).toBeInTheDocument();
+    expect(screen.getAllByText("Claude test thread").length).toBeGreaterThan(0);
+  });
+
   it("switches back to the default thread view when a chat thread is selected", async () => {
     const snapshot = createSnapshot();
     snapshot.tabs.push({
@@ -654,7 +775,7 @@ describe("desktop container renderer streaming", () => {
       snapshot: {
         ...snapshot,
         activeTabId: "tab-thread-1",
-        activeViewId: "core:chat-thread",
+        activeViewId: "plugin:chat:chat.thread",
       },
     });
 
@@ -709,7 +830,7 @@ describe("desktop container renderer streaming", () => {
       snapshot: {
         ...snapshot,
         activeTabId: "tab-thread-1",
-        activeViewId: "core:chat-thread",
+        activeViewId: "plugin:chat:chat.thread",
       },
     });
 
@@ -804,7 +925,7 @@ describe("desktop container renderer streaming", () => {
         ...snapshot,
         tabs: [snapshot.tabs[0]],
         activeTabId: "tab-thread-1",
-        activeViewId: "core:chat-thread",
+        activeViewId: "plugin:chat:chat.thread",
       },
     });
 

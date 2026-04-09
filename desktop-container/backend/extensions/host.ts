@@ -5,11 +5,14 @@ import type {
   DesktopPreviewTarget,
   DesktopPluginPermission,
   DesktopPluginRecord,
+  DesktopSidebarPanel,
   DesktopThreadPreviewState,
   DesktopView,
 } from "../../../desktop/shared/protocol";
+import builtinChat from "../../plugins/builtin/chat/index";
 import builtinExtensionLab from "../../plugins/builtin/extension-lab/index";
 import builtinHostMcpManager from "../../plugins/builtin/host-mcp-manager/index";
+import builtinKanban from "../../plugins/builtin/kanban/index";
 import builtinPreviewControl from "../../plugins/builtin/preview-control/index";
 import builtinThreadJournal from "../../plugins/builtin/thread-journal/index";
 import type { HostMcpServerRegistration } from "../host-mcp";
@@ -78,8 +81,10 @@ function getExtensionDirectories(): Array<{ path: string; builtin: boolean }> {
   ].filter((entry) => Boolean(entry.path));
 }
 const BUILTIN_EXTENSION_MODULES: Record<string, CamelAIExtensionModule> = {
+  chat: builtinChat as unknown as CamelAIExtensionModule,
   "extension-lab": builtinExtensionLab as unknown as CamelAIExtensionModule,
   "host-mcp-manager": builtinHostMcpManager as unknown as CamelAIExtensionModule,
+  kanban: builtinKanban as unknown as CamelAIExtensionModule,
   "preview-control": builtinPreviewControl as unknown as CamelAIExtensionModule,
   "thread-journal": builtinThreadJournal as unknown as CamelAIExtensionModule,
 };
@@ -464,6 +469,7 @@ export class CamelAIExtensionHost {
       activationError: null,
       compatibilityError: getCompatibilityError(discovered.manifest),
       views: new Map(),
+      sidebarPanels: new Map(),
       commands: new Map(),
       tools: new Map(),
       handlers: new Map(),
@@ -521,6 +527,7 @@ export class CamelAIExtensionHost {
       }
 
       record.views.clear();
+      record.sidebarPanels.clear();
       record.commands.clear();
       record.tools.clear();
       record.handlers.clear();
@@ -744,6 +751,12 @@ export class CamelAIExtensionHost {
         record.views.set(id, view);
         return this.registerRecordDisposable(record, () => {
           record.views.delete(id);
+        });
+      },
+      registerSidebarPanel: (id, panel) => {
+        record.sidebarPanels.set(id, panel);
+        return this.registerRecordDisposable(record, () => {
+          record.sidebarPanels.delete(id);
         });
       },
       registerCommand: (id, command) => {
@@ -979,6 +992,14 @@ export class CamelAIExtensionHost {
           scope: view.scope ?? "workspace",
           default: view.default === true,
         })),
+        sidebarPanels: Array.from(record.sidebarPanels.entries()).map(([id, panel]) => ({
+          id,
+          title: panel.title,
+          description: panel.description ?? null,
+          icon: panel.icon ?? null,
+          placement: panel.placement ?? "content",
+          order: panel.order ?? 0,
+        })),
         commands: Array.from(record.commands.entries()).map(([id, command]) => ({
           id,
           title: command.title,
@@ -997,6 +1018,7 @@ export class CamelAIExtensionHost {
         activationError: record.activationError,
         subscribedEvents: Array.from(record.handlers.keys()),
         registeredViewIds: Array.from(record.views.keys()),
+        registeredSidebarPanelIds: Array.from(record.sidebarPanels.keys()),
         registeredCommandIds: Array.from(record.commands.keys()),
         registeredToolIds: Array.from(record.tools.keys()),
       },
@@ -1057,8 +1079,56 @@ export class CamelAIExtensionHost {
     return views;
   }
 
+  private buildSidebarPanels(
+    context: CamelAIActivationContext,
+    plugins: DesktopPluginRecord[],
+  ): DesktopSidebarPanel[] {
+    const pluginById = new Map(plugins.map((plugin) => [plugin.id, plugin]));
+    const panels: DesktopSidebarPanel[] = [];
+
+    for (const record of this.records.values()) {
+      const plugin = pluginById.get(record.discovered.id);
+      if (!plugin) {
+        continue;
+      }
+
+      for (const [id, panel] of record.sidebarPanels.entries()) {
+        const threadState = this.createThreadState(
+          record.discovered.id,
+          context.activeThreadId,
+          context,
+        );
+        panels.push({
+          id: getContributionId(record.discovered.id, id),
+          title: panel.title,
+          description: panel.description ?? null,
+          icon: panel.icon ?? record.discovered.manifest.icon ?? null,
+          pluginId: record.discovered.id,
+          placement: panel.placement ?? "content",
+          order: panel.order ?? 0,
+          render: {
+            kind: "host",
+            component: panel.render.component,
+          },
+          hostData: panel.buildHostData
+            ? panel.buildHostData({
+                ...context,
+                pluginId: record.discovered.id,
+                viewId: id,
+                threadState,
+                plugin,
+              })
+            : null,
+        });
+      }
+    }
+
+    return panels.sort((left, right) => left.order - right.order);
+  }
+
   getSnapshot(context: CamelAIActivationContext): {
     views: DesktopView[];
+    sidebarPanels: DesktopSidebarPanel[];
     plugins: DesktopPluginRecord[];
   } {
     const plugins = Array.from(this.records.values()).map((record) =>
@@ -1066,6 +1136,7 @@ export class CamelAIExtensionHost {
     );
     return {
       views: this.buildViews(context, plugins),
+      sidebarPanels: this.buildSidebarPanels(context, plugins),
       plugins,
     };
   }

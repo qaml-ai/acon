@@ -13,6 +13,7 @@ import type {
   DesktopProviderOption,
   DesktopRuntimeStatus,
   DesktopSnapshot,
+  DesktopSidebarPanel,
   DesktopTab,
   DesktopThread,
   DesktopThreadMetadata,
@@ -1160,6 +1161,7 @@ export class DesktopStore {
     availableModels: DesktopModelOption[],
     auth: DesktopAuthState,
     views: DesktopView[],
+    sidebarPanels: DesktopSidebarPanel[],
     plugins: DesktopSnapshot['plugins'],
   ): DesktopSnapshot {
     const tabs = this.normalizeTabs(views);
@@ -1174,6 +1176,7 @@ export class DesktopStore {
       activeThreadId: this.state.activeThreadId,
       activeViewId: this.getActiveViewId(),
       threadPreviewStateById: this.getThreadPreviewStateById(),
+      threadRuntimeById: {},
       threads: this.listThreads(),
       messagesByThread: this.getMessagesByThread(),
       provider,
@@ -1183,6 +1186,7 @@ export class DesktopStore {
       auth,
       runtimeStatus,
       views,
+      sidebarPanels,
       plugins,
       pendingPermissionRequest: null,
     };

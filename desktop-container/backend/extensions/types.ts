@@ -195,6 +195,18 @@ export interface CamelAIViewRegistration {
   ) => DesktopPluginHostPanelData;
 }
 
+export interface CamelAISidebarPanelRegistration {
+  title: string;
+  description?: string;
+  icon?: string;
+  placement?: "content" | "footer";
+  order?: number;
+  render: { kind: "host"; component: string };
+  buildHostData?: (
+    context: CamelAIViewRenderContext,
+  ) => DesktopPluginHostPanelData;
+}
+
 export interface CamelAICommandRegistration {
   title: string;
   description?: string;
@@ -392,6 +404,10 @@ export interface CamelAIPluginApi {
     update: CamelAIThreadMetadataUpdate,
   ): CamelAIThreadRecord;
   registerView(id: string, view: CamelAIViewRegistration): CamelAIDisposable;
+  registerSidebarPanel(
+    id: string,
+    panel: CamelAISidebarPanelRegistration,
+  ): CamelAIDisposable;
   registerCommand(
     id: string,
     command: CamelAICommandRegistration,
@@ -446,6 +462,7 @@ export interface CamelAIRuntimeRecord {
   activationError: string | null;
   compatibilityError: string | null;
   views: Map<string, CamelAIViewRegistration>;
+  sidebarPanels: Map<string, CamelAISidebarPanelRegistration>;
   commands: Map<string, CamelAICommandRegistration>;
   tools: Map<string, CamelAIToolRegistration>;
   handlers: Map<CamelAIEventName, CamelAIEventHandler[]>;

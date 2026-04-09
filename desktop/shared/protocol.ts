@@ -36,6 +36,15 @@ export interface DesktopPluginViewContribution {
   default: boolean;
 }
 
+export interface DesktopPluginSidebarPanelContribution {
+  id: string;
+  title: string;
+  description: string | null;
+  icon: string | null;
+  placement: "content" | "footer";
+  order: number;
+}
+
 export interface DesktopPluginCommandContribution {
   id: string;
   title: string;
@@ -107,6 +116,7 @@ export interface DesktopPluginRecord {
   compatibility: DesktopPluginCompatibility;
   capabilities: {
     views: DesktopPluginViewContribution[];
+    sidebarPanels: DesktopPluginSidebarPanelContribution[];
     commands: DesktopPluginCommandContribution[];
     tools: DesktopPluginToolContribution[];
   };
@@ -115,6 +125,7 @@ export interface DesktopPluginRecord {
     activationError: string | null;
     subscribedEvents: string[];
     registeredViewIds: string[];
+    registeredSidebarPanelIds: string[];
     registeredCommandIds: string[];
     registeredToolIds: string[];
   };
@@ -136,6 +147,18 @@ export interface DesktopView {
   pluginId: string | null;
   scope: "thread" | "workspace";
   isDefault: boolean;
+  render: DesktopPluginSurfaceRender;
+  hostData?: DesktopPluginHostPanelData | null;
+}
+
+export interface DesktopSidebarPanel {
+  id: string;
+  title: string;
+  description: string | null;
+  icon: string | null;
+  pluginId: string | null;
+  placement: "content" | "footer";
+  order: number;
   render: DesktopPluginSurfaceRender;
   hostData?: DesktopPluginHostPanelData | null;
 }
@@ -216,6 +239,14 @@ export interface DesktopThread {
   metadata: DesktopThreadMetadata;
 }
 
+export interface DesktopThreadRuntimeState {
+  active: boolean;
+  hasMessages: boolean;
+  sessionId: string | null;
+  isRunning: boolean;
+  stopRequested: boolean;
+}
+
 export interface DesktopMessage {
   id: string;
   threadId: string;
@@ -280,6 +311,7 @@ export interface DesktopSnapshot {
   activeThreadId: string | null;
   activeViewId: string | null;
   threadPreviewStateById: Record<string, DesktopThreadPreviewState>;
+  threadRuntimeById: Record<string, DesktopThreadRuntimeState>;
   provider: DesktopProvider;
   availableProviders: DesktopProviderOption[];
   model: DesktopModel;
@@ -287,6 +319,7 @@ export interface DesktopSnapshot {
   auth: DesktopAuthState;
   runtimeStatus: DesktopRuntimeStatus;
   views: DesktopView[];
+  sidebarPanels: DesktopSidebarPanel[];
   plugins: DesktopPluginRecord[];
   pendingPermissionRequest: DesktopPermissionRequest | null;
 }
@@ -301,6 +334,11 @@ export type DesktopClientEvent =
   | {
       type: "create_thread";
       title?: string;
+      metadata?: {
+        status?: string | null;
+        lane?: string | null;
+        archived?: boolean | null;
+      };
     }
   | {
       type: "select_thread";
@@ -356,6 +394,15 @@ export type DesktopClientEvent =
   | {
       type: "stop_thread";
       threadId: string;
+    }
+  | {
+      type: "update_thread_metadata";
+      threadId: string;
+      metadata: {
+        status?: string | null;
+        lane?: string | null;
+        archived?: boolean | null;
+      };
     }
   | {
       type: "set_provider";

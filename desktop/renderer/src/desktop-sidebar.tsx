@@ -1,3 +1,4 @@
+import type { ComponentType } from "react";
 import {
   CircleHelp,
   Plus,
@@ -23,6 +24,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import type {
+  DesktopSidebarPanel,
   DesktopSnapshot,
   DesktopThread,
   DesktopView,
@@ -38,10 +40,25 @@ interface DesktopSidebarProps {
   onSelectThread: (threadId: string) => void;
   onSelectView: (viewId: string) => void;
   showSettings: boolean;
+  sidebarPanels: DesktopSidebarPanel[];
   snapshot: DesktopSnapshot | null;
   threads: DesktopThread[];
   views: DesktopView[];
 }
+
+type SidebarPanelComponentProps = Pick<
+  DesktopSidebarProps,
+  | "activeThreadId"
+  | "activeViewId"
+  | "onCreateThread"
+  | "onSelectThread"
+  | "onSelectView"
+  | "snapshot"
+  | "threads"
+  | "views"
+> & {
+  panel: DesktopSidebarPanel;
+};
 
 function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString([], {
@@ -62,6 +79,100 @@ function shouldShowRuntimeCard(snapshot: DesktopSnapshot | null): boolean {
   );
 }
 
+function ChatRecentThreadsSidebarPanel({
+  activeThreadId,
+  onCreateThread,
+  onSelectThread,
+  threads,
+}: Pick<
+  SidebarPanelComponentProps,
+  "activeThreadId" | "onCreateThread" | "onSelectThread" | "threads"
+>) {
+  return (
+    <SidebarGroup>
+      <SidebarGroupLabel>Recent Chats</SidebarGroupLabel>
+      <SidebarGroupAction
+        aria-label="Create new thread"
+        onClick={onCreateThread}
+      >
+        <Plus />
+      </SidebarGroupAction>
+      <SidebarGroupContent>
+        <SidebarMenu>
+          {threads.map((thread) => (
+            <SidebarMenuItem key={thread.id}>
+              <SidebarMenuButton
+                size="lg"
+                isActive={thread.id === activeThreadId}
+                tooltip={thread.title}
+                onClick={() => onSelectThread(thread.id)}
+                className="h-auto min-h-12"
+              >
+                <span className="flex size-4 items-center justify-center rounded-full bg-sidebar-accent text-xs font-semibold text-sidebar-accent-foreground">
+                  {thread.title.slice(0, 1).toUpperCase()}
+                </span>
+                <div className="grid flex-1 min-w-0 text-left text-sm leading-tight">
+                  <span className="truncate font-medium">
+                    {thread.title}
+                  </span>
+                  <span className="truncate text-xs text-muted-foreground">
+                    {thread.lastMessagePreview ||
+                      formatTime(thread.updatedAt)}
+                  </span>
+                </div>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          ))}
+        </SidebarMenu>
+      </SidebarGroupContent>
+    </SidebarGroup>
+  );
+}
+
+const SIDEBAR_HOST_COMPONENTS: Record<
+  string,
+  ComponentType<SidebarPanelComponentProps>
+> = {
+  "chat:recent-threads": ChatRecentThreadsSidebarPanel,
+};
+
+function SidebarPanelContent({
+  panel,
+}: {
+  panel: DesktopSidebarPanel;
+}) {
+  const ViewIcon = getDesktopIcon(panel.icon);
+  return (
+    <SidebarGroup>
+      <SidebarGroupLabel>{panel.title}</SidebarGroupLabel>
+      <SidebarGroupContent>
+        <div className="space-y-2 px-2">
+          {panel.description ? (
+            <p className="text-xs text-muted-foreground">{panel.description}</p>
+          ) : null}
+          {panel.hostData?.sections.map((section) => (
+            <div
+              key={section.id}
+              className="rounded-md border border-sidebar-border/70 bg-sidebar-accent/20 px-3 py-2"
+            >
+              <div className="flex items-center gap-2">
+                <ViewIcon className="size-3.5" />
+                <p className="text-xs font-medium text-sidebar-foreground">{section.title}</p>
+              </div>
+              {section.items.map((item) => (
+                <div key={`${section.id}:${item.label}`} className="mt-2 text-xs">
+                  <p className="text-muted-foreground">{item.label}</p>
+                  <p className="break-all text-sidebar-foreground">{item.value}</p>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </SidebarGroupContent>
+    </SidebarGroup>
+  );
+}
+
 export function DesktopSidebar({
   activeThreadId,
   activeViewId,
@@ -71,12 +182,15 @@ export function DesktopSidebar({
   onSelectThread,
   onSelectView,
   showSettings,
+  sidebarPanels,
   snapshot,
   threads,
   views,
 }: DesktopSidebarProps) {
   const { state } = useSidebar();
   const workspaceViews = views.filter((view) => view.scope === "workspace");
+  const contentPanels = sidebarPanels.filter((panel) => panel.placement === "content");
+  const footerPanels = sidebarPanels.filter((panel) => panel.placement === "footer");
 
   return (
     <Sidebar collapsible="icon">
@@ -139,47 +253,63 @@ export function DesktopSidebar({
         </SidebarGroup>
 
         <SidebarSeparator />
-
-        <SidebarGroup>
-          <SidebarGroupLabel>Recent Chats</SidebarGroupLabel>
-          <SidebarGroupAction
-            aria-label="Create new thread"
-            onClick={onCreateThread}
-          >
-            <Plus />
-          </SidebarGroupAction>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {threads.map((thread) => (
-                <SidebarMenuItem key={thread.id}>
-                  <SidebarMenuButton
-                    size="lg"
-                    isActive={thread.id === activeThreadId}
-                    tooltip={thread.title}
-                    onClick={() => onSelectThread(thread.id)}
-                    className="h-auto min-h-12"
-                  >
-                    <span className="flex size-4 items-center justify-center rounded-full bg-sidebar-accent text-xs font-semibold text-sidebar-accent-foreground">
-                      {thread.title.slice(0, 1).toUpperCase()}
-                    </span>
-                    <div className="grid flex-1 min-w-0 text-left text-sm leading-tight">
-                      <span className="truncate font-medium">
-                        {thread.title}
-                      </span>
-                      <span className="truncate text-xs text-muted-foreground">
-                        {thread.lastMessagePreview ||
-                          formatTime(thread.updatedAt)}
-                      </span>
-                    </div>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+        {contentPanels.map((panel, index) => {
+          const componentKey = panel.pluginId
+            ? `${panel.pluginId}:${panel.render.component ?? ""}`
+            : panel.render.component ?? "";
+          const HostComponent =
+            panel.render.kind === "host"
+              ? SIDEBAR_HOST_COMPONENTS[componentKey] ?? null
+              : null;
+          return (
+            <div key={panel.id}>
+              {HostComponent ? (
+                <HostComponent
+                  activeThreadId={activeThreadId}
+                  activeViewId={activeViewId}
+                  onCreateThread={onCreateThread}
+                  onSelectThread={onSelectThread}
+                  onSelectView={onSelectView}
+                  panel={panel}
+                  snapshot={snapshot}
+                  threads={threads}
+                  views={views}
+                />
+              ) : (
+                <SidebarPanelContent panel={panel} />
+              )}
+              {index < contentPanels.length - 1 ? <SidebarSeparator /> : null}
+            </div>
+          );
+        })}
       </SidebarContent>
 
       <SidebarFooter>
+        {footerPanels.map((panel) => {
+          const componentKey = panel.pluginId
+            ? `${panel.pluginId}:${panel.render.component ?? ""}`
+            : panel.render.component ?? "";
+          const HostComponent =
+            panel.render.kind === "host"
+              ? SIDEBAR_HOST_COMPONENTS[componentKey] ?? null
+              : null;
+          return HostComponent ? (
+            <HostComponent
+              key={panel.id}
+              activeThreadId={activeThreadId}
+              activeViewId={activeViewId}
+              onCreateThread={onCreateThread}
+              onSelectThread={onSelectThread}
+              onSelectView={onSelectView}
+              panel={panel}
+              snapshot={snapshot}
+              threads={threads}
+              views={views}
+            />
+          ) : (
+            <SidebarPanelContent key={panel.id} panel={panel} />
+          );
+        })}
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton tooltip="Settings" isActive={showSettings} onClick={onOpenSettings}>

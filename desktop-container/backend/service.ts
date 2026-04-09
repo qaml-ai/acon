@@ -14,7 +14,7 @@ import type {
   DesktopSnapshot,
   DesktopThread,
   DesktopThreadPreviewState,
-  DesktopView,
+  DesktopThreadRuntimeState,
 } from "../../desktop/shared/protocol";
 import {
   getDesktopPreviewItemId,
@@ -74,7 +74,6 @@ interface PendingPermissionRequestRecord {
 }
 
 const INTERRUPTED_MESSAGE_TEXT = "[Request interrupted by user]";
-const CORE_CHAT_VIEW_ID = "core:chat-thread";
 
 export interface DesktopServiceOptions {
   hostMcpBrowserOpener?: HostMcpBrowserOpener;
@@ -490,7 +489,6 @@ export class DesktopService {
     const extensionSnapshot = this.extensionHost.getSnapshot(
       this.getExtensionActivationContext(),
     );
-    const views = [...this.getCoreViews(), ...extensionSnapshot.views];
     const snapshot = this.store.buildSnapshot(
       this.getRuntimeStatus(),
       provider.id,
@@ -498,17 +496,38 @@ export class DesktopService {
       model,
       provider.getAvailableModels(),
       provider.getAuthState(model),
-      views,
+      extensionSnapshot.views,
+      extensionSnapshot.sidebarPanels,
       extensionSnapshot.plugins,
     );
     snapshot.threadPreviewStateById = this.resolveThreadPreviewStates(
       snapshot.threadPreviewStateById,
     );
+    snapshot.threadRuntimeById = this.resolveThreadRuntimeStates(snapshot.threads);
     snapshot.pendingPermissionRequest =
       this.pendingPermissionRequests[0]?.request ?? null;
     return snapshot;
   }
 
+  private resolveThreadRuntimeStates(
+    threads: DesktopThread[],
+  ): Record<string, DesktopThreadRuntimeState> {
+    return Object.fromEntries(
+      threads.map((thread) => {
+        const activeRun = this.activeThreadRuns.get(thread.id);
+        return [
+          thread.id,
+          {
+            active: thread.id === this.store.getActiveThreadId(),
+            hasMessages: this.store.getThreadMessages(thread.id).length > 0,
+            sessionId: this.store.getProviderSessionId(thread.id, thread.provider),
+            isRunning: Boolean(activeRun),
+            stopRequested: activeRun?.stopRequested === true,
+          },
+        ];
+      }),
+    );
+  }
   private toPluginThreadRecord(thread: DesktopThread): CamelAIThreadRecord {
     const activeRun = this.activeThreadRuns.get(thread.id);
     return {
@@ -706,6 +725,7 @@ export class DesktopService {
         this.createThread({
           title: event.title,
           provider: this.store.getProvider(),
+          metadata: event.metadata,
         });
         return;
       }
@@ -815,6 +835,10 @@ export class DesktopService {
         void this.stopThread(event.threadId);
         return;
       }
+      case "update_thread_metadata": {
+        this.updateThreadMetadata(event.threadId, event.metadata);
+        return;
+      }
       case "ping": {
         this.broadcast({
           type: "pong",
@@ -918,9 +942,7 @@ export class DesktopService {
     const extensionSnapshot = this.extensionHost.getSnapshot(
       this.getExtensionActivationContext(),
     );
-    const validViewIds = new Set(
-      [...this.getCoreViews(), ...extensionSnapshot.views].map((view) => view.id),
-    );
+    const validViewIds = new Set(extensionSnapshot.views.map((view) => view.id));
     const activeViewId = this.store.getActiveViewId();
 
     if (activeViewId && !validViewIds.has(activeViewId)) {
@@ -970,27 +992,12 @@ export class DesktopService {
   }
 
   private activateDefaultThreadView(threadId: string): boolean {
-    this.store.activateThreadView(threadId, CORE_CHAT_VIEW_ID);
+    const defaultThreadViewId = this.extensionHost.getDefaultViewId("thread");
+    if (!defaultThreadViewId) {
+      return false;
+    }
+    this.store.activateThreadView(threadId, defaultThreadViewId);
     return true;
-  }
-
-  private getCoreViews(): DesktopView[] {
-    return [
-      {
-        id: CORE_CHAT_VIEW_ID,
-        title: "Chat",
-        description: "Thread-focused chat workspace.",
-        icon: "MessagesSquare",
-        pluginId: null,
-        scope: "thread",
-        isDefault: true,
-        render: {
-          kind: "host",
-          component: "chat-thread",
-        },
-        hostData: null,
-      },
-    ];
   }
 
   private resolveLocalPreviewFilePath(target: Extract<DesktopPreviewTarget, { kind: "file" }>): string | null {
