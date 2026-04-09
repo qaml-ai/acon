@@ -29,5 +29,7 @@ Core areas:
 - Keep chat as a core desktop surface owned by the workbench, not a builtin plugin contribution.
 - Keep thread preview items in the dedicated right-side preview pane instead of the main workbench tab strip.
 - Use the builtin `preview-control` extension when host MCP or plugin code needs to open or manage thread preview items for files or URLs.
+- When running a web server inside the guest container, bind it to `0.0.0.0` instead of `localhost`.
+- When opening a preview URL for a guest web server, use the current container IP instead of `localhost`.
 - User plugins are installed into the desktop data directory under `plugins/`, and the builtin Extension Lab view is the primary install/manage entrypoint for them.
 - Keep this file current when the standalone architecture changes.

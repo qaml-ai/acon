@@ -7,7 +7,6 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  readFileSync,
   readlinkSync,
   rmSync,
   symlinkSync,
@@ -33,6 +32,8 @@ This environment is for \`acon\`, the standalone camelAI desktop app.
 - Run \`acon-mcp tools <server-id>\` to list the tools exposed by a server.
 - Run \`acon-mcp <server-id>\` to expose that server over stdio for MCP clients in the container.
 - A typed JavaScript package named \`@acon/host-rpc\` is preinstalled for guest code.
+- When running a web server in the guest container, bind it to \`0.0.0.0\` instead of \`localhost\`.
+- When opening a preview URL for a guest web server, use the current container IP instead of \`localhost\`.
 - Example:
   \`\`\`js
   import { createHostRpcClient } from "@acon/host-rpc";
@@ -203,108 +204,6 @@ function ensureString(value, fieldName) {
     throw new Error(`${fieldName} must be a non-empty string.`);
   }
   return value.trim();
-}
-
-function normalizeWorkspacePreviewPath(input) {
-  const trimmed = typeof input === "string" ? input.trim() : "";
-  if (!trimmed) {
-    return "";
-  }
-
-  const normalized = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
-  for (const prefix of ["/workspace", "/home/claude", "/root"]) {
-    if (normalized === prefix) {
-      return "/";
-    }
-    if (normalized.startsWith(`${prefix}/`)) {
-      return normalized.slice(prefix.length) || "/";
-    }
-  }
-
-  return normalized;
-}
-
-function inferContentType(path) {
-  const extension = path.split(".").pop()?.toLowerCase() ?? "";
-  const contentTypes = {
-    css: "text/css; charset=utf-8",
-    csv: "text/csv; charset=utf-8",
-    gif: "image/gif",
-    html: "text/html; charset=utf-8",
-    ipynb: "application/json; charset=utf-8",
-    jpeg: "image/jpeg",
-    jpg: "image/jpeg",
-    js: "text/javascript; charset=utf-8",
-    json: "application/json; charset=utf-8",
-    md: "text/markdown; charset=utf-8",
-    mp3: "audio/mpeg",
-    mp4: "video/mp4",
-    pdf: "application/pdf",
-    png: "image/png",
-    svg: "image/svg+xml",
-    text: "text/plain; charset=utf-8",
-    ts: "text/plain; charset=utf-8",
-    tsv: "text/tab-separated-values; charset=utf-8",
-    txt: "text/plain; charset=utf-8",
-    wav: "audio/wav",
-    webm: "video/webm",
-    webp: "image/webp",
-    yml: "text/yaml; charset=utf-8",
-    yaml: "text/yaml; charset=utf-8",
-  };
-  return contentTypes[extension] || "application/octet-stream";
-}
-
-async function readPreviewFile(params) {
-  if (!params || typeof params !== "object") {
-    throw new Error("preview.read_file params must be an object.");
-  }
-
-  const path = ensureString(params.path, "preview.read_file path");
-  const normalizedPath = normalizeWorkspacePreviewPath(path);
-  const absolutePath =
-    normalizedPath.startsWith("/mnt/user-uploads/") ||
-    normalizedPath.startsWith("/mnt/user-outputs/")
-      ? normalizedPath
-      : resolve(workspaceRoot, normalizedPath.replace(/^\/+/, ""));
-
-  if (!existsSync(absolutePath)) {
-    throw new Error(`Preview file does not exist: ${path}`);
-  }
-
-  const body = readFileSync(absolutePath);
-  return {
-    status: 200,
-    statusText: "OK",
-    headers: {
-      "content-length": String(body.byteLength),
-      "content-type": inferContentType(absolutePath),
-    },
-    bodyBase64: body.toString("base64"),
-  };
-}
-
-async function fetchPreviewUrl(params) {
-  if (!params || typeof params !== "object") {
-    throw new Error("preview.fetch_url params must be an object.");
-  }
-
-  const url = ensureString(params.url, "preview.fetch_url url");
-  const targetUrl = new URL(url);
-  if (targetUrl.protocol !== "http:" && targetUrl.protocol !== "https:") {
-    throw new Error(`preview.fetch_url only supports http/https URLs. Received ${targetUrl.protocol}.`);
-  }
-
-  const response = await fetch(targetUrl, {
-    method: "GET",
-  });
-  const body = Buffer.from(await response.arrayBuffer());
-  return {
-    status: response.status,
-    statusText: response.statusText,
-    headers: Object.fromEntries(response.headers.entries()),
-    bodyBase64: body.toString("base64"),
-  };
 }
 
 function ensureProviderId(value) {
@@ -1930,10 +1829,6 @@ async function executeHostRequest(method, params) {
       return await promptSession(params);
     case "session.cancel":
       return await cancelSession(params);
-    case "preview.read_file":
-      return await readPreviewFile(params);
-    case "preview.fetch_url":
-      return await fetchPreviewUrl(params);
     default:
       throw new Error(`Unknown daemon request method: ${method}.`);
   }
