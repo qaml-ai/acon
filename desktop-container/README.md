@@ -67,10 +67,11 @@ Host MCP notes:
 - Inside the container, `acon-mcp --help` shows the CLI surface.
 - `acon-mcp servers` lists the host MCP servers that the Electron app has registered for that backend session.
 - `acon-mcp tools <server-id>` lists the tools exposed by one registered host MCP server.
-- `acon-mcp <server-id>` exposes that registered host MCP server over stdio for any MCP client running in the guest.
+- `acon-mcp call <server-id> <tool-name> --input '{"key":"value"}'` invokes one tool without exposing the raw MCP session.
+- `acon-mcp prompts <server-id>`, `acon-mcp prompt <server-id> <prompt-name>`, `acon-mcp resources <server-id>`, `acon-mcp resource-templates <server-id>`, and `acon-mcp read-resource <server-id> <uri>` cover the standard prompt/resource discovery flows.
 - Inside the container, `@acon/host-rpc` is preinstalled and copied into `/workspace/node_modules/@acon/host-rpc` so guest JavaScript or TypeScript can call the same host RPC bridge directly.
-- `createHostRpcClient()` exposes typed helpers for `ping`, `fetch`, `listMcpServers`, `listMcpTools`, `callMcpTool`, `mcpRequest`, and `closeMcpSession`.
-- Prefer `listMcpServers()`, `listMcpTools(serverId)`, and `callMcpTool(serverId, toolName, args)` for one-shot guest MCP usage. Reserve `mcpRequest()` for cases that need explicit MCP session control or raw JSON-RPC messages.
+- `createHostRpcClient()` exposes typed helpers for `ping`, `fetch`, `listMcpServers`, `listMcpTools`, `callMcpTool`, `listMcpPrompts`, `getMcpPrompt`, `listMcpResources`, `listMcpResourceTemplates`, `readMcpResource`, and `withMcpSession(...)` for managed multi-step flows.
+- The guest package intentionally exposes only the managed convenience helpers for MCP access.
 - Example:
 
 ```js
@@ -82,6 +83,12 @@ const tools = await client.listMcpTools("server-id");
 const result = await client.callMcpTool("server-id", "tool-name", {
   example: true,
 });
+const prompts = await client.listMcpPrompts("server-id");
+const prompt = await client.getMcpPrompt("server-id", "prompt-name", {
+  topic: "release",
+});
+const resources = await client.listMcpResources("server-id");
+const resource = await client.readMcpResource("server-id", "file:///workspace/README.md");
 ```
 
 - The daemon-backed guest-to-host bridge is internal. The positive loopback and host-MCP cases are covered by the integration test in `tests/desktop-container-agentd.integration.test.ts`.
@@ -127,7 +134,7 @@ export ANTHROPIC_API_KEY=...
 - `desktop-container/backend/container-runtime.ts` verifies that the prebuilt Apple container image is available, starts the long-lived shared agent container daemon, and drives provider turns with per-thread session reuse.
 - The backend mounts an app-managed persistent workspace into the container at `/workspace`.
 - Provider-specific runtime data lives under the shared desktop runtime directory and is mounted into the container under `/data/providers/<provider>`.
-- `desktop-container/container-images/` contains the shared Apple-container image definition that installs Codex and Claude Code together, plus the internal `acon-agentd` daemon and the `acon-mcp` stdio proxy so agents can reach host MCP servers from inside the container.
+- `desktop-container/container-images/` contains the shared Apple-container image definition that installs Codex and Claude Code together, plus the internal `acon-agentd` daemon and the `acon-mcp` convenience CLI so agents can reach host MCP servers from inside the container.
 - Packaged builds should stage the Apple `container` CLI at `Contents/Resources/desktop/bin/container`, the helper tree at `Contents/Resources/desktop/libexec/container/`, builtin plugin manifests under `Contents/Resources/desktop/plugins/builtin/`, and the image contexts at `Contents/Resources/desktop/container-images/`.
 - `desktop-container/backend/extensions/host.ts` discovers V2 `camelai` plugin manifests from `desktop-container/plugins/builtin/` plus the user install directory, loads extension modules, enforces manifest metadata such as API compatibility and declared permissions, supports registration disposables plus `deactivate()` cleanup, and exposes the runtime-first API (`on`, `registerView`, `registerCommand`, `registerTool`, host MCP registration, thread preview mutation) that materializes plugin workbench views into the shared snapshot model.
 - `desktop-container/backend/extensions/thread-state.ts` provides a persistent per-thread plugin state store under the desktop runtime directory so workbench views and runtime hooks can share thread-scoped JSON state.

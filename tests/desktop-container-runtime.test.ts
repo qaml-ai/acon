@@ -50,12 +50,14 @@ describe("ContainerRuntimeManager", () => {
       "Run \\`acon-mcp tools <server-id>\\` to list the tools exposed by a server.",
     );
     expect(daemonSource).toContain(
-      "Run \\`acon-mcp <server-id>\\` to expose that server over stdio for MCP clients in the container.",
+      "Run \\`acon-mcp call <server-id> <tool-name> --input '{\"key\":\"value\"}'\\` for one-shot tool calls.",
     );
     expect(daemonSource).toContain(
       "A typed JavaScript package named \\`@acon/host-rpc\\` is preinstalled for guest code.",
     );
     expect(daemonSource).toContain("callMcpTool(serverId, toolName, args)");
+    expect(daemonSource).toContain("getMcpPrompt(serverId, promptName, args)");
+    expect(daemonSource).toContain("readMcpResource(serverId, uri)");
     expect(daemonSource).toContain(
       'import { createHostRpcClient } from "@acon/host-rpc";',
     );
@@ -99,8 +101,10 @@ describe("ContainerRuntimeManager", () => {
     expect(packageJson).toContain('"types": "./index.d.ts"');
     expect(typeDefinitions).toContain("export class HostRpcClient");
     expect(typeDefinitions).toContain("listMcpServers(): Promise<HostMcpServerSummary[]>");
-    expect(typeDefinitions).toContain("export interface JsonRpcNotificationMessage");
     expect(typeDefinitions).toContain("callMcpTool<TResult = unknown>(");
+    expect(typeDefinitions).toContain("listMcpPrompts(");
+    expect(typeDefinitions).toContain("readMcpResource(");
+    expect(typeDefinitions).toContain("withMcpSession<TResult = unknown>(");
   });
 
   it("keeps the guest host RPC client version constant in sync with package metadata", async () => {
