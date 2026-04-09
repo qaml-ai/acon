@@ -30,11 +30,7 @@ import {
   getProviderOptions,
   requireDesktopProvider,
 } from "./providers";
-import {
-  ContainerRuntimeManager,
-  type PreviewRuntimeResponse,
-  type RuntimeManager,
-} from "./container-runtime";
+import { ContainerRuntimeManager, type RuntimeManager } from "./container-runtime";
 import { CamelAIExtensionHost } from "./extensions/host";
 import { getHarnessAdapterForProvider } from "./extensions/harness-adapters";
 import type { CamelAIHostMcpMutationContext } from "./extensions/types";
@@ -93,13 +89,6 @@ function extractProviderSessionIdFromRuntimeEvent(
 function toDesktopPluginFileUrl(path: string): string {
   const fileUrl = pathToFileURL(path);
   return `desktop-plugin://local${fileUrl.pathname}`;
-}
-
-export interface DesktopPreviewFetchResult {
-  status: number;
-  headers: Record<string, string>;
-  bodyBase64?: string;
-  localPath?: string;
 }
 
 export class DesktopService {
@@ -444,78 +433,8 @@ export class DesktopService {
     };
   }
 
-  async fetchThreadPreviewResource(
-    threadId: string,
-    itemId: string,
-    options: {
-      pathname?: string;
-      search?: string;
-    } = {},
-  ): Promise<DesktopPreviewFetchResult> {
-    const thread = this.store.getThread(threadId);
-    if (!thread) {
-      return {
-        status: 404,
-        headers: {
-          "content-type": "text/plain; charset=utf-8",
-        },
-        bodyBase64: Buffer.from(`Unknown thread ${threadId}.`, "utf8").toString("base64"),
-      };
-    }
-
-    const previewState = this.store.getThreadPreviewState(threadId);
-    const item = previewState.items.find((entry) => entry.id === itemId) ?? null;
-    if (!item) {
-      return {
-        status: 404,
-        headers: {
-          "content-type": "text/plain; charset=utf-8",
-        },
-        bodyBase64: Buffer.from(`Unknown preview item ${itemId}.`, "utf8").toString("base64"),
-      };
-    }
-
-    if (item.target.kind === "file") {
-      const localPath = this.resolveLocalPreviewFilePath(item.target);
-      if (localPath) {
-        return {
-          status: 200,
-          headers: {},
-          localPath,
-        };
-      }
-
-      return this.toPreviewFetchResult(
-        await this.runtimeManager.fetchPreviewFile({
-          provider: requireDesktopProvider(thread.provider),
-          path: item.target.path,
-        }),
-      );
-    }
-
-    const baseUrl = new URL(item.target.url);
-    const pathname = options.pathname?.trim() || baseUrl.pathname || "/";
-    const nextUrl = new URL(`${pathname}${options.search ?? ""}`, baseUrl.origin);
-    return this.toPreviewFetchResult(
-      await this.runtimeManager.fetchPreviewUrl({
-        provider: requireDesktopProvider(thread.provider),
-        url: nextUrl.toString(),
-      }),
-    );
-  }
-
   private getCurrentProvider() {
     return requireDesktopProvider(this.store.getProvider());
-  }
-
-  private toPreviewFetchResult(
-    response: PreviewRuntimeResponse,
-  ): DesktopPreviewFetchResult {
-    return {
-      status: response.status,
-      headers: response.headers,
-      bodyBase64: response.bodyBase64,
-    };
   }
 
   private resolvePreviewThreadId(threadId: string | null | undefined): string {

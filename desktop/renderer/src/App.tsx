@@ -57,11 +57,7 @@ import {
   applyRuntimeEventToMessages,
   mergeSnapshotMessages,
 } from "../../shared/message-state";
-import {
-  encodeDesktopPreviewProxyHost,
-  getDesktopPreviewItemId,
-  isGuestLocalPreviewUrl,
-} from "../../shared/preview";
+import { getDesktopPreviewItemId } from "../../shared/preview";
 import { DesktopSidebar } from "./desktop-sidebar";
 import { SettingsPage } from "./settings-page";
 import { getDesktopIcon } from "./desktop-icons";
@@ -182,28 +178,6 @@ function formatTime(timestamp: number): string {
     minute: "2-digit",
     hour12: true,
   });
-}
-
-function getThreadPreviewUrl(
-  threadId: string,
-  item: DesktopThreadPreviewState["items"][number],
-): string | null {
-  const proxyHost = encodeDesktopPreviewProxyHost(threadId, item.id);
-
-  if (item.target.kind === "file") {
-    return item.src ?? `desktop-preview://${proxyHost}/file`;
-  }
-
-  if (desktopShell && isGuestLocalPreviewUrl(item.target.url)) {
-    try {
-      const targetUrl = new URL(item.target.url);
-      return `desktop-preview://${proxyHost}${targetUrl.pathname || "/"}${targetUrl.search}`;
-    } catch {
-      return `desktop-preview://${proxyHost}/`;
-    }
-  }
-
-  return item.src ?? item.target.url;
 }
 
 function focusWorkbenchTab(tabId: string): void {
@@ -1166,14 +1140,12 @@ function WorkbenchSurfacePane(props: HostSurfaceComponentProps) {
 }
 
 function ThreadPreviewPane({
-  threadId,
   previewState,
   onClear,
   onCloseItem,
   onSelectItem,
   onSetVisible,
 }: {
-  threadId: string;
   previewState: DesktopThreadPreviewState;
   onClear: () => void;
   onCloseItem: (itemId: string) => void;
@@ -1184,8 +1156,7 @@ function ThreadPreviewPane({
     previewState.items.find((item) => item.id === previewState.activeItemId) ??
     previewState.items[0] ??
     null;
-  const activePreviewUrl =
-    activeItem && threadId ? getThreadPreviewUrl(threadId, activeItem) : null;
+  const activePreviewUrl = activeItem?.src ?? null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background">
@@ -1989,7 +1960,6 @@ export function App() {
                     activeThreadPreviewState.items.length > 0 ? (
                       <aside className="flex min-h-[320px] w-full min-w-0 border-t border-border/60 bg-muted/10 lg:min-h-0 lg:w-[420px] lg:border-l lg:border-t-0 xl:w-[480px] 2xl:w-[560px]">
                         <ThreadPreviewPane
-                          threadId={activeThreadId!}
                           previewState={activeThreadPreviewState}
                           onClear={handleClearPreviewTargets}
                           onCloseItem={handleClosePreviewItem}
