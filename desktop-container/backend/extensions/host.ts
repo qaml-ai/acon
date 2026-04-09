@@ -23,6 +23,10 @@ import {
 import { createAgentExtensionThreadStateStore } from "./thread-state";
 import { CAMELAI_CURRENT_API_VERSION } from "./types";
 import type {
+  CamelAIThreadCreateOptions,
+  CamelAIThreadEventHandler,
+  CamelAIThreadMetadataUpdate,
+  CamelAIThreadRecord,
   CamelAIActivationContext,
   CamelAIDisposable,
   CamelAIDisposableLike,
@@ -98,6 +102,19 @@ export interface CamelAIExtensionHostOptions {
   registerMcpServer?: (registration: HostMcpServerRegistration) => void;
   unregisterMcpServer?: (serverId: string) => void;
   getActivationContext?: () => CamelAIActivationContext;
+  listThreads?: () => CamelAIThreadRecord[];
+  getThread?: (threadId: string) => CamelAIThreadRecord | null;
+  subscribeThreadEvents?: (
+    listener: CamelAIThreadEventHandler,
+  ) => CamelAIDisposableLike | void;
+  selectThread?: (threadId: string) => CamelAIThreadRecord;
+  createThread?: (options?: CamelAIThreadCreateOptions) => CamelAIThreadRecord;
+  sendMessage?: (threadId: string, content: string) => Promise<void>;
+  stopThread?: (threadId: string) => Promise<boolean>;
+  updateThreadMetadata?: (
+    threadId: string,
+    update: CamelAIThreadMetadataUpdate,
+  ) => CamelAIThreadRecord;
   listInstalledHostMcpServers?: () => CamelAIPersistedHostMcpServerRecord[];
   installStdioHostMcpServer?: (
     server: CamelAIInstallStdioHostMcpServerOptions,
@@ -115,6 +132,17 @@ export interface CamelAIExtensionHostOptions {
     server: CamelAIInstallHttpHostMcpServerOptions,
     context: CamelAIHostMcpMutationContext,
   ) => Promise<CamelAIInstallHostMcpServerResult>;
+  promptToStoreSecret?: (
+    options: {
+      secretRef?: string | null;
+      title: string;
+      message?: string | null;
+      fieldLabel?: string | null;
+    },
+    context: Omit<CamelAIHostMcpMutationContext, "workspaceDirectory">,
+  ) => Promise<{
+    secretRef: string;
+  }>;
   openThreadPreviewItem?: (
     threadId: string | null,
     target: DesktopPreviewTarget,
@@ -836,6 +864,45 @@ export class CamelAIExtensionHost {
           record.handlers.set(event, nextHandlers);
         });
       },
+      listThreads: () => this.options.listThreads?.() ?? [],
+      getThread: (threadId) => this.options.getThread?.(threadId) ?? null,
+      subscribeThreadEvents: (handler) => {
+        const disposable = this.options.subscribeThreadEvents?.(handler);
+        return this.registerRecordDisposable(
+          record,
+          disposable ?? { dispose() {} },
+        );
+      },
+      selectThread: (threadId) => {
+        if (!this.options.selectThread) {
+          throw new Error("Thread selection is unavailable.");
+        }
+        return this.options.selectThread(threadId);
+      },
+      createThread: (options) => {
+        if (!this.options.createThread) {
+          throw new Error("Thread creation is unavailable.");
+        }
+        return this.options.createThread(options);
+      },
+      sendMessage: async (threadId, content) => {
+        if (!this.options.sendMessage) {
+          throw new Error("Thread messaging is unavailable.");
+        }
+        await this.options.sendMessage(threadId, content);
+      },
+      stopThread: async (threadId) => {
+        if (!this.options.stopThread) {
+          throw new Error("Thread stopping is unavailable.");
+        }
+        return await this.options.stopThread(threadId);
+      },
+      updateThreadMetadata: (threadId, update) => {
+        if (!this.options.updateThreadMetadata) {
+          throw new Error("Thread metadata updates are unavailable.");
+        }
+        return this.options.updateThreadMetadata(threadId, update);
+      },
       registerView: (id, view) => {
         record.views.set(id, view);
         return this.registerRecordDisposable(record, () => {
@@ -862,9 +929,6 @@ export class CamelAIExtensionHost {
       },
       registerMcpServer,
       unregisterMcpServer,
-      registerHostMcpServer: (registration) =>
-        registerMcpServer(registration.id, registration),
-      unregisterHostMcpServer: unregisterMcpServer,
       listInstalledHostMcpServers: () => {
         this.assertPluginPermission(record, "host-mcp");
         return this.options.listInstalledHostMcpServers?.() ?? [];
@@ -893,6 +957,18 @@ export class CamelAIExtensionHost {
           harness: activeContext.harness,
           threadId: activeContext.activeThreadId,
           workspaceDirectory: activeContext.workspaceDirectory,
+        });
+      },
+      promptToStoreSecret: async (options) => {
+        this.assertPluginPermission(record, "host-mcp");
+        const activeContext = this.resolveActivationContext(context);
+        if (!this.options.promptToStoreSecret) {
+          throw new Error("Secret storage is unavailable.");
+        }
+        return await this.options.promptToStoreSecret(options, {
+          pluginId,
+          harness: activeContext.harness,
+          threadId: activeContext.activeThreadId,
         });
       },
       uninstallInstalledHostMcpServer: async (serverId) => {

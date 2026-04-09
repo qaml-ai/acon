@@ -4,10 +4,20 @@ import { createConnection } from "node:net";
 export const DEFAULT_HOST_RPC_SOCKET_PATH = "/data/host-rpc/bridge.sock";
 export const DEFAULT_HOST_RPC_TIMEOUT_MS = 30_000;
 export const DEFAULT_MCP_PROTOCOL_VERSION = "2025-03-26";
+export const DEFAULT_MCP_CLIENT_VERSION = "0.1.0";
 export const DEFAULT_MCP_CLIENT_INFO = Object.freeze({
   name: "@acon/host-rpc",
-  version: "1.0.0",
+  version: DEFAULT_MCP_CLIENT_VERSION,
 });
+
+const INITIALIZE_REQUEST_ID = 1;
+const TOOLS_LIST_REQUEST_ID = 2;
+const TOOLS_CALL_REQUEST_ID = 3;
+const PROMPTS_LIST_REQUEST_ID = 4;
+const PROMPTS_GET_REQUEST_ID = 5;
+const RESOURCES_LIST_REQUEST_ID = 6;
+const RESOURCES_READ_REQUEST_ID = 7;
+const RESOURCE_TEMPLATES_LIST_REQUEST_ID = 8;
 
 export class HostRpcError extends Error {
   constructor(message, options = {}) {
@@ -180,7 +190,331 @@ export class HostRpcClient {
     return Array.isArray(servers) ? servers : [];
   }
 
-  async mcpRequest(serverId, sessionId, message) {
+  async withMcpSession(serverId, callback, options = {}) {
+    return await this.#withManagedMcpSession(serverId, options, async (sessionId) => {
+      const session = Object.freeze({
+        serverId,
+        listTools: async () => await this.#listMcpToolsInSession(serverId, sessionId),
+        callTool: async (toolName, toolArguments = {}) =>
+          await this.#callMcpToolInSession(
+            serverId,
+            sessionId,
+            toolName,
+            toolArguments,
+          ),
+        listPrompts: async () =>
+          await this.#listMcpPromptsInSession(serverId, sessionId),
+        getPrompt: async (promptName, promptArguments = undefined) =>
+          await this.#getMcpPromptInSession(
+            serverId,
+            sessionId,
+            promptName,
+            promptArguments,
+          ),
+        listResources: async () =>
+          await this.#listMcpResourcesInSession(serverId, sessionId),
+        listResourceTemplates: async () =>
+          await this.#listMcpResourceTemplatesInSession(serverId, sessionId),
+        readResource: async (uri) =>
+          await this.#readMcpResourceInSession(serverId, sessionId, uri),
+      });
+
+      return await callback(session);
+    });
+  }
+
+  async listMcpTools(serverId, options = {}) {
+    const result = await this.#sendManagedMcpRequest(
+      serverId,
+      {
+        jsonrpc: "2.0",
+        id: TOOLS_LIST_REQUEST_ID,
+        method: "tools/list",
+        params: {},
+      },
+      options,
+      {
+        code: "MCP_TOOLS_LIST_FAILED",
+        method: "tools/list",
+      },
+    );
+
+    return Array.isArray(result?.tools) ? result.tools : [];
+  }
+
+  async callMcpTool(serverId, toolName, toolArguments = {}, options = {}) {
+    const result = await this.#sendManagedMcpRequest(
+      serverId,
+      {
+        jsonrpc: "2.0",
+        id: TOOLS_CALL_REQUEST_ID,
+        method: "tools/call",
+        params: {
+          name: toolName,
+          arguments: toolArguments,
+        },
+      },
+      options,
+      {
+        code: "MCP_TOOL_CALL_FAILED",
+        method: "tools/call",
+      },
+    );
+
+    return result ?? null;
+  }
+
+  async #listMcpToolsInSession(serverId, sessionId) {
+    const result = await this.#sendSessionMcpRequest(
+      serverId,
+      sessionId,
+      {
+        jsonrpc: "2.0",
+        id: TOOLS_LIST_REQUEST_ID,
+        method: "tools/list",
+        params: {},
+      },
+      {
+        code: "MCP_TOOLS_LIST_FAILED",
+        method: "tools/list",
+      },
+    );
+
+    return Array.isArray(result?.tools) ? result.tools : [];
+  }
+
+  async #callMcpToolInSession(serverId, sessionId, toolName, toolArguments = {}) {
+    return await this.#sendSessionMcpRequest(
+      serverId,
+      sessionId,
+      {
+        jsonrpc: "2.0",
+        id: TOOLS_CALL_REQUEST_ID,
+        method: "tools/call",
+        params: {
+          name: toolName,
+          arguments: toolArguments,
+        },
+      },
+      {
+        code: "MCP_TOOL_CALL_FAILED",
+        method: "tools/call",
+      },
+    );
+  }
+
+  async listMcpPrompts(serverId, options = {}) {
+    const result = await this.#sendManagedMcpRequest(
+      serverId,
+      {
+        jsonrpc: "2.0",
+        id: PROMPTS_LIST_REQUEST_ID,
+        method: "prompts/list",
+        params: {},
+      },
+      options,
+      {
+        code: "MCP_PROMPTS_LIST_FAILED",
+        method: "prompts/list",
+      },
+    );
+
+    return Array.isArray(result?.prompts) ? result.prompts : [];
+  }
+
+  async #listMcpPromptsInSession(serverId, sessionId) {
+    const result = await this.#sendSessionMcpRequest(
+      serverId,
+      sessionId,
+      {
+        jsonrpc: "2.0",
+        id: PROMPTS_LIST_REQUEST_ID,
+        method: "prompts/list",
+        params: {},
+      },
+      {
+        code: "MCP_PROMPTS_LIST_FAILED",
+        method: "prompts/list",
+      },
+    );
+
+    return Array.isArray(result?.prompts) ? result.prompts : [];
+  }
+
+  async getMcpPrompt(serverId, promptName, promptArguments = undefined, options = {}) {
+    const result = await this.#sendManagedMcpRequest(
+      serverId,
+      {
+        jsonrpc: "2.0",
+        id: PROMPTS_GET_REQUEST_ID,
+        method: "prompts/get",
+        params:
+          promptArguments && Object.keys(promptArguments).length > 0
+            ? {
+                name: promptName,
+                arguments: promptArguments,
+              }
+            : {
+                name: promptName,
+              },
+      },
+      options,
+      {
+        code: "MCP_PROMPT_GET_FAILED",
+        method: "prompts/get",
+      },
+    );
+
+    return result ?? null;
+  }
+
+  async #getMcpPromptInSession(
+    serverId,
+    sessionId,
+    promptName,
+    promptArguments = undefined,
+  ) {
+    return await this.#sendSessionMcpRequest(
+      serverId,
+      sessionId,
+      {
+        jsonrpc: "2.0",
+        id: PROMPTS_GET_REQUEST_ID,
+        method: "prompts/get",
+        params:
+          promptArguments && Object.keys(promptArguments).length > 0
+            ? {
+                name: promptName,
+                arguments: promptArguments,
+              }
+            : {
+                name: promptName,
+              },
+      },
+      {
+        code: "MCP_PROMPT_GET_FAILED",
+        method: "prompts/get",
+      },
+    );
+  }
+
+  async listMcpResources(serverId, options = {}) {
+    const result = await this.#sendManagedMcpRequest(
+      serverId,
+      {
+        jsonrpc: "2.0",
+        id: RESOURCES_LIST_REQUEST_ID,
+        method: "resources/list",
+        params: {},
+      },
+      options,
+      {
+        code: "MCP_RESOURCES_LIST_FAILED",
+        method: "resources/list",
+      },
+    );
+
+    return Array.isArray(result?.resources) ? result.resources : [];
+  }
+
+  async #listMcpResourcesInSession(serverId, sessionId) {
+    const result = await this.#sendSessionMcpRequest(
+      serverId,
+      sessionId,
+      {
+        jsonrpc: "2.0",
+        id: RESOURCES_LIST_REQUEST_ID,
+        method: "resources/list",
+        params: {},
+      },
+      {
+        code: "MCP_RESOURCES_LIST_FAILED",
+        method: "resources/list",
+      },
+    );
+
+    return Array.isArray(result?.resources) ? result.resources : [];
+  }
+
+  async listMcpResourceTemplates(serverId, options = {}) {
+    const result = await this.#sendManagedMcpRequest(
+      serverId,
+      {
+        jsonrpc: "2.0",
+        id: RESOURCE_TEMPLATES_LIST_REQUEST_ID,
+        method: "resources/templates/list",
+        params: {},
+      },
+      options,
+      {
+        code: "MCP_RESOURCE_TEMPLATES_LIST_FAILED",
+        method: "resources/templates/list",
+      },
+    );
+
+    return Array.isArray(result?.resourceTemplates) ? result.resourceTemplates : [];
+  }
+
+  async #listMcpResourceTemplatesInSession(serverId, sessionId) {
+    const result = await this.#sendSessionMcpRequest(
+      serverId,
+      sessionId,
+      {
+        jsonrpc: "2.0",
+        id: RESOURCE_TEMPLATES_LIST_REQUEST_ID,
+        method: "resources/templates/list",
+        params: {},
+      },
+      {
+        code: "MCP_RESOURCE_TEMPLATES_LIST_FAILED",
+        method: "resources/templates/list",
+      },
+    );
+
+    return Array.isArray(result?.resourceTemplates) ? result.resourceTemplates : [];
+  }
+
+  async readMcpResource(serverId, uri, options = {}) {
+    const result = await this.#sendManagedMcpRequest(
+      serverId,
+      {
+        jsonrpc: "2.0",
+        id: RESOURCES_READ_REQUEST_ID,
+        method: "resources/read",
+        params: {
+          uri,
+        },
+      },
+      options,
+      {
+        code: "MCP_RESOURCE_READ_FAILED",
+        method: "resources/read",
+      },
+    );
+
+    return result ?? null;
+  }
+
+  async #readMcpResourceInSession(serverId, sessionId, uri) {
+    return await this.#sendSessionMcpRequest(
+      serverId,
+      sessionId,
+      {
+        jsonrpc: "2.0",
+        id: RESOURCES_READ_REQUEST_ID,
+        method: "resources/read",
+        params: {
+          uri,
+        },
+      },
+      {
+        code: "MCP_RESOURCE_READ_FAILED",
+        method: "resources/read",
+      },
+    );
+  }
+
+  async #dispatchMcpRequest(serverId, sessionId, message) {
     const response = await this.request("mcp.request", {
       serverId,
       sessionId,
@@ -189,24 +523,28 @@ export class HostRpcClient {
     return Array.isArray(response?.messages) ? response.messages : [];
   }
 
-  async closeMcpSession(serverId, sessionId) {
+  async #closeMcpSession(serverId, sessionId) {
     if (!serverId || !sessionId) {
-      return { ok: true };
+      return;
     }
-    return await this.request("mcp.close", {
-      serverId,
-      sessionId,
-    });
-  }
-
-  async listMcpTools(serverId, options = {}) {
-    const sessionId = options.sessionId?.trim() || randomUUID();
-    const shouldCloseSession = !options.sessionId;
 
     try {
-      await this.mcpRequest(serverId, sessionId, {
+      await this.request("mcp.close", {
+        serverId,
+        sessionId,
+      });
+    } catch {
+      // Best effort only.
+    }
+  }
+
+  async #withManagedMcpSession(serverId, options = {}, callback) {
+    const managedSessionId = randomUUID();
+
+    try {
+      await this.#dispatchMcpRequest(serverId, managedSessionId, {
         jsonrpc: "2.0",
-        id: 1,
+        id: INITIALIZE_REQUEST_ID,
         method: "initialize",
         params: {
           protocolVersion:
@@ -218,35 +556,36 @@ export class HostRpcClient {
           },
         },
       });
-      await this.mcpRequest(serverId, sessionId, {
+      await this.#dispatchMcpRequest(serverId, managedSessionId, {
         jsonrpc: "2.0",
         method: "notifications/initialized",
       });
-      const messages = await this.mcpRequest(serverId, sessionId, {
-        jsonrpc: "2.0",
-        id: 2,
-        method: "tools/list",
-        params: {},
-      });
-      const errorMessage = getJsonRpcErrorMessage(messages, 2);
-      if (errorMessage) {
-        throw new HostRpcError(errorMessage, {
-          code: "MCP_TOOLS_LIST_FAILED",
-          method: "tools/list",
-        });
-      }
-
-      const resultMessage = getJsonRpcResultMessage(messages, 2);
-      return Array.isArray(resultMessage?.result?.tools) ? resultMessage.result.tools : [];
+      return await callback(managedSessionId);
     } finally {
-      if (shouldCloseSession) {
-        try {
-          await this.closeMcpSession(serverId, sessionId);
-        } catch {
-          // Best effort only.
-        }
-      }
+      await this.#closeMcpSession(serverId, managedSessionId);
     }
+  }
+
+  async #sendManagedMcpRequest(serverId, message, options, errorOptions) {
+    return await this.#withManagedMcpSession(serverId, options, async (sessionId) => {
+      return await this.#sendSessionMcpRequest(
+        serverId,
+        sessionId,
+        message,
+        errorOptions,
+      );
+    });
+  }
+
+  async #sendSessionMcpRequest(serverId, sessionId, message, errorOptions) {
+    const messages = await this.#dispatchMcpRequest(serverId, sessionId, message);
+    const errorMessage = getJsonRpcErrorMessage(messages, message.id);
+    if (errorMessage) {
+      throw new HostRpcError(errorMessage, errorOptions);
+    }
+
+    const resultMessage = getJsonRpcResultMessage(messages, message.id);
+    return resultMessage?.result ?? null;
   }
 }
 

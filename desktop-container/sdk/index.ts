@@ -1,4 +1,5 @@
 export type CamelAIHarness = "opencode" | "claude-code" | "codex";
+export type CamelAIProvider = "claude" | "codex";
 export const CAMELAI_PLUGIN_API_VERSION = 1;
 export type CamelAIPermission = "host-mcp" | "serve-mcp" | "thread-preview";
 export type CamelAISettingFieldType =
@@ -14,6 +15,63 @@ export type CamelAIThreadStateValue =
   | string
   | CamelAIThreadStateValue[]
   | { [key: string]: CamelAIThreadStateValue };
+
+export interface CamelAIThreadMetadata {
+  status: string | null;
+  lane: string | null;
+  archived: boolean;
+  archivedAt: number | null;
+}
+
+export interface CamelAIThreadRecord {
+  id: string;
+  provider: CamelAIProvider;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  lastMessagePreview: string | null;
+  metadata: CamelAIThreadMetadata;
+  active: boolean;
+  hasMessages: boolean;
+  sessionId: string | null;
+  isRunning: boolean;
+  stopRequested: boolean;
+}
+
+export interface CamelAIThreadCreateOptions {
+  title?: string;
+  provider?: CamelAIProvider;
+  metadata?: {
+    status?: string | null;
+    lane?: string | null;
+    archived?: boolean | null;
+  };
+}
+
+export interface CamelAIThreadMetadataUpdate {
+  status?: string | null;
+  lane?: string | null;
+  archived?: boolean | null;
+}
+
+export type CamelAIThreadEvent =
+  | {
+      type: "thread_created";
+      thread: CamelAIThreadRecord;
+    }
+  | {
+      type: "thread_selected";
+      thread: CamelAIThreadRecord;
+    }
+  | {
+      type: "thread_updated";
+      thread: CamelAIThreadRecord;
+      reason: "message" | "metadata" | "selection" | "session";
+    };
+
+export type CamelAIThreadEventHandler = (
+  event: CamelAIThreadEvent,
+) => unknown | Promise<unknown>;
 
 export interface CamelAISettingFieldOption {
   label: string;
@@ -186,7 +244,6 @@ export interface CamelAIPreviewProviderRegistration {
     webviewId: string;
   };
 }
-
 export type CamelAIPreviewTarget =
   | {
       kind: "file";
@@ -222,7 +279,7 @@ export interface CamelAIThreadPreviewMutationResult {
 
 export interface CamelAIHostMcpOAuthConfig {
   clientId: string | null;
-  clientSecret: string | null;
+  clientSecretRef: string | null;
   clientName: string | null;
   clientUri: string | null;
   clientMetadataUrl: string | null;
@@ -237,6 +294,7 @@ export interface CamelAIPersistedHostMcpStdioServerRecord {
   args: string[];
   cwd: string | null;
   env: Record<string, string>;
+  envSecretRefs: Record<string, string>;
   name: string | null;
   version: string | null;
 }
@@ -246,6 +304,7 @@ export interface CamelAIPersistedHostMcpHttpServerRecord {
   transport: "streamable-http" | "sse";
   url: string;
   headers: Record<string, string>;
+  headerSecretRefs: Record<string, string>;
   oauth: CamelAIHostMcpOAuthConfig | null;
   name: string | null;
   version: string | null;
@@ -267,6 +326,7 @@ export interface CamelAIInstallStdioHostMcpServerOptions {
   args?: string[];
   cwd?: string | null;
   env?: Record<string, string>;
+  envSecretRefs?: Record<string, string>;
   name?: string | null;
   version?: string | null;
 }
@@ -276,8 +336,21 @@ export interface CamelAIInstallHttpHostMcpServerOptions {
   url: string;
   transport?: "streamable-http" | "sse";
   headers?: Record<string, string>;
+  headerSecretRefs?: Record<string, string>;
+  oauth?: CamelAIHostMcpOAuthConfig | null;
   name?: string | null;
   version?: string | null;
+}
+
+export interface CamelAIPromptToStoreSecretOptions {
+  secretRef?: string | null;
+  title: string;
+  message?: string | null;
+  fieldLabel?: string | null;
+}
+
+export interface CamelAIStoredSecretResult {
+  secretRef: string;
 }
 
 export type CamelAIEventName =
@@ -303,6 +376,17 @@ export interface CamelAIActivationApi {
       },
     ) => Promise<unknown> | unknown,
   ): CamelAIDisposable;
+  listThreads(): CamelAIThreadRecord[];
+  getThread(threadId: string): CamelAIThreadRecord | null;
+  subscribeThreadEvents(handler: CamelAIThreadEventHandler): CamelAIDisposable;
+  selectThread(threadId: string): CamelAIThreadRecord;
+  createThread(options?: CamelAIThreadCreateOptions): CamelAIThreadRecord;
+  sendMessage(threadId: string, content: string): Promise<void>;
+  stopThread(threadId: string): Promise<boolean>;
+  updateThreadMetadata(
+    threadId: string,
+    update: CamelAIThreadMetadataUpdate,
+  ): CamelAIThreadRecord;
   registerView(id: string, view: CamelAIViewRegistration): CamelAIDisposable;
   registerCommand(
     id: string,
@@ -321,12 +405,6 @@ export interface CamelAIActivationApi {
     registration: CamelAIMcpServerRegistration,
   ): CamelAIDisposable;
   unregisterMcpServer(serverId: string): boolean;
-  /** @deprecated Use registerMcpServer(id, registration). */
-  registerHostMcpServer(
-    registration: CamelAIHostMcpServerRegistration,
-  ): CamelAIDisposable;
-  /** @deprecated Use unregisterMcpServer(serverId). */
-  unregisterHostMcpServer(serverId: string): boolean;
   listInstalledHostMcpServers(): CamelAIPersistedHostMcpServerRecord[];
   installStdioHostMcpServer(
     server: CamelAIInstallStdioHostMcpServerOptions,
@@ -334,6 +412,9 @@ export interface CamelAIActivationApi {
   installHttpHostMcpServer(
     server: CamelAIInstallHttpHostMcpServerOptions,
   ): Promise<CamelAIInstallHostMcpServerResult>;
+  promptToStoreSecret(
+    options: CamelAIPromptToStoreSecretOptions,
+  ): Promise<CamelAIStoredSecretResult>;
   uninstallInstalledHostMcpServer(serverId: string): Promise<boolean>;
   openThreadPreviewItem(
     target: CamelAIPreviewTarget,

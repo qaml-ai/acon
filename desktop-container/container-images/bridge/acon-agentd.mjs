@@ -30,8 +30,10 @@ This environment is for \`acon\`, the standalone camelAI desktop app.
 - A bash tool named \`acon-mcp\` is available in the container.
 - Run \`acon-mcp servers\` to list available MCP servers.
 - Run \`acon-mcp tools <server-id>\` to list the tools exposed by a server.
-- Run \`acon-mcp <server-id>\` to expose that server over stdio for MCP clients in the container.
+- Run \`acon-mcp call <server-id> <tool-name> --input '{"key":"value"}'\` for one-shot tool calls.
+- Run \`acon-mcp prompts <server-id>\`, \`acon-mcp prompt <server-id> <prompt-name>\`, \`acon-mcp resources <server-id>\`, and \`acon-mcp read-resource <server-id> <uri>\` for standard prompt and resource flows.
 - A typed JavaScript package named \`@acon/host-rpc\` is preinstalled for guest code.
+- Prefer the managed helpers on \`@acon/host-rpc\`: \`listMcpServers()\`, \`listMcpTools(serverId)\`, \`callMcpTool(serverId, toolName, args)\`, \`listMcpPrompts(serverId)\`, \`getMcpPrompt(serverId, promptName, args)\`, \`listMcpResources(serverId)\`, \`listMcpResourceTemplates(serverId)\`, \`readMcpResource(serverId, uri)\`, and \`withMcpSession(serverId, callback)\` for grouped interactions.
 - When running a web server in the guest container, bind it to \`0.0.0.0\` instead of \`localhost\`.
 - When opening a preview URL for a guest web server, use the current container IP instead of \`localhost\`.
 - Example:
@@ -40,6 +42,7 @@ This environment is for \`acon\`, the standalone camelAI desktop app.
 
   const client = createHostRpcClient();
   const servers = await client.listMcpServers();
+  const tools = await client.listMcpTools("server-id");
   \`\`\`
 - MCP tools are external integrations.
 `;

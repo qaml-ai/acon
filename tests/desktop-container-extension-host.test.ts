@@ -157,6 +157,7 @@ describe("CamelAIExtensionHost", () => {
     expect(host.getDefaultViewId("workspace")).toBe(
       "plugin:extension-lab:extension-lab.home",
     );
+    expect(snapshot.panels).toBeUndefined();
     expect(host.getDefaultViewId("thread")).toBe(null);
   });
 
@@ -230,9 +231,9 @@ describe("CamelAIExtensionHost", () => {
       name: "Remote Server",
       oauth: {
         clientId: null,
+        clientSecretRef: null,
         clientMetadataUrl: null,
         clientName: "Acon",
-        clientSecret: null,
         clientUri: null,
         scope: "tools.read",
         tokenEndpointAuthMethod: null,
@@ -354,6 +355,163 @@ describe("CamelAIExtensionHost", () => {
     }
   });
 
+  it("prompts for secrets and installs the repo-local REST API server through the builtin host MCP manager", async () => {
+    const registerMcpServer = vi.fn();
+    const promptToStoreSecret = vi.fn().mockResolvedValue({
+      secretRef: "linear-api-key",
+    });
+    const installStdioHostMcpServer = vi.fn().mockResolvedValue({
+      configPath: "/tmp/host-mcp/servers/linear-rest.json",
+      id: "linear-rest",
+      transport: "stdio",
+      command: "/tmp/acon-mcp-builtin.mjs",
+      args: ["rest-api"],
+      cwd: null,
+      env: {
+        REST_API_BASE_URL: "https://api.linear.app/graphql",
+        REST_API_AUTH_TYPE: "bearer",
+      },
+      envSecretRefs: {
+        REST_API_AUTH_SECRET: "linear-api-key",
+      },
+      name: "Linear REST",
+      version: "0.1.0",
+      replaced: false,
+    });
+    const host = new CamelAIExtensionHost({
+      installStdioHostMcpServer,
+      listInstalledHostMcpServers: () => [],
+      promptToStoreSecret,
+      registerMcpServer,
+      uninstallInstalledHostMcpServer: () => false,
+    });
+    const context = createActivationContext();
+
+    await host.initialize(context);
+
+    const registration = registerMcpServer.mock.calls.find(
+      ([entry]) => entry?.id === "plugin:host-mcp-manager:host-mcp-manager",
+    )?.[0];
+    expect(registration).toBeTruthy();
+
+    const registry = new HostMcpRegistry();
+    const sessionId = randomUUID();
+    registry.registerServer(registration);
+
+    try {
+      await initializeRegistryServer(
+        registry,
+        "plugin:host-mcp-manager:host-mcp-manager",
+        sessionId,
+      );
+
+      const promptResponse = await registry.dispatchRequest({
+        serverId: "plugin:host-mcp-manager:host-mcp-manager",
+        sessionId,
+        message: {
+          jsonrpc: "2.0",
+          id: 10,
+          method: "tools/call",
+          params: {
+            name: "prompt_to_store_secret",
+            arguments: {
+              secretRef: "linear-api-key",
+              title: "Store Linear API key",
+            },
+          },
+        },
+      });
+      const promptMessage = getResultMessage(
+        promptResponse.messages as Array<Record<string, unknown>>,
+        10,
+      );
+
+      expect(promptToStoreSecret).toHaveBeenCalledWith(
+        {
+          secretRef: "linear-api-key",
+          title: "Store Linear API key",
+        },
+        expect.objectContaining({
+          pluginId: "host-mcp-manager",
+          harness: "claude-code",
+          threadId: "thread-1",
+        }),
+      );
+      expect(promptMessage).toEqual(
+        expect.objectContaining({
+          result: expect.objectContaining({
+            structuredContent: {
+              secretRef: "linear-api-key",
+            },
+          }),
+        }),
+      );
+
+      const installResponse = await registry.dispatchRequest({
+        serverId: "plugin:host-mcp-manager:host-mcp-manager",
+        sessionId,
+        message: {
+          jsonrpc: "2.0",
+          id: 11,
+          method: "tools/call",
+          params: {
+            name: "install_rest_api_server",
+            arguments: {
+              id: "linear-rest",
+              baseUrl: "https://api.linear.app/graphql",
+              auth: {
+                type: "bearer",
+                secretRef: "linear-api-key",
+                headerName: null,
+              },
+              name: "Linear REST",
+            },
+          },
+        },
+      });
+      const installMessage = getResultMessage(
+        installResponse.messages as Array<Record<string, unknown>>,
+        11,
+      );
+
+      expect(installStdioHostMcpServer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "linear-rest",
+          command: expect.stringContaining("/desktop-container/bin/acon-mcp-builtin.mjs"),
+          args: ["rest-api"],
+          env: expect.objectContaining({
+            REST_API_BASE_URL: "https://api.linear.app/graphql",
+            REST_API_AUTH_TYPE: "bearer",
+          }),
+          envSecretRefs: {
+            REST_API_AUTH_SECRET: "linear-api-key",
+          },
+        }),
+        expect.objectContaining({
+          pluginId: "host-mcp-manager",
+          harness: "claude-code",
+          threadId: "thread-1",
+          workspaceDirectory: "/tmp/workspace",
+        }),
+      );
+      expect(installMessage).toEqual(
+        expect.objectContaining({
+          result: expect.objectContaining({
+            structuredContent: expect.objectContaining({
+              id: "linear-rest",
+              transport: "stdio",
+            }),
+          }),
+        }),
+      );
+    } finally {
+      await registry.closeSession(
+        "plugin:host-mcp-manager:host-mcp-manager",
+        sessionId,
+      );
+    }
+  });
+
   it("keeps disabled plugins discovered without activating or contributing surfaces", async () => {
     writeUserPlugin(sandboxDataDir, {
       id: "disabled-user-plugin",
@@ -435,14 +593,22 @@ describe("CamelAIExtensionHost", () => {
     await host.initialize(context);
     await host.refresh(context);
 
-    expect(registerMcpServer).toHaveBeenCalledTimes(2);
+    expect(registerMcpServer).toHaveBeenCalledTimes(4);
     expect(registerMcpServer).toHaveBeenCalledWith(
       expect.objectContaining({
         id: "plugin:host-mcp-manager:host-mcp-manager",
       }),
     );
+    expect(registerMcpServer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "plugin:preview-control:preview-control",
+      }),
+    );
     expect(unregisterMcpServer).toHaveBeenCalledWith(
       "plugin:host-mcp-manager:host-mcp-manager",
+    );
+    expect(unregisterMcpServer).toHaveBeenCalledWith(
+      "plugin:preview-control:preview-control",
     );
   });
 });
