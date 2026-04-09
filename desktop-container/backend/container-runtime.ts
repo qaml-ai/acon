@@ -59,31 +59,8 @@ export interface RuntimeManager {
     provider: DesktopProviderDefinition,
     onStatus?: (status: DesktopRuntimeStatus) => void,
   ): Promise<DesktopRuntimeStatus>;
-  fetchPreviewFile(
-    options: PreviewRuntimeFileRequest,
-  ): Promise<PreviewRuntimeResponse>;
-  fetchPreviewUrl(
-    options: PreviewRuntimeUrlRequest,
-  ): Promise<PreviewRuntimeResponse>;
   cancelPrompt(options: CancelContainerPromptOptions): Promise<void>;
   streamPrompt(options: StreamContainerPromptOptions): Promise<StreamContainerPromptResult>;
-}
-
-export interface PreviewRuntimeFileRequest {
-  provider: DesktopProviderDefinition;
-  path: string;
-}
-
-export interface PreviewRuntimeUrlRequest {
-  provider: DesktopProviderDefinition;
-  url: string;
-}
-
-export interface PreviewRuntimeResponse {
-  status: number;
-  statusText: string;
-  headers: Record<string, string>;
-  bodyBase64: string;
 }
 
 export interface CancelContainerPromptOptions {
@@ -277,40 +254,6 @@ export class ContainerRuntimeManager implements RuntimeManager {
 
   getRuntimeDirectory(): string {
     return this.runtimeDirectory;
-  }
-
-  async fetchPreviewFile(
-    options: PreviewRuntimeFileRequest,
-  ): Promise<PreviewRuntimeResponse> {
-    await this.ensureProviderContainer(options.provider);
-    const state = this.getSharedContainerState();
-    return await this.callProviderDaemon(
-      state,
-      "preview.read_file",
-      {
-        path: options.path,
-      },
-      {
-        timeoutMs: DEFAULT_HOST_RPC_FETCH_TIMEOUT_MS,
-      },
-    ) as PreviewRuntimeResponse;
-  }
-
-  async fetchPreviewUrl(
-    options: PreviewRuntimeUrlRequest,
-  ): Promise<PreviewRuntimeResponse> {
-    await this.ensureProviderContainer(options.provider);
-    const state = this.getSharedContainerState();
-    return await this.callProviderDaemon(
-      state,
-      "preview.fetch_url",
-      {
-        url: options.url,
-      },
-      {
-        timeoutMs: DEFAULT_HOST_RPC_FETCH_TIMEOUT_MS,
-      },
-    ) as PreviewRuntimeResponse;
   }
 
   getThreadStateDirectory(threadId: string): string {
