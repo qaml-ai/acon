@@ -88,6 +88,7 @@ vi.mock("@/components/prompt-input", () => ({
     onStop,
     placeholder,
     isAssistantRunning,
+    textareaRef,
   }: {
     value: string;
     onChange: (value: string) => void;
@@ -95,12 +96,14 @@ vi.mock("@/components/prompt-input", () => ({
     onStop?: () => void;
     placeholder?: string;
     isAssistantRunning?: boolean;
+    textareaRef?: { current: HTMLTextAreaElement | null };
   }) => (
     <div>
       <textarea
         aria-label="Prompt input"
         placeholder={placeholder}
         value={value}
+        ref={textareaRef ?? undefined}
         onChange={(event) => onChange(event.currentTarget.value)}
       />
       <button onClick={onSubmit} type="button">
@@ -669,6 +672,16 @@ describe("desktop container renderer streaming", () => {
     ).toBeInTheDocument();
   });
 
+  it("focuses the prompt input when the active chat is shown", async () => {
+    const snapshot = createSnapshot();
+
+    await renderAppWithShell(snapshot);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Prompt input")).toHaveFocus();
+    });
+  });
+
   it("opens workbench views as a full-page surface with chat hidden", async () => {
     const snapshot = createSnapshot();
     snapshot.tabs.push({
@@ -804,6 +817,40 @@ describe("desktop container renderer streaming", () => {
     expect(
       screen.queryByText("Inspect the live extension runtime and installed extensions."),
     ).toBeNull();
+  });
+
+  it("focuses the prompt input after switching from a workspace view back to chat", async () => {
+    const snapshot = createSnapshot();
+    snapshot.tabs.push({
+      id: "tab-extension-lab",
+      kind: "workspace",
+      threadId: null,
+      viewId: "plugin:extension-lab:extension-lab.home",
+      title: "Extension Lab",
+      subtitle: null,
+      icon: "Blocks",
+      closable: true,
+    });
+    snapshot.activeTabId = "tab-extension-lab";
+    snapshot.activeViewId = "plugin:extension-lab:extension-lab.home";
+
+    const { emit } = await renderAppWithShell(snapshot);
+
+    const nextSnapshot = {
+      ...snapshot,
+      activeTabId: "tab-thread-1",
+      activeViewId: "plugin:chat:chat.thread",
+      activeThreadId: "thread-1",
+    };
+
+    await emit({
+      type: "snapshot",
+      snapshot: nextSnapshot,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Prompt input")).toHaveFocus();
+    });
   });
 
   it("switches between open tabs from the tab strip", async () => {

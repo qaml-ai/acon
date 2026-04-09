@@ -486,6 +486,28 @@ function Composer({
     setDraft(initialDraft);
   }, [activeThreadId, initialDraft]);
 
+  useEffect(() => {
+    if (!activeThreadId) {
+      return;
+    }
+
+    const focusComposer = () => {
+      const textarea = composerTextareaRef.current;
+      if (!textarea || textarea.disabled) {
+        return;
+      }
+
+      textarea.focus({ preventScroll: true });
+      const selectionEnd = textarea.value.length;
+      textarea.setSelectionRange(selectionEnd, selectionEnd);
+    };
+
+    const frameId = window.requestAnimationFrame(focusComposer);
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [activeThreadId]);
+
   const handleChange = useCallback((value: string) => {
     setDraft(value);
     onDraftChange(activeThreadId, value);
