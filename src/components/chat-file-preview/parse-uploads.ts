@@ -5,7 +5,8 @@ export interface ParsedUploadRef {
   originalName: string;
 }
 
-const UPLOAD_REF_REGEX = /\(user uploaded file to (\/mnt\/user-uploads\/([^\s)]+))\)/g;
+const UPLOAD_REF_REGEX =
+  /\(user uploaded file(?: named ("(?:\\.|[^"])+"))? to (\/mnt\/user-uploads\/([^\s)]+))\)/g;
 
 function deriveOriginalName(filename: string): string {
   const lastDot = filename.lastIndexOf('.');
@@ -34,12 +35,20 @@ export function parseUploadRefs(content: string): {
   cleanContent: string;
 } {
   const refs: ParsedUploadRef[] = [];
-  const cleaned = content.replace(UPLOAD_REF_REGEX, (match, mountPath, filename) => {
+  const cleaned = content.replace(UPLOAD_REF_REGEX, (match, originalNameLiteral, mountPath, filename) => {
+    let originalName = deriveOriginalName(filename);
+    if (typeof originalNameLiteral === 'string' && originalNameLiteral.trim()) {
+      try {
+        originalName = JSON.parse(originalNameLiteral) as string;
+      } catch {
+        originalName = deriveOriginalName(filename);
+      }
+    }
     refs.push({
       originalText: match,
       mountPath,
       filename,
-      originalName: deriveOriginalName(filename),
+      originalName,
     });
     return '';
   });

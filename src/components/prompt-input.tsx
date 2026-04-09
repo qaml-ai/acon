@@ -37,6 +37,7 @@ interface PromptInputProps {
   attachments?: Attachment[];
   onFilesSelected?: (files: File[]) => void;
   onAttachmentRemove?: (id: string) => void;
+  onAddFilesClick?: () => void;
   // Voice recording props
   enableVoiceRecording?: boolean;
   // Context indicator props
@@ -105,6 +106,7 @@ export function PromptInput({
   attachments = [],
   onFilesSelected,
   onAttachmentRemove,
+  onAddFilesClick,
   enableVoiceRecording = true,
   contextUsedPercent,
   onCompact,
@@ -167,7 +169,7 @@ export function PromptInput({
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (value.trim() && !disabled) {
+      if ((value.trim() || attachments.length > 0) && !disabled) {
         onSubmit();
       }
     }
@@ -177,7 +179,7 @@ export function PromptInput({
     e.preventDefault();
     if (showStopButton) {
       onStopRef.current?.();
-    } else if (value.trim() && !disabled) {
+    } else if ((value.trim() || attachments.length > 0) && !disabled) {
       onSubmit();
     }
   }
@@ -201,6 +203,10 @@ export function PromptInput({
   function handlePlusClick(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
+    if (onAddFilesClick) {
+      onAddFilesClick();
+      return;
+    }
     fileInputRef.current?.click();
   }
 
@@ -237,8 +243,14 @@ export function PromptInput({
     }
   }, [disabled, onFilesSelected]);
 
-  const hasUploadingAttachments = attachments.some(a => a.status === 'uploading');
-  const isSubmitDisabled = disabled || isLoading || hasUploadingAttachments || isTranscribing || (!showStopButton && !value.trim());
+  const hasPendingAttachments = attachments.some(a => a.status !== 'complete');
+  const hasComposableContent = value.trim().length > 0 || attachments.length > 0;
+  const isSubmitDisabled =
+    disabled ||
+    isLoading ||
+    hasPendingAttachments ||
+    isTranscribing ||
+    (!showStopButton && !hasComposableContent);
   const showFileUpload = !!onFilesSelected;
 
   useEffect(() => {

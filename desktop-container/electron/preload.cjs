@@ -8,6 +8,9 @@ contextBridge.exposeInMainWorld('desktopShell', {
     node: process.versions.node,
   },
   getSnapshot: () => ipcRenderer.invoke('desktop:get-snapshot'),
+  pickLocalFiles: () => ipcRenderer.invoke('desktop:pick-local-files'),
+  importLocalFiles: (paths) => ipcRenderer.invoke('desktop:import-local-files', paths),
+  downloadFile: (request) => ipcRenderer.invoke('desktop:download-file', request),
   resolveWebviewSrc: (entrypoint) =>
     ipcRenderer.invoke('desktop:resolve-webview-src', entrypoint),
   sendEvent: (event) => ipcRenderer.send('desktop:send', event),

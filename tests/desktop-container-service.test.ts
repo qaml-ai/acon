@@ -26,6 +26,11 @@ function createRuntimeManagerStub() {
   const unregisterHostMcpServer = vi.fn();
   const runtime: RuntimeManager = {
     getWorkspaceDirectory: () => "/workspace",
+    getManagedWorkspaceDirectory: () => "/workspace",
+    getUserUploadsDirectory: () =>
+      resolve(process.env.DESKTOP_DATA_DIR ?? tmpdir(), "transfers", "uploads"),
+    getUserOutputsDirectory: () =>
+      resolve(process.env.DESKTOP_DATA_DIR ?? tmpdir(), "transfers", "outputs"),
     getRuntimeDirectory: () => "/runtime",
     getThreadStateDirectory: (threadId: string) => `/runtime/thread-state/${threadId}`,
     getCachedStatus: () => ({
@@ -715,5 +720,43 @@ describe("DesktopService", () => {
       existsSync(resolve(serverDirectory, "workspace-server.json")),
     ).toBe(true);
     expect(service.getSnapshot().pendingPermissionRequest).toBe(null);
+  });
+
+  it("resolves upload and output preview items against mounted transfer directories", () => {
+    const { runtime } = createRuntimeManagerStub();
+    const service = new DesktopService(runtime);
+    const threadId = service.getSnapshot().threads[0]?.id ?? "";
+    const uploadsDirectory = runtime.getUserUploadsDirectory();
+    const outputsDirectory = runtime.getUserOutputsDirectory();
+
+    mkdirSync(uploadsDirectory, { recursive: true });
+    mkdirSync(outputsDirectory, { recursive: true });
+    writeFileSync(resolve(uploadsDirectory, "input.csv"), "name\nacon\n", "utf8");
+    writeFileSync(resolve(outputsDirectory, "report.xlsx"), "fake workbook", "utf8");
+
+    service.handleClientEvent({
+      type: "preview_set_items",
+      threadId,
+      items: [
+        {
+          kind: "file",
+          source: "upload",
+          path: "input.csv",
+          filename: "input.csv",
+        },
+        {
+          kind: "file",
+          source: "output",
+          path: "report.xlsx",
+          filename: "report.xlsx",
+        },
+      ],
+    });
+
+    const previewItems =
+      service.getSnapshot().threadPreviewStateById[threadId]?.items ?? [];
+    expect(previewItems).toHaveLength(2);
+    expect(previewItems[0]?.src).toContain("transfers/uploads/input.csv");
+    expect(previewItems[1]?.src).toContain("transfers/outputs/report.xlsx");
   });
 });

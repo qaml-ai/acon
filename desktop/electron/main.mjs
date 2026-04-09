@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, protocol, shell, net } from 'electron';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 protocol.registerSchemesAsPrivileged([
@@ -470,6 +470,121 @@ function getDesktopPluginDirectory() {
   return resolve(getDesktopRuntimeEnv().DESKTOP_DATA_DIR, 'plugins');
 }
 
+function getManagedWorkspaceRoot() {
+  return resolve(getDesktopRuntimeEnv().DESKTOP_DATA_DIR, 'workspaces', 'default', 'root');
+}
+
+function getTransferDirectory(kind) {
+  const directory = resolve(getDesktopRuntimeEnv().DESKTOP_DATA_DIR, 'transfers', kind);
+  ensureDirectory(directory);
+  return directory;
+}
+
+function normalizeWorkspacePreviewPath(pathValue) {
+  const trimmed = typeof pathValue === 'string' ? pathValue.trim() : '';
+  if (!trimmed) {
+    return '';
+  }
+
+  const normalized = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  for (const prefix of ['/workspace', '/home/claude', '/root']) {
+    if (normalized === prefix) {
+      return '/';
+    }
+    if (normalized.startsWith(`${prefix}/`)) {
+      return normalized.slice(prefix.length) || '/';
+    }
+  }
+
+  return normalized;
+}
+
+function resolvePathWithin(rootDirectory, targetPath) {
+  const normalizedPath = typeof targetPath === 'string' ? targetPath.trim() : '';
+  if (!normalizedPath) {
+    throw new Error('File path is required.');
+  }
+
+  const candidate = resolve(rootDirectory, normalizedPath.replace(/^[/\\]+/, ''));
+  const relativePath = relative(rootDirectory, candidate);
+  if (
+    relativePath === '..' ||
+    relativePath.startsWith(`..${pathSeparator()}`) ||
+    isAbsolute(relativePath)
+  ) {
+    throw new Error(`Path must stay within ${rootDirectory}.`);
+  }
+  return candidate;
+}
+
+function pathSeparator() {
+  return process.platform === 'win32' ? '\\' : '/';
+}
+
+function sanitizeUploadBaseName(filename) {
+  const ext = extname(filename);
+  const base = basename(filename, ext);
+  const sanitizedBase =
+    base
+      .replace(/[^A-Za-z0-9._-]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '') || 'file';
+  const sanitizedExt = ext.replace(/[^A-Za-z0-9.]+/g, '').slice(0, 32);
+  return { base: sanitizedBase, ext: sanitizedExt };
+}
+
+function createImportedFilename(originalName) {
+  const { base, ext } = sanitizeUploadBaseName(originalName);
+  return `${base}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+}
+
+function importLocalFile(sourcePath) {
+  if (typeof sourcePath !== 'string' || !sourcePath.trim()) {
+    throw new Error('Import path must be a non-empty string.');
+  }
+
+  const resolvedSourcePath = resolve(sourcePath);
+  const sourceStats = statSync(resolvedSourcePath);
+  if (!sourceStats.isFile()) {
+    throw new Error(`${resolvedSourcePath} is not a file.`);
+  }
+
+  const uploadsDirectory = getTransferDirectory('uploads');
+  const originalName = basename(resolvedSourcePath);
+  const storedName = createImportedFilename(originalName);
+  const destinationPath = resolve(uploadsDirectory, storedName);
+  cpSync(resolvedSourcePath, destinationPath, { force: true });
+
+  return {
+    originalName,
+    relativePath: storedName,
+    absolutePath: destinationPath,
+    size: sourceStats.size,
+  };
+}
+
+function resolveDesktopFileSource(request) {
+  if (!request || typeof request !== 'object') {
+    throw new Error('Download request must be an object.');
+  }
+
+  const { source, path: targetPath } = request;
+  if (source === 'workspace') {
+    return resolvePathWithin(
+      getManagedWorkspaceRoot(),
+      normalizeWorkspacePreviewPath(targetPath),
+    );
+  }
+  if (source === 'upload') {
+    return resolvePathWithin(getTransferDirectory('uploads'), targetPath);
+  }
+  if (source === 'output') {
+    return resolvePathWithin(getTransferDirectory('outputs'), targetPath);
+  }
+
+  throw new Error(`Unsupported file source: ${String(source)}`);
+}
+
 function readPluginManifestFromDirectory(pluginDirectory) {
   if (!pluginDirectory || !statSync(pluginDirectory).isDirectory()) {
     throw new Error('Plugin selection must be a directory.');
@@ -911,6 +1026,56 @@ ipcMain.handle('desktop:install-plugin', async () => {
   const installation = installPluginFromDirectory(selection.filePaths[0]);
   await refreshPluginsInBackend();
   return installation;
+});
+
+ipcMain.handle('desktop:pick-local-files', async () => {
+  const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
+  const selection = await dialog.showOpenDialog(window ?? undefined, {
+    title: 'Choose files to upload',
+    buttonLabel: 'Add Files',
+    properties: ['openFile', 'multiSelections'],
+  });
+
+  return selection.canceled ? [] : selection.filePaths;
+});
+
+ipcMain.handle('desktop:import-local-files', async (_event, filePaths) => {
+  if (!Array.isArray(filePaths)) {
+    throw new Error('Import requires an array of file paths.');
+  }
+
+  return filePaths.map((filePath) => importLocalFile(filePath));
+});
+
+ipcMain.handle('desktop:download-file', async (_event, request) => {
+  const sourcePath = resolveDesktopFileSource(request);
+  const sourceStats = statSync(sourcePath);
+  if (!sourceStats.isFile()) {
+    throw new Error(`${sourcePath} is not a file.`);
+  }
+
+  const suggestedName =
+    request && typeof request === 'object' && typeof request.filename === 'string' && request.filename.trim()
+      ? request.filename.trim()
+      : basename(sourcePath);
+  const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
+  const selection = await dialog.showSaveDialog(window ?? undefined, {
+    title: 'Save file',
+    defaultPath: join(app.getPath('downloads'), suggestedName),
+  });
+
+  if (selection.canceled || !selection.filePath) {
+    return {
+      canceled: true,
+      destinationPath: null,
+    };
+  }
+
+  cpSync(sourcePath, selection.filePath, { force: true });
+  return {
+    canceled: false,
+    destinationPath: selection.filePath,
+  };
 });
 
 ipcMain.handle('desktop:open-plugin-directory', async () => {

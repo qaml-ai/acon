@@ -13,6 +13,25 @@ interface DesktopShellApi {
     node: string;
   };
   getSnapshot: () => Promise<DesktopSnapshot | null>;
+  pickLocalFiles?: () => Promise<string[]>;
+  importLocalFiles?: (
+    paths: string[],
+  ) => Promise<
+    Array<{
+      originalName: string;
+      relativePath: string;
+      absolutePath: string;
+      size: number;
+    }>
+  >;
+  downloadFile?: (request: {
+    source: "workspace" | "upload" | "output";
+    path: string;
+    filename?: string | null;
+  }) => Promise<{
+    canceled: boolean;
+    destinationPath: string | null;
+  }>;
   installPlugin?: () => Promise<DesktopPluginInstallResult>;
   openPluginDirectory?: () => Promise<string>;
   resolveWebviewSrc?: (entrypoint: string) => Promise<string>;

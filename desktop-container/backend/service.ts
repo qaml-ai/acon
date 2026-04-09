@@ -1019,6 +1019,15 @@ export class DesktopService {
       return localPath;
     }
 
+    const transferRoot =
+      target.source === "upload"
+        ? this.runtimeManager.getUserUploadsDirectory()
+        : this.runtimeManager.getUserOutputsDirectory();
+    const candidatePath = resolve(transferRoot, trimmedPath.replace(/^\/+/, ""));
+    if (existsSync(candidatePath) && statSync(candidatePath).isFile()) {
+      return candidatePath;
+    }
+
     if (existsSync(trimmedPath) && statSync(trimmedPath).isFile()) {
       return trimmedPath;
     }
