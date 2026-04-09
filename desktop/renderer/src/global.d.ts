@@ -1,5 +1,6 @@
 import type {
   DesktopClientEvent,
+  DesktopShellCommand,
   DesktopPluginInstallResult,
   DesktopServerEvent,
   DesktopSnapshot,
@@ -25,6 +26,7 @@ interface DesktopShellApi {
     runtimeState: DesktopSnapshot['runtimeStatus']['state'];
   }) => void;
   onEvent: (listener: (event: DesktopServerEvent) => void) => () => void;
+  onCommand?: (listener: (command: DesktopShellCommand) => void) => () => void;
 }
 
 declare global {
