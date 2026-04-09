@@ -25,6 +25,63 @@ export type CamelAIThreadStateValue =
   | CamelAIThreadStateValue[]
   | { [key: string]: CamelAIThreadStateValue };
 
+export interface CamelAIThreadMetadata {
+  status: string | null;
+  lane: string | null;
+  archived: boolean;
+  archivedAt: number | null;
+}
+
+export interface CamelAIThreadRecord {
+  id: string;
+  provider: DesktopProvider;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  lastMessagePreview: string | null;
+  metadata: CamelAIThreadMetadata;
+  active: boolean;
+  hasMessages: boolean;
+  sessionId: string | null;
+  isRunning: boolean;
+  stopRequested: boolean;
+}
+
+export interface CamelAIThreadCreateOptions {
+  title?: string;
+  provider?: DesktopProvider;
+  metadata?: {
+    status?: string | null;
+    lane?: string | null;
+    archived?: boolean | null;
+  };
+}
+
+export interface CamelAIThreadMetadataUpdate {
+  status?: string | null;
+  lane?: string | null;
+  archived?: boolean | null;
+}
+
+export type CamelAIThreadEvent =
+  | {
+      type: "thread_created";
+      thread: CamelAIThreadRecord;
+    }
+  | {
+      type: "thread_selected";
+      thread: CamelAIThreadRecord;
+    }
+  | {
+      type: "thread_updated";
+      thread: CamelAIThreadRecord;
+      reason: "message" | "metadata" | "selection" | "session";
+    };
+
+export type CamelAIThreadEventHandler = (
+  event: CamelAIThreadEvent,
+) => unknown | Promise<unknown>;
+
 export const CAMELAI_CURRENT_API_VERSION = 1;
 
 export type CamelAISettingFieldType =
@@ -313,6 +370,17 @@ export interface CamelAIPluginApi {
   readonly harnessAdapters: CamelAIHarnessAdapterInfo[];
   registerDisposable(disposable: CamelAIDisposableLike): CamelAIDisposable;
   on(event: CamelAIEventName, handler: CamelAIEventHandler): CamelAIDisposable;
+  listThreads(): CamelAIThreadRecord[];
+  getThread(threadId: string): CamelAIThreadRecord | null;
+  subscribeThreadEvents(handler: CamelAIThreadEventHandler): CamelAIDisposable;
+  selectThread(threadId: string): CamelAIThreadRecord;
+  createThread(options?: CamelAIThreadCreateOptions): CamelAIThreadRecord;
+  sendMessage(threadId: string, content: string): Promise<void>;
+  stopThread(threadId: string): Promise<boolean>;
+  updateThreadMetadata(
+    threadId: string,
+    update: CamelAIThreadMetadataUpdate,
+  ): CamelAIThreadRecord;
   registerView(id: string, view: CamelAIViewRegistration): CamelAIDisposable;
   registerCommand(
     id: string,

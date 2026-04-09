@@ -15,6 +15,7 @@ import type {
   DesktopSnapshot,
   DesktopTab,
   DesktopThread,
+  DesktopThreadMetadata,
   DesktopThreadPreviewState,
   DesktopView,
 } from '../../desktop/shared/protocol';
@@ -108,6 +109,66 @@ function normalizePersistedId(value: unknown): string | null {
 
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function cloneThreadMetadata(metadata: DesktopThreadMetadata): DesktopThreadMetadata {
+  return {
+    status: metadata.status,
+    lane: metadata.lane,
+    archived: metadata.archived,
+    archivedAt: metadata.archivedAt,
+  };
+}
+
+function createDefaultThreadMetadata(): DesktopThreadMetadata {
+  return {
+    status: null,
+    lane: null,
+    archived: false,
+    archivedAt: null,
+  };
+}
+
+function normalizeThreadMetadata(value: unknown): DesktopThreadMetadata {
+  if (!value || typeof value !== 'object') {
+    return createDefaultThreadMetadata();
+  }
+
+  const raw = value as {
+    status?: unknown;
+    lane?: unknown;
+    archived?: unknown;
+    archivedAt?: unknown;
+  };
+  const status =
+    typeof raw.status === 'string' && raw.status.trim().length > 0
+      ? raw.status.trim()
+      : null;
+  const lane =
+    typeof raw.lane === 'string' && raw.lane.trim().length > 0
+      ? raw.lane.trim()
+      : null;
+  const archived = raw.archived === true;
+  const archivedAt =
+    archived && typeof raw.archivedAt === 'number' && Number.isFinite(raw.archivedAt)
+      ? raw.archivedAt
+      : archived
+        ? now()
+        : null;
+
+  return {
+    status,
+    lane,
+    archived,
+    archivedAt,
+  };
+}
+
+function cloneThread(thread: DesktopThread): DesktopThread {
+  return {
+    ...thread,
+    metadata: cloneThreadMetadata(thread.metadata),
+  };
 }
 
 function normalizePreviewTarget(value: unknown): DesktopPreviewTarget | null {
@@ -327,6 +388,7 @@ export class DesktopStore {
         ? parsed.threads.map((thread) => ({
             ...thread,
             provider: inferThreadProvider(thread),
+            metadata: normalizeThreadMetadata(thread.metadata),
           }))
         : [];
       const activeThreadId = parsed.activeThreadId ?? null;
@@ -519,7 +581,7 @@ export class DesktopStore {
 
   listThreads(): DesktopThread[] {
     this.sortThreads();
-    return [...this.state.threads];
+    return this.state.threads.map((thread) => cloneThread(thread));
   }
 
   getActiveThreadId(): string | null {
@@ -566,7 +628,7 @@ export class DesktopStore {
   }
 
   activateThreadView(threadId: string, viewId: string): void {
-    const thread = this.getThread(threadId);
+    const thread = this.findThread(threadId);
     if (!thread) {
       throw new Error(`Thread ${threadId} does not exist`);
     }
@@ -853,7 +915,8 @@ export class DesktopStore {
   }
 
   getThread(threadId: string): DesktopThread | null {
-    return this.state.threads.find((thread) => thread.id === threadId) ?? null;
+    const thread = this.state.threads.find((entry) => entry.id === threadId) ?? null;
+    return thread ? cloneThread(thread) : null;
   }
 
   getThreadProvider(threadId: string): DesktopProvider {
@@ -861,7 +924,7 @@ export class DesktopStore {
   }
 
   setActiveThread(threadId: string): void {
-    const thread = this.getThread(threadId);
+    const thread = this.findThread(threadId);
     if (!thread) {
       throw new Error(`Thread ${threadId} does not exist`);
     }
@@ -873,7 +936,7 @@ export class DesktopStore {
   }
 
   setThreadProvider(threadId: string, provider: DesktopProvider): void {
-    const thread = this.getThread(threadId);
+    const thread = this.findThread(threadId);
     if (!thread) {
       throw new Error(`Thread ${threadId} does not exist`);
     }
@@ -885,6 +948,48 @@ export class DesktopStore {
       this.state.provider = normalizedProvider;
     }
     this.persist();
+  }
+
+  updateThreadMetadata(
+    threadId: string,
+    update: {
+      status?: string | null;
+      lane?: string | null;
+      archived?: boolean | null;
+    },
+  ): DesktopThread {
+    const thread = this.findThread(threadId);
+    if (!thread) {
+      throw new Error(`Thread ${threadId} does not exist`);
+    }
+
+    if ('status' in update) {
+      thread.metadata.status =
+        typeof update.status === 'string' && update.status.trim().length > 0
+          ? update.status.trim()
+          : null;
+    }
+
+    if ('lane' in update) {
+      thread.metadata.lane =
+        typeof update.lane === 'string' && update.lane.trim().length > 0
+          ? update.lane.trim()
+          : null;
+    }
+
+    if ('archived' in update && typeof update.archived === 'boolean') {
+      if (update.archived && !thread.metadata.archived) {
+        thread.metadata.archivedAt = now();
+      } else if (!update.archived) {
+        thread.metadata.archivedAt = null;
+      }
+      thread.metadata.archived = update.archived;
+    }
+
+    thread.updatedAt = now();
+    this.sortThreads();
+    this.persist();
+    return cloneThread(thread);
   }
 
   threadHasHarnessState(threadId: string): boolean {
@@ -915,6 +1020,7 @@ export class DesktopStore {
       createdAt: now(),
       updatedAt: now(),
       lastMessagePreview: null,
+      metadata: createDefaultThreadMetadata(),
     };
     this.state.threads.unshift(thread);
     this.state.messagesByThread[thread.id] = [];
@@ -934,7 +1040,7 @@ export class DesktopStore {
     this.state.provider = normalizedProvider;
     this.ensureProviderModel(normalizedProvider);
     this.persist();
-    return thread;
+    return cloneThread(thread);
   }
 
   appendMessage(
@@ -944,7 +1050,7 @@ export class DesktopStore {
     status: DesktopMessage['status'],
     extras: Pick<DesktopMessage, 'isMeta' | 'sourceToolUseID'> = {},
   ): DesktopMessage {
-    const thread = this.getThread(threadId);
+    const thread = this.findThread(threadId);
     if (!thread) {
       throw new Error(`Thread ${threadId} does not exist`);
     }
@@ -986,7 +1092,7 @@ export class DesktopStore {
     }
     message.content = `${extractTextContent(message.content)}${delta}`;
     message.status = 'streaming';
-    const thread = this.getThread(threadId);
+    const thread = this.findThread(threadId);
     if (thread) {
       thread.updatedAt = now();
       thread.lastMessagePreview = previewText(message.content) || thread.lastMessagePreview;
@@ -1016,7 +1122,7 @@ export class DesktopStore {
       message.content = content;
     }
     message.status = status;
-    const thread = this.getThread(threadId);
+    const thread = this.findThread(threadId);
     if (thread) {
       thread.updatedAt = now();
       thread.lastMessagePreview = previewText(message.content) || thread.lastMessagePreview;
@@ -1027,7 +1133,7 @@ export class DesktopStore {
   }
 
   replaceThreadMessages(threadId: string, messages: DesktopMessage[]): void {
-    const thread = this.getThread(threadId);
+    const thread = this.findThread(threadId);
     if (!thread) {
       throw new Error(`Thread ${threadId} does not exist`);
     }
