@@ -191,6 +191,73 @@ describe("ContainerRuntimeManager", () => {
     }
   });
 
+  it("preinstalls curated Python packages in the shared image definition", () => {
+    const containerfileSource = readFileSync(
+      resolve(
+        process.cwd(),
+        "desktop-container/container-images/acpx-shared/Containerfile",
+      ),
+      "utf8",
+    );
+    const requirementsSource = readFileSync(
+      resolve(
+        process.cwd(),
+        "desktop-container/container-images/acpx-shared/python-requirements.txt",
+      ),
+      "utf8",
+    );
+
+    expect(containerfileSource).toContain("python-requirements.txt");
+    expect(containerfileSource).toContain("--break-system-packages");
+    expect(containerfileSource).toContain("ghostscript");
+    expect(containerfileSource).toContain("graphviz");
+    expect(containerfileSource).toContain("poppler-utils");
+
+    for (const packageName of [
+      "openpyxl",
+      "xlsxwriter",
+      "python-docx",
+      "python-pptx",
+      "odfpy",
+      "pdfplumber",
+      "pdfminer.six",
+      "pypdf",
+      "pypdfium2",
+      "pikepdf",
+      "pdf2image",
+      "img2pdf",
+      "reportlab",
+      "pycairo",
+      "rlPyCairo",
+      "camelot-py",
+      "tabula-py",
+      "onnxruntime",
+      "magika",
+      "opencv-python",
+      "numpy",
+      "pandas",
+      "matplotlib",
+      "seaborn",
+      "sympy",
+      "graphviz",
+      "beautifulsoup4",
+      "lxml",
+      "requests",
+      "markitdown",
+      "markdownify",
+      "pillow",
+      "imageio",
+      "imageio-ffmpeg",
+      "wand",
+      "freetype-py",
+      "pytesseract",
+      "pyoo",
+      "unoserver",
+    ]) {
+      expect(requirementsSource).toContain(packageName);
+    }
+  });
+
   it("restarts the provider container after a recoverable daemon startup failure", async () => {
     const provider = requireDesktopProvider("codex");
     const runtime = new ContainerRuntimeManager() as ContainerRuntimeManager & {
