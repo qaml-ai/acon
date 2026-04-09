@@ -14,7 +14,9 @@ import {
   ArrowRight,
   ExternalLink,
   Loader2,
+  Pencil,
   PanelRightClose,
+  Trash2,
   X,
 } from "lucide-react";
 import { ChatPreviewProvider } from "@/components/chat-preview/preview-context";
@@ -31,6 +33,15 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -56,10 +67,12 @@ import type {
   DesktopPreviewTarget,
   DesktopThreadPreviewState,
   DesktopProvider,
+  DesktopShellCommand,
   DesktopServerEvent,
   DesktopSnapshot,
   DesktopTab,
   DesktopThread,
+  DesktopThreadGroup,
   DesktopView,
 } from "../../shared/protocol";
 import {
@@ -70,6 +83,7 @@ import { getDesktopPreviewItemId } from "../../shared/preview";
 import { DesktopSidebar } from "./desktop-sidebar";
 import { SettingsPage } from "./settings-page";
 import { getDesktopIcon } from "./desktop-icons";
+import { ThreadRuntimeIndicator } from "./thread-runtime-indicator";
 
 const desktopShell = window.desktopShell;
 const fallbackBackendUrl = "http://127.0.0.1:4315";
@@ -111,6 +125,9 @@ type HostSurfaceComponentProps = {
   onSetModel: (model: string) => void;
   onStopThread: (threadId: string) => void;
   onSubmitMessage: (threadId: string, content: string) => void;
+  onRequestCreateGroup: () => void;
+  onRequestDeleteGroup: (groupId: string) => void;
+  onRequestRenameGroup: (groupId: string) => void;
   onSendEvent: (event: DesktopClientEvent) => void;
   onOpenPreviewTarget: (target: PreviewTarget) => void;
   onSetPreviewTargets: (
@@ -120,12 +137,49 @@ type HostSurfaceComponentProps = {
   onClearPreviewTargets: () => void;
 };
 
+type GroupEditorState =
+  | {
+      mode: "create";
+      open: boolean;
+      title: string;
+    }
+  | {
+      mode: "rename";
+      open: boolean;
+      groupId: string;
+      title: string;
+    };
+
+type GroupDeleteState = {
+  open: boolean;
+  groupId: string;
+};
+
 function getActiveThread(
   snapshot: DesktopSnapshot | null,
   threadId: string | null,
 ): DesktopThread | null {
   if (!snapshot || !threadId) return null;
   return snapshot.threads.find((thread) => thread.id === threadId) ?? null;
+}
+
+function getActiveThreadGroup(
+  snapshot: DesktopSnapshot | null,
+): DesktopThreadGroup | null {
+  if (!snapshot) {
+    return null;
+  }
+
+  const activeGroupId = snapshot.activeGroupId;
+  if (!activeGroupId) {
+    return snapshot.threadGroups[0] ?? null;
+  }
+
+  return (
+    snapshot.threadGroups.find((group) => group.id === activeGroupId) ??
+    snapshot.threadGroups[0] ??
+    null
+  );
 }
 
 function getView(
@@ -484,6 +538,28 @@ function Composer({
     setDraft(initialDraft);
   }, [activeThreadId, initialDraft]);
 
+  useEffect(() => {
+    if (!activeThreadId) {
+      return;
+    }
+
+    const focusComposer = () => {
+      const textarea = composerTextareaRef.current;
+      if (!textarea || textarea.disabled) {
+        return;
+      }
+
+      textarea.focus({ preventScroll: true });
+      const selectionEnd = textarea.value.length;
+      textarea.setSelectionRange(selectionEnd, selectionEnd);
+    };
+
+    const frameId = window.requestAnimationFrame(focusComposer);
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [activeThreadId]);
+
   const handleChange = useCallback((value: string) => {
     setDraft(value);
     onDraftChange(activeThreadId, value);
@@ -710,70 +786,89 @@ function resolveKanbanLane(
   thread: DesktopThread,
 ): KanbanLaneId {
   const runtime = snapshot.threadRuntimeById[thread.id];
-  if (thread.metadata.archived) {
+  if (thread.archivedAt !== null) {
     return "finished";
   }
   if (runtime?.isRunning) {
     return "in_progress";
   }
-  switch (thread.metadata.lane) {
+  switch (thread.lane) {
     case "drafts":
     case "in_progress":
     case "ready_for_review":
     case "finished":
-      return thread.metadata.lane;
+      return thread.lane;
     default:
       return runtime?.hasMessages ? "ready_for_review" : "drafts";
   }
 }
 
-function metadataForKanbanLane(lane: KanbanLaneId): {
+function threadUpdatesForKanbanLane(lane: KanbanLaneId): {
   status: string;
   lane: KanbanLaneId;
-  archived: boolean;
+  archivedAt: number | null;
 } {
   switch (lane) {
     case "drafts":
-      return { status: "draft", lane, archived: false };
+      return { status: "draft", lane, archivedAt: null };
     case "in_progress":
-      return { status: "in_progress", lane, archived: false };
+      return { status: "in_progress", lane, archivedAt: null };
     case "ready_for_review":
-      return { status: "ready_for_review", lane, archived: false };
+      return { status: "ready_for_review", lane, archivedAt: null };
     case "finished":
-      return { status: "finished", lane, archived: true };
+      return { status: "finished", lane, archivedAt: Date.now() };
   }
 }
 
 function KanbanBoardPane({
+  onRequestCreateGroup,
+  onRequestDeleteGroup,
+  onRequestRenameGroup,
   snapshot,
   onSendEvent,
-}: Pick<HostSurfaceComponentProps, "snapshot" | "onSendEvent">) {
+}: Pick<
+  HostSurfaceComponentProps,
+  | "onRequestCreateGroup"
+  | "onRequestDeleteGroup"
+  | "onRequestRenameGroup"
+  | "snapshot"
+  | "onSendEvent"
+>) {
   const [draggedThreadId, setDraggedThreadId] = useState<string | null>(null);
+  const activeGroup = useMemo(() => getActiveThreadGroup(snapshot), [snapshot]);
+  const activeGroupThreads = useMemo(
+    () =>
+      activeGroup
+        ? snapshot.threads.filter((thread) => thread.groupId === activeGroup.id)
+        : [],
+    [activeGroup, snapshot.threads],
+  );
 
   const lanes = useMemo(
     () =>
       KANBAN_LANES.map((lane) => ({
         ...lane,
-        threads: snapshot.threads.filter(
+        threads: activeGroupThreads.filter(
           (thread) => resolveKanbanLane(snapshot, thread) === lane.id,
         ),
       })),
-    [snapshot],
+    [activeGroupThreads, snapshot],
   );
 
   const handleCreateDraft = useCallback(() => {
     onSendEvent({
       type: "create_thread",
-      metadata: metadataForKanbanLane("drafts"),
+      groupId: activeGroup?.id,
+      ...threadUpdatesForKanbanLane("drafts"),
     });
-  }, [onSendEvent]);
+  }, [activeGroup?.id, onSendEvent]);
 
   const handleMoveThread = useCallback(
     (threadId: string, lane: KanbanLaneId) => {
       onSendEvent({
-        type: "update_thread_metadata",
+        type: "update_thread",
         threadId,
-        metadata: metadataForKanbanLane(lane),
+        updates: threadUpdatesForKanbanLane(lane),
       });
     },
     [onSendEvent],
@@ -805,13 +900,62 @@ function KanbanBoardPane({
           <div className="space-y-1">
             <h2 className="font-heading text-lg font-semibold">Kanban</h2>
             <p className="max-w-3xl text-sm text-muted-foreground">
-              Organize local chat threads as drafts, active work, review-ready
-              sessions, and finished archives.
+              Organize the current session group as drafts, active work,
+              review-ready sessions, and finished archives.
             </p>
           </div>
-          <Button size="sm" onClick={handleCreateDraft}>
-            New Draft
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Select
+              value={activeGroup?.id ?? undefined}
+              onValueChange={(groupId) => {
+                onSendEvent({
+                  type: "select_group",
+                  groupId,
+                });
+              }}
+            >
+              <SelectTrigger className="w-[220px] bg-background">
+                <SelectValue placeholder="Select group" />
+              </SelectTrigger>
+              <SelectContent>
+                {snapshot.threadGroups.map((group) => (
+                  <SelectItem key={group.id} value={group.id}>
+                    {group.title}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onRequestCreateGroup}
+            >
+              New Group
+            </Button>
+            {activeGroup ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onRequestRenameGroup(activeGroup.id)}
+              >
+                <Pencil className="size-3.5" />
+                Rename Group
+              </Button>
+            ) : null}
+            {activeGroup && activeGroup.id !== snapshot.threadGroups[0]?.id ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onRequestDeleteGroup(activeGroup.id)}
+              >
+                <Trash2 className="size-3.5" />
+                Delete Group
+              </Button>
+            ) : null}
+            <Button size="sm" onClick={handleCreateDraft}>
+              New Draft
+            </Button>
+          </div>
         </div>
 
         <div className="grid min-h-0 gap-4 xl:grid-cols-4">
@@ -876,7 +1020,7 @@ function KanbanBoardPane({
                                   {runtime.stopRequested ? "Stopping" : "Running"}
                                 </Badge>
                               ) : null}
-                              {thread.metadata.archived ? (
+                              {thread.archivedAt !== null ? (
                                 <Badge variant="secondary">Archived</Badge>
                               ) : null}
                             </div>
@@ -1774,12 +1918,14 @@ function WorkbenchTabStrip({
   onCycleTabs,
   onCloseTab,
   onSelectTab,
+  threadRuntimeById,
   tabs,
 }: {
   activeTabId: string | null;
   onCycleTabs: (offset: -1 | 1) => void;
   onCloseTab: (tabId: string) => void;
   onSelectTab: (tabId: string) => void;
+  threadRuntimeById: DesktopSnapshot["threadRuntimeById"];
   tabs: DesktopTab[];
 }) {
   if (tabs.length === 0) {
@@ -1796,6 +1942,7 @@ function WorkbenchTabStrip({
         {tabs.map((tab) => {
           const TabIcon = getDesktopIcon(tab.icon);
           const isActive = tab.id === activeTabId;
+          const runtime = tab.threadId ? threadRuntimeById[tab.threadId] : null;
           const closeLabel =
             tab.kind === "thread"
               ? `Close ${tab.title} chat tab`
@@ -1842,6 +1989,7 @@ function WorkbenchTabStrip({
               >
                 <TabIcon className="desktop-workbench-tab-icon" />
                 <span className="desktop-workbench-tab-copy">
+                  <ThreadRuntimeIndicator runtime={runtime} className="desktop-workbench-tab-runtime" />
                   <span className="desktop-workbench-tab-title">{tab.title}</span>
                   {tab.subtitle ? (
                     <span className="desktop-workbench-tab-subtitle">
@@ -1883,6 +2031,12 @@ export function App() {
     "connecting" | "open" | "closed"
   >("connecting");
   const [showSettings, setShowSettings] = useState(false);
+  const [groupEditor, setGroupEditor] = useState<GroupEditorState>({
+    mode: "create",
+    open: false,
+    title: "",
+  });
+  const [groupDeleteState, setGroupDeleteState] = useState<GroupDeleteState | null>(null);
   const composerDraftsRef = useRef<Record<string, string>>({});
   const fallbackSocketRef = useRef<WebSocket | null>(null);
   const streamingMessageIdsRef = useRef<Record<string, string | null>>({});
@@ -1896,6 +2050,27 @@ export function App() {
     () => getView(snapshot, activeViewId),
     [snapshot, activeViewId],
   );
+  const groupBeingEdited = useMemo(() => {
+    if (!snapshot || groupEditor.mode !== "rename") {
+      return null;
+    }
+
+    return snapshot.threadGroups.find((group) => group.id === groupEditor.groupId) ?? null;
+  }, [groupEditor, snapshot]);
+  const groupBeingDeleted = useMemo(() => {
+    if (!snapshot || !groupDeleteState) {
+      return null;
+    }
+
+    return snapshot.threadGroups.find((group) => group.id === groupDeleteState.groupId) ?? null;
+  }, [groupDeleteState, snapshot]);
+  const deletedGroupThreadCount = useMemo(() => {
+    if (!groupBeingDeleted || !snapshot) {
+      return 0;
+    }
+
+    return snapshot.threads.filter((thread) => thread.groupId === groupBeingDeleted.id).length;
+  }, [groupBeingDeleted, snapshot]);
   const activeThreadPreviewState = useMemo(() => {
     if (!snapshot || !activeThreadId) {
       return null;
@@ -2089,17 +2264,66 @@ export function App() {
     socket.send(JSON.stringify(event));
   }, []);
 
-  const handleCreateThread = useCallback(() => {
+  const handleCreateThread = useCallback((groupId?: string) => {
     const defaultThreadViewId =
       snapshot?.views.find((view) => view.scope === "thread" && view.isDefault)?.id ??
       snapshot?.views.find((view) => view.scope === "thread")?.id ??
       null;
+    setShowSettings(false);
     setActiveTabId(null);
     if (defaultThreadViewId) {
       setActiveViewId(defaultThreadViewId);
     }
-    sendEvent({ type: "create_thread" });
+    sendEvent({
+      type: "create_thread",
+      groupId,
+    });
   }, [sendEvent, snapshot?.views]);
+
+  const handleCreateGroup = useCallback((title?: string) => {
+    sendEvent({ type: "create_group", title });
+  }, [sendEvent]);
+
+  const handleRequestCreateGroup = useCallback(() => {
+    setGroupEditor({
+      mode: "create",
+      open: true,
+      title: "",
+    });
+  }, []);
+
+  const handleSelectGroup = useCallback((groupId: string) => {
+    sendEvent({
+      type: "select_group",
+      groupId,
+    });
+  }, [sendEvent]);
+
+  const handleRenameGroup = useCallback((groupId: string, title: string) => {
+    sendEvent({
+      type: "update_group",
+      groupId,
+      title,
+    });
+  }, [sendEvent]);
+
+  const handleRequestRenameGroup = useCallback((groupId: string) => {
+    const group = snapshot?.threadGroups.find((entry) => entry.id === groupId);
+    if (!group) {
+      return;
+    }
+
+    setGroupEditor({
+      mode: "rename",
+      open: true,
+      groupId: group.id,
+      title: group.title,
+    });
+  }, [snapshot?.threadGroups]);
+
+  const handleRequestDeleteGroup = useCallback((groupId: string) => {
+    setGroupDeleteState({ open: true, groupId });
+  }, []);
 
   const handleSelectThread = useCallback((threadId: string) => {
     const defaultThreadViewId =
@@ -2117,6 +2341,7 @@ export function App() {
         (tab) => tab.kind === "thread" && tab.threadId === threadId,
       ) ??
       null;
+    setShowSettings(false);
     setActiveThreadId(threadId);
     if (defaultThreadViewId) {
       setActiveViewId(defaultThreadViewId);
@@ -2130,6 +2355,7 @@ export function App() {
       snapshot?.tabs.find(
         (tab) => tab.kind === "workspace" && tab.viewId === viewId,
       ) ?? null;
+    setShowSettings(false);
     setActiveViewId(viewId);
     setActiveTabId(existingTab?.id ?? null);
     sendEvent({ type: "select_view", viewId });
@@ -2141,6 +2367,7 @@ export function App() {
       return;
     }
 
+    setShowSettings(false);
     setActiveTabId(tab.id);
     setActiveViewId(tab.viewId);
     if (tab.kind === "thread" && tab.threadId) {
@@ -2185,9 +2412,14 @@ export function App() {
       return;
     }
 
+    setShowSettings(false);
     handleSelectTab(nextTab.id);
     focusWorkbenchTab(nextTab.id);
   }, [activeTabId, handleSelectTab, snapshot?.tabs]);
+
+  const handleOpenSettings = useCallback(() => {
+    setShowSettings(true);
+  }, []);
 
   const handleSetModel = useCallback((model: string) => {
     if (!snapshot?.availableModels.some((option) => option.id === model)) {
@@ -2306,7 +2538,46 @@ export function App() {
   }, [activeThreadId, sendEvent]);
 
   useEffect(() => {
+    if (!desktopShell?.onCommand) {
+      return;
+    }
+
+    return desktopShell.onCommand((command: DesktopShellCommand) => {
+      switch (command) {
+        case "new_chat":
+          handleCreateThread();
+          return;
+        case "open_settings":
+          handleOpenSettings();
+          return;
+        case "toggle_sidebar":
+          window.dispatchEvent(new Event("desktop:toggle-sidebar"));
+          return;
+        case "close_tab":
+          if (activeTabId) {
+            handleCloseTab(activeTabId);
+          }
+          return;
+        case "next_tab":
+          handleCycleTabs(1);
+          return;
+        case "previous_tab":
+          handleCycleTabs(-1);
+          return;
+      }
+    });
+  }, [
+    activeTabId,
+    handleCloseTab,
+    handleCreateThread,
+    handleCycleTabs,
+    handleOpenSettings,
+  ]);
+
+  useEffect(() => {
     const handleWindowKeyDown = (event: KeyboardEvent) => {
+      const hasNativeCommandShortcuts = Boolean(desktopShell?.onCommand);
+
       if (event.defaultPrevented || event.isComposing) {
         return;
       }
@@ -2316,6 +2587,9 @@ export function App() {
       }
 
       if (event.key === "w") {
+        if (hasNativeCommandShortcuts) {
+          return;
+        }
         if (!activeTabId) {
           return;
         }
@@ -2331,6 +2605,9 @@ export function App() {
       }
 
       if (event.shiftKey && (event.key === "]" || event.key === "[")) {
+        if (hasNativeCommandShortcuts) {
+          return;
+        }
         event.preventDefault();
         handleCycleTabs(event.key === "]" ? 1 : -1);
         return;
@@ -2375,14 +2652,124 @@ export function App() {
     onSetModel: handleSetModel,
     onStopThread: handleStopThread,
     onSubmitMessage: handleSubmitMessage,
+    onRequestCreateGroup: handleRequestCreateGroup,
+    onRequestDeleteGroup: handleRequestDeleteGroup,
+    onRequestRenameGroup: handleRequestRenameGroup,
     onSendEvent: sendEvent,
     onOpenPreviewTarget: handleOpenPreviewTarget,
     onSetPreviewTargets: handleSetPreviewTargets,
     onClearPreviewTargets: handleClearPreviewTargets,
   } : null;
 
+  const handleSubmitGroupEditor = useCallback(() => {
+    const title = groupEditor.title.trim();
+    if (!title) {
+      return;
+    }
+
+    if (groupEditor.mode === "create") {
+      handleCreateGroup(title);
+    } else {
+      handleRenameGroup(groupEditor.groupId, title);
+    }
+
+    setGroupEditor((current) => ({
+      ...current,
+      open: false,
+    }));
+  }, [groupEditor, handleCreateGroup, handleRenameGroup]);
+
+  const handleConfirmDeleteGroup = useCallback(() => {
+    if (!groupDeleteState) {
+      return;
+    }
+
+    sendEvent({
+      type: "delete_group",
+      groupId: groupDeleteState.groupId,
+    });
+    setGroupDeleteState(null);
+  }, [groupDeleteState, sendEvent]);
+
   return (
     <TooltipProvider>
+      <>
+      <Dialog
+        open={groupEditor.open}
+        onOpenChange={(open) => {
+          setGroupEditor((current) => ({ ...current, open }));
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {groupEditor.mode === "create" ? "Create Group" : "Rename Group"}
+            </DialogTitle>
+            <DialogDescription>
+              {groupEditor.mode === "create"
+                ? "Name the new group."
+                : "Choose a new name for this group."}
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            autoFocus
+            value={groupEditor.title}
+            onChange={(event) => {
+              const title = event.target.value;
+              setGroupEditor((current) => ({ ...current, title }));
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                handleSubmitGroupEditor();
+              }
+            }}
+            placeholder="Group name"
+          />
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setGroupEditor((current) => ({ ...current, open: false }));
+              }}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleSubmitGroupEditor} disabled={!groupEditor.title.trim()}>
+              {groupEditor.mode === "create" ? "Create" : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={groupDeleteState?.open === true}
+        onOpenChange={(open) => {
+          if (!open) {
+            setGroupDeleteState(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Group</DialogTitle>
+            <DialogDescription>
+              {groupBeingDeleted
+                ? `Delete "${groupBeingDeleted.title}"? ${deletedGroupThreadCount > 0 ? `Its ${deletedGroupThreadCount} chat${deletedGroupThreadCount === 1 ? "" : "s"} will be moved to ${snapshot?.threadGroups[0]?.title ?? "the default group"}.` : "This cannot be undone."}`
+                : "This cannot be undone."}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setGroupDeleteState(null)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleConfirmDeleteGroup}>
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <div className="desktop-shell text-foreground">
         <header className="desktop-titlebar desktop-drag">
           <div className="desktop-titlebar-inner">
@@ -2392,6 +2779,7 @@ export function App() {
               onCycleTabs={handleCycleTabs}
               onCloseTab={handleCloseTab}
               onSelectTab={handleSelectTab}
+              threadRuntimeById={snapshot?.threadRuntimeById ?? {}}
               tabs={snapshot?.tabs ?? []}
             />
           </div>
@@ -2417,8 +2805,12 @@ export function App() {
               activeThreadId={activeThreadId}
               activeViewId={activeViewId}
               connectionState={connectionState}
+              onRequestCreateGroup={handleRequestCreateGroup}
               onCreateThread={handleCreateThread}
-              onOpenSettings={() => setShowSettings(true)}
+              onOpenSettings={handleOpenSettings}
+              onRequestDeleteGroup={handleRequestDeleteGroup}
+              onRequestRenameGroup={handleRequestRenameGroup}
+              onSelectGroup={handleSelectGroup}
               onSelectThread={(threadId) => { setShowSettings(false); handleSelectThread(threadId); }}
               onSelectView={(viewId) => { setShowSettings(false); handleSelectView(viewId); }}
               sidebarPanels={snapshot?.sidebarPanels ?? []}
@@ -2467,6 +2859,7 @@ export function App() {
           </SidebarProvider>
         </div>
       </div>
+      </>
     </TooltipProvider>
   );
 }

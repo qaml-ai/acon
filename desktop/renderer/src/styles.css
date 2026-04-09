@@ -357,6 +357,10 @@ body {
   gap: 0.35rem;
 }
 
+.desktop-workbench-tab-runtime {
+  margin-right: 0.05rem;
+}
+
 .desktop-workbench-tab.is-active .desktop-workbench-tab-icon {
   color: var(--foreground);
 }

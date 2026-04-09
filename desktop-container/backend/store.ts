@@ -16,7 +16,7 @@ import type {
   DesktopSidebarPanel,
   DesktopTab,
   DesktopThread,
-  DesktopThreadMetadata,
+  DesktopThreadGroup,
   DesktopThreadPreviewState,
   DesktopView,
 } from '../../desktop/shared/protocol';
@@ -42,6 +42,7 @@ interface PersistedState {
   tabs?: PersistedTab[];
   activeTabId?: string | null;
   activeThreadId: string | null;
+  activeGroupId?: string | null;
   activeViewId?: string | null;
   provider: DesktopProvider;
   modelsByProvider: Partial<Record<DesktopProvider, DesktopModel>>;
@@ -60,6 +61,7 @@ interface PersistedState {
     >
   >;
   pluginEnabledById?: Record<string, boolean>;
+  threadGroups?: DesktopThreadGroup[];
   threads: DesktopThread[];
   messagesByThread: Record<string, DesktopMessage[]>;
 }
@@ -79,6 +81,8 @@ type PersistedDesktopThread = Omit<DesktopThread, 'provider'> & {
   provider?: DesktopProvider;
 };
 
+const DEFAULT_THREAD_GROUP_TITLE = 'Default Group';
+const DEFAULT_NEW_THREAD_GROUP_TITLE = 'New group';
 const DEFAULT_THREAD_TITLE = 'New thread';
 const backendDirectory = dirname(fileURLToPath(import.meta.url));
 const desktopDirectory = resolve(backendDirectory, '..');
@@ -112,35 +116,28 @@ function normalizePersistedId(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function cloneThreadMetadata(metadata: DesktopThreadMetadata): DesktopThreadMetadata {
-  return {
-    status: metadata.status,
-    lane: metadata.lane,
-    archived: metadata.archived,
-    archivedAt: metadata.archivedAt,
-  };
-}
-
-function createDefaultThreadMetadata(): DesktopThreadMetadata {
-  return {
-    status: null,
-    lane: null,
-    archived: false,
-    archivedAt: null,
-  };
-}
-
-function normalizeThreadMetadata(value: unknown): DesktopThreadMetadata {
+function normalizeThread(value: unknown, defaultGroupId: string): DesktopThread | null {
   if (!value || typeof value !== 'object') {
-    return createDefaultThreadMetadata();
+    return null;
   }
 
-  const raw = value as {
+  const raw = value as DesktopThread & {
+    id?: unknown;
+    groupId?: unknown;
+    provider?: unknown;
+    title?: unknown;
+    createdAt?: unknown;
+    updatedAt?: unknown;
+    lastMessagePreview?: unknown;
     status?: unknown;
     lane?: unknown;
-    archived?: unknown;
     archivedAt?: unknown;
   };
+  const id = normalizePersistedId(raw.id);
+  if (!id) {
+    return null;
+  }
+
   const status =
     typeof raw.status === 'string' && raw.status.trim().length > 0
       ? raw.status.trim()
@@ -149,27 +146,98 @@ function normalizeThreadMetadata(value: unknown): DesktopThreadMetadata {
     typeof raw.lane === 'string' && raw.lane.trim().length > 0
       ? raw.lane.trim()
       : null;
-  const archived = raw.archived === true;
   const archivedAt =
-    archived && typeof raw.archivedAt === 'number' && Number.isFinite(raw.archivedAt)
+    typeof raw.archivedAt === 'number' && Number.isFinite(raw.archivedAt)
       ? raw.archivedAt
-      : archived
-        ? now()
-        : null;
+      : null;
+  const createdAt =
+    typeof raw.createdAt === 'number' && Number.isFinite(raw.createdAt)
+      ? raw.createdAt
+      : now();
+  const updatedAt =
+    typeof raw.updatedAt === 'number' && Number.isFinite(raw.updatedAt)
+      ? raw.updatedAt
+      : createdAt;
+  const providerId =
+    typeof raw.provider === 'string' ? raw.provider : getDefaultProvider();
 
   return {
+    id,
+    groupId:
+      typeof raw.groupId === 'string' && raw.groupId.trim().length > 0
+        ? raw.groupId.trim()
+        : defaultGroupId,
+    provider: requireDesktopProvider(providerId).id,
+    title:
+      typeof raw.title === 'string' && raw.title.trim().length > 0
+        ? raw.title.trim()
+        : DEFAULT_THREAD_TITLE,
+    createdAt,
+    updatedAt,
+    lastMessagePreview:
+      typeof raw.lastMessagePreview === 'string' && raw.lastMessagePreview.trim().length > 0
+        ? raw.lastMessagePreview
+        : null,
     status,
     lane,
-    archived,
     archivedAt,
   };
 }
 
-function cloneThread(thread: DesktopThread): DesktopThread {
+function createThreadGroup(
+  title = DEFAULT_NEW_THREAD_GROUP_TITLE,
+): DesktopThreadGroup {
+  const timestamp = now();
   return {
-    ...thread,
-    metadata: cloneThreadMetadata(thread.metadata),
+    id: randomUUID(),
+    title: title.trim() || DEFAULT_THREAD_GROUP_TITLE,
+    createdAt: timestamp,
+    updatedAt: timestamp,
   };
+}
+
+function normalizeThreadGroup(value: unknown): DesktopThreadGroup | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const group = value as {
+    id?: unknown;
+    title?: unknown;
+    createdAt?: unknown;
+    updatedAt?: unknown;
+  };
+  const id = normalizePersistedId(group.id);
+  if (!id) {
+    return null;
+  }
+
+  const createdAt =
+    typeof group.createdAt === 'number' && Number.isFinite(group.createdAt)
+      ? group.createdAt
+      : now();
+  const updatedAt =
+    typeof group.updatedAt === 'number' && Number.isFinite(group.updatedAt)
+      ? group.updatedAt
+      : createdAt;
+
+  return {
+    id,
+    title:
+      typeof group.title === 'string' && group.title.trim().length > 0
+        ? group.title.trim()
+        : DEFAULT_THREAD_GROUP_TITLE,
+    createdAt,
+    updatedAt,
+  };
+}
+
+function cloneThreadGroup(group: DesktopThreadGroup): DesktopThreadGroup {
+  return { ...group };
+}
+
+function cloneThread(thread: DesktopThread): DesktopThread {
+  return { ...thread };
 }
 
 function normalizePreviewTarget(value: unknown): DesktopPreviewTarget | null {
@@ -337,7 +405,10 @@ export class DesktopStore {
     this.statePath = resolve(dataDir, 'state.json');
     this.state = this.load();
     if (this.state.threads.length === 0) {
-      const thread = this.createThread('Local workspace');
+      const thread = this.createThread({
+        title: DEFAULT_THREAD_GROUP_TITLE,
+        groupId: this.getDefaultThreadGroupId(),
+      });
       this.state.activeThreadId = thread.id;
       this.persist();
     }
@@ -366,38 +437,38 @@ export class DesktopStore {
       const activeViewId =
         normalizePersistedId(parsed.activeViewId) ??
         normalizePersistedId(parsed.activePluginPageId);
-      const inferThreadProvider = (
-        thread: PersistedDesktopThread,
-      ): DesktopProvider => {
-        if (thread.provider) {
-          return requireDesktopProvider(thread.provider).id;
-        }
-
-        const threadProviderState = providerStateByThread[thread.id] ?? {};
-        const providersWithSessions = Object.entries(threadProviderState)
-          .filter((entry): entry is [DesktopProvider, { sessionId?: string | null }] =>
-            Boolean(entry[1]?.sessionId),
-          )
-          .map(([providerId]) => requireDesktopProvider(providerId).id);
-
-        if (providersWithSessions.length === 1) {
-          return providersWithSessions[0];
-        }
-
-        return fallbackProvider;
-      };
-      const threads = Array.isArray(parsed.threads)
-        ? parsed.threads.map((thread) => ({
-            ...thread,
-            provider: inferThreadProvider(thread),
-            metadata: normalizeThreadMetadata(thread.metadata),
-          }))
+      const persistedThreadGroups = Array.isArray(parsed.threadGroups)
+        ? parsed.threadGroups.flatMap((group) => {
+            const normalized = normalizeThreadGroup(group);
+            return normalized ? [normalized] : [];
+          })
         : [];
-      const activeThreadId = parsed.activeThreadId ?? null;
+      const threadGroups = persistedThreadGroups.length > 0
+        ? persistedThreadGroups
+        : [createThreadGroup(DEFAULT_THREAD_GROUP_TITLE)];
+      const defaultThreadGroupId = threadGroups[0]!.id;
+      const threadGroupIds = new Set(threadGroups.map((group) => group.id));
+      const threads = Array.isArray(parsed.threads)
+        ? parsed.threads.flatMap((thread) => {
+            const normalized = normalizeThread(thread, defaultThreadGroupId);
+            if (!normalized) {
+              return [];
+            }
+
+            if (!threadGroupIds.has(normalized.groupId)) {
+              normalized.groupId = defaultThreadGroupId;
+            }
+
+            return [normalized];
+          })
+        : [];
+      const activeThreadId = normalizePersistedId(parsed.activeThreadId);
       const activeThreadProvider =
         (activeThreadId
           ? threads.find((thread) => thread.id === activeThreadId)?.provider
           : null) ?? fallbackProvider;
+      const activeGroupId =
+        normalizePersistedId(parsed.activeGroupId) ?? threadGroups[0]?.id ?? null;
 
       return {
         tabs: Array.isArray(parsed.tabs)
@@ -408,6 +479,7 @@ export class DesktopStore {
           : [],
         activeTabId: normalizePersistedId(parsed.activeTabId),
         activeThreadId,
+        activeGroupId,
         activeViewId,
         provider: activeThreadProvider,
         modelsByProvider: {
@@ -436,15 +508,18 @@ export class DesktopStore {
                 ),
               )
             : {},
+        threadGroups,
         threads,
         messagesByThread: parsed.messagesByThread ?? {},
       };
     } catch {
       const provider = getDefaultProvider();
+      const defaultThreadGroup = createThreadGroup(DEFAULT_THREAD_GROUP_TITLE);
       return {
         tabs: [],
         activeTabId: null,
         activeThreadId: null,
+        activeGroupId: defaultThreadGroup.id,
         activeViewId: null,
         provider,
         modelsByProvider: {
@@ -453,6 +528,7 @@ export class DesktopStore {
         threadPreviewStateById: {},
         providerStateByThread: {},
         pluginEnabledById: {},
+        threadGroups: [defaultThreadGroup],
         threads: [],
         messagesByThread: {},
       };
@@ -475,6 +551,24 @@ export class DesktopStore {
     return this.state.threads.find((thread) => thread.id === threadId) ?? null;
   }
 
+  private findThreadGroup(groupId: string | null): DesktopThreadGroup | null {
+    if (!groupId) {
+      return null;
+    }
+    return this.state.threadGroups?.find((group) => group.id === groupId) ?? null;
+  }
+
+  private getDefaultThreadGroupId(): string {
+    const existing = this.state.threadGroups?.[0];
+    if (existing) {
+      return existing.id;
+    }
+
+    const created = createThreadGroup(DEFAULT_THREAD_GROUP_TITLE);
+    this.state.threadGroups = [created];
+    return created.id;
+  }
+
   private syncStateFromTab(tab: PersistedTab | null): void {
     if (!tab) {
       this.state.activeTabId = null;
@@ -488,6 +582,7 @@ export class DesktopStore {
       this.state.activeThreadId = tab.threadId;
       const thread = this.findThread(tab.threadId);
       if (thread) {
+        this.state.activeGroupId = thread.groupId;
         this.state.provider = thread.provider;
         this.ensureProviderModel(thread.provider);
       }
@@ -586,8 +681,88 @@ export class DesktopStore {
     return this.state.threads.map((thread) => cloneThread(thread));
   }
 
+  listThreadGroups(): DesktopThreadGroup[] {
+    return [...(this.state.threadGroups ?? [])]
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .map((group) => cloneThreadGroup(group));
+  }
+
+  getThreadGroup(groupId: string): DesktopThreadGroup | null {
+    const group = this.findThreadGroup(groupId);
+    return group ? cloneThreadGroup(group) : null;
+  }
+
   getActiveThreadId(): string | null {
     return this.state.activeThreadId;
+  }
+
+  getActiveGroupId(): string | null {
+    return normalizePersistedId(this.state.activeGroupId) ?? this.state.threadGroups?.[0]?.id ?? null;
+  }
+
+  createThreadGroup(title = DEFAULT_NEW_THREAD_GROUP_TITLE): DesktopThreadGroup {
+    const group = createThreadGroup(title);
+    this.state.threadGroups = [...(this.state.threadGroups ?? []), group];
+    this.state.activeGroupId = group.id;
+    this.persist();
+    return cloneThreadGroup(group);
+  }
+
+  updateThreadGroup(groupId: string, title: string): DesktopThreadGroup {
+    const group = this.findThreadGroup(groupId);
+    if (!group) {
+      throw new Error(`Thread group ${groupId} does not exist`);
+    }
+
+    const normalizedTitle = title.trim();
+    if (!normalizedTitle) {
+      throw new Error("Thread group title cannot be empty");
+    }
+
+    group.title = normalizedTitle;
+    group.updatedAt = now();
+    this.persist();
+    return cloneThreadGroup(group);
+  }
+
+  deleteThreadGroup(groupId: string): void {
+    const group = this.findThreadGroup(groupId);
+    if (!group) {
+      throw new Error(`Thread group ${groupId} does not exist`);
+    }
+
+    const defaultGroupId = this.getDefaultThreadGroupId();
+    if (group.id === defaultGroupId) {
+      throw new Error("Default group cannot be deleted");
+    }
+
+    const timestamp = now();
+    for (const thread of this.state.threads) {
+      if (thread.groupId === group.id) {
+        thread.groupId = defaultGroupId;
+        thread.updatedAt = timestamp;
+      }
+    }
+
+    this.state.threadGroups = (this.state.threadGroups ?? []).filter(
+      (entry) => entry.id !== group.id,
+    );
+    if (this.state.activeGroupId === group.id) {
+      this.state.activeGroupId = defaultGroupId;
+    }
+    this.touchThreadGroup(defaultGroupId, timestamp);
+    this.sortThreads();
+    this.persist();
+  }
+
+  setActiveGroup(groupId: string): void {
+    const group = this.findThreadGroup(groupId);
+    if (!group) {
+      throw new Error(`Thread group ${groupId} does not exist`);
+    }
+
+    this.state.activeGroupId = group.id;
+    this.persist();
   }
 
   getActiveViewId(): string | null {
@@ -921,6 +1096,13 @@ export class DesktopStore {
     return thread ? cloneThread(thread) : null;
   }
 
+  private touchThreadGroup(groupId: string, timestamp = now()): void {
+    const group = this.findThreadGroup(groupId);
+    if (group) {
+      group.updatedAt = timestamp;
+    }
+  }
+
   getThreadProvider(threadId: string): DesktopProvider {
     return this.getThread(threadId)?.provider ?? this.state.provider;
   }
@@ -932,6 +1114,7 @@ export class DesktopStore {
     }
 
     this.state.activeThreadId = threadId;
+    this.state.activeGroupId = thread.groupId;
     this.state.provider = thread.provider;
     this.ensureProviderModel(thread.provider);
     this.persist();
@@ -952,12 +1135,14 @@ export class DesktopStore {
     this.persist();
   }
 
-  updateThreadMetadata(
+  updateThread(
     threadId: string,
     update: {
+      title?: string | null;
+      groupId?: string | null;
       status?: string | null;
       lane?: string | null;
-      archived?: boolean | null;
+      archivedAt?: number | null;
     },
   ): DesktopThread {
     const thread = this.findThread(threadId);
@@ -965,30 +1150,52 @@ export class DesktopStore {
       throw new Error(`Thread ${threadId} does not exist`);
     }
 
+    const previousGroupId = thread.groupId;
+
+    if ('title' in update) {
+      thread.title =
+        typeof update.title === 'string' && update.title.trim().length > 0
+          ? update.title.trim()
+          : thread.title;
+    }
+
+    if ('groupId' in update) {
+      const nextGroup =
+        typeof update.groupId === 'string' ? this.findThreadGroup(update.groupId) : null;
+      if (nextGroup) {
+        thread.groupId = nextGroup.id;
+      }
+    }
+
     if ('status' in update) {
-      thread.metadata.status =
+      thread.status =
         typeof update.status === 'string' && update.status.trim().length > 0
           ? update.status.trim()
           : null;
     }
 
     if ('lane' in update) {
-      thread.metadata.lane =
+      thread.lane =
         typeof update.lane === 'string' && update.lane.trim().length > 0
           ? update.lane.trim()
           : null;
     }
 
-    if ('archived' in update && typeof update.archived === 'boolean') {
-      if (update.archived && !thread.metadata.archived) {
-        thread.metadata.archivedAt = now();
-      } else if (!update.archived) {
-        thread.metadata.archivedAt = null;
-      }
-      thread.metadata.archived = update.archived;
+    if ('archivedAt' in update) {
+      thread.archivedAt =
+        typeof update.archivedAt === 'number' && Number.isFinite(update.archivedAt)
+          ? update.archivedAt
+          : null;
     }
 
     thread.updatedAt = now();
+    if (this.state.activeThreadId === thread.id) {
+      this.state.activeGroupId = thread.groupId;
+    }
+    if (previousGroupId !== thread.groupId) {
+      this.touchThreadGroup(previousGroupId, thread.updatedAt);
+    }
+    this.touchThreadGroup(thread.groupId, thread.updatedAt);
     this.sortThreads();
     this.persist();
     return cloneThread(thread);
@@ -1010,19 +1217,40 @@ export class DesktopStore {
     }));
   }
 
-  createThread(
-    title = DEFAULT_THREAD_TITLE,
-    provider = this.state.provider,
-  ): DesktopThread {
-    const normalizedProvider = requireDesktopProvider(provider).id;
+  createThread(options: {
+    title?: string;
+    provider?: DesktopProvider;
+    groupId: string;
+    status?: string | null;
+    lane?: string | null;
+    archivedAt?: number | null;
+  }): DesktopThread {
+    const normalizedProvider = requireDesktopProvider(options.provider ?? this.state.provider).id;
+    const resolvedGroupId = this.findThreadGroup(options.groupId)?.id;
+    if (!resolvedGroupId) {
+      throw new Error(`Thread group ${options.groupId} does not exist`);
+    }
+    const timestamp = now();
     const thread: DesktopThread = {
       id: randomUUID(),
+      groupId: resolvedGroupId,
       provider: normalizedProvider,
-      title: title.trim() || DEFAULT_THREAD_TITLE,
-      createdAt: now(),
-      updatedAt: now(),
+      title: options.title?.trim() || DEFAULT_THREAD_TITLE,
+      createdAt: timestamp,
+      updatedAt: timestamp,
       lastMessagePreview: null,
-      metadata: createDefaultThreadMetadata(),
+      status:
+        typeof options.status === 'string' && options.status.trim().length > 0
+          ? options.status.trim()
+          : null,
+      lane:
+        typeof options.lane === 'string' && options.lane.trim().length > 0
+          ? options.lane.trim()
+          : null,
+      archivedAt:
+        typeof options.archivedAt === 'number' && Number.isFinite(options.archivedAt)
+          ? options.archivedAt
+          : null,
     };
     this.state.threads.unshift(thread);
     this.state.messagesByThread[thread.id] = [];
@@ -1039,8 +1267,10 @@ export class DesktopStore {
       [thread.id]: {},
     };
     this.state.activeThreadId = thread.id;
+    this.state.activeGroupId = resolvedGroupId;
     this.state.provider = normalizedProvider;
     this.ensureProviderModel(normalizedProvider);
+    this.touchThreadGroup(resolvedGroupId, timestamp);
     this.persist();
     return cloneThread(thread);
   }
@@ -1072,6 +1302,7 @@ export class DesktopStore {
     this.state.messagesByThread[threadId] = nextMessages;
 
     thread.updatedAt = now();
+    this.touchThreadGroup(thread.groupId, thread.updatedAt);
     thread.lastMessagePreview = previewText(content) || thread.lastMessagePreview;
 
     if (role === 'user' && typeof content === 'string' && thread.title === DEFAULT_THREAD_TITLE) {
@@ -1097,6 +1328,7 @@ export class DesktopStore {
     const thread = this.findThread(threadId);
     if (thread) {
       thread.updatedAt = now();
+      this.touchThreadGroup(thread.groupId, thread.updatedAt);
       thread.lastMessagePreview = previewText(message.content) || thread.lastMessagePreview;
       this.sortThreads();
     }
@@ -1127,6 +1359,7 @@ export class DesktopStore {
     const thread = this.findThread(threadId);
     if (thread) {
       thread.updatedAt = now();
+      this.touchThreadGroup(thread.groupId, thread.updatedAt);
       thread.lastMessagePreview = previewText(message.content) || thread.lastMessagePreview;
       this.sortThreads();
     }
@@ -1144,6 +1377,7 @@ export class DesktopStore {
       ...message,
     }));
     thread.updatedAt = now();
+    this.touchThreadGroup(thread.groupId, thread.updatedAt);
 
     const lastMessage = messages[messages.length - 1];
     thread.lastMessagePreview = lastMessage
@@ -1172,9 +1406,11 @@ export class DesktopStore {
     }
 
     return {
+      threadGroups: this.listThreadGroups(),
       tabs: this.toDesktopTabs(this.state.tabs ?? [], views),
       activeTabId: this.getActiveTabId(),
       activeThreadId: this.state.activeThreadId,
+      activeGroupId: this.getActiveGroupId(),
       activeViewId: this.getActiveViewId(),
       threadPreviewStateById: this.getThreadPreviewStateById(),
       threadRuntimeById: {},
