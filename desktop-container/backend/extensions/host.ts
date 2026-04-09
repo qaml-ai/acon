@@ -737,7 +737,6 @@ export class CamelAIExtensionHost {
           })
         ) ?? false;
       },
-<<<<<<< HEAD
       openThreadPreviewItem: (target, threadId = context.activeThreadId) => {
         this.assertPluginPermission(record, "thread-preview");
         if (!this.options.openThreadPreviewItem) {
@@ -776,14 +775,10 @@ export class CamelAIExtensionHost {
         }
         return this.options.setThreadPreviewVisibility(threadId ?? null, visible);
       },
-      threadState: (threadId = context.activeThreadId) =>
-        this.createThreadState(pluginId, threadId ?? null, context),
-=======
       threadState: (threadId = this.resolveActivationContext(context).activeThreadId) => {
         const activeContext = this.resolveActivationContext(context);
         return this.createThreadState(pluginId, threadId ?? null, activeContext);
       },
->>>>>>> origin/main
     };
   }
 
