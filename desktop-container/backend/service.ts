@@ -823,6 +823,7 @@ export class DesktopService {
 
   private resolvePreviewItem(item: DesktopPreviewItem): DesktopPreviewItem {
     const title = getDesktopPreviewItemTitle(item.target);
+    const renderer = this.extensionHost.resolvePreviewRenderer(item.target);
     return {
       ...item,
       title,
@@ -831,6 +832,7 @@ export class DesktopService {
         item.target.kind === "file"
           ? item.target.contentType ?? item.contentType ?? null
           : null,
+      renderer,
     };
   }
 

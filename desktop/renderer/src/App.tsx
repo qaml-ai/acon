@@ -126,6 +126,7 @@ function withPluginWebviewContext(
   context: {
     pluginId?: string | null;
     surfaceId?: string | null;
+    params?: Record<string, string | null | undefined>;
   },
 ): string {
   try {
@@ -136,6 +137,11 @@ function withPluginWebviewContext(
     }
     if (context.surfaceId) {
       params.set("surfaceId", context.surfaceId);
+    }
+    for (const [key, value] of Object.entries(context.params ?? {})) {
+      if (value) {
+        params.set(key, value);
+      }
     }
 
     if (url.protocol === "file:") {
@@ -150,6 +156,59 @@ function withPluginWebviewContext(
   } catch {
     return source;
   }
+}
+
+function useResolvedPluginWebviewSource(entrypoint: string | null | undefined): {
+  resolvedWebviewSrc: string | null;
+  webviewError: string | null;
+} {
+  const [resolvedWebviewSrc, setResolvedWebviewSrc] = useState<string | null>(null);
+  const [webviewError, setWebviewError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function resolveWebviewSource() {
+      if (!entrypoint || !isSupportedPluginWebviewEntrypoint(entrypoint)) {
+        setResolvedWebviewSrc(null);
+        setWebviewError(null);
+        return;
+      }
+
+      if (desktopShell?.resolveWebviewSrc) {
+        try {
+          const nextSrc = await desktopShell.resolveWebviewSrc(entrypoint);
+          if (!cancelled) {
+            setResolvedWebviewSrc(nextSrc);
+            setWebviewError(null);
+          }
+          return;
+        } catch (error) {
+          if (!cancelled) {
+            setResolvedWebviewSrc(null);
+            setWebviewError(error instanceof Error ? error.message : String(error));
+          }
+          return;
+        }
+      }
+
+      if (!cancelled) {
+        setResolvedWebviewSrc(entrypoint);
+        setWebviewError(null);
+      }
+    }
+
+    void resolveWebviewSource();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [entrypoint]);
+
+  return {
+    resolvedWebviewSrc,
+    webviewError,
+  };
 }
 
 function toDesktopPreviewTarget(target: PreviewTarget): DesktopPreviewTarget {
@@ -976,50 +1035,10 @@ function WebviewSurfacePane({
 }: {
   surface: DesktopView;
 }) {
-  const [resolvedWebviewSrc, setResolvedWebviewSrc] = useState<string | null>(null);
-  const [webviewError, setWebviewError] = useState<string | null>(null);
   const webviewEntrypoint =
     surface.render.kind === "webview" ? surface.render.entrypoint : null;
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function resolveWebviewSource() {
-      if (!webviewEntrypoint || !isSupportedPluginWebviewEntrypoint(webviewEntrypoint)) {
-        setResolvedWebviewSrc(null);
-        setWebviewError(null);
-        return;
-      }
-
-      if (desktopShell?.resolveWebviewSrc) {
-        try {
-          const nextSrc = await desktopShell.resolveWebviewSrc(webviewEntrypoint);
-          if (!cancelled) {
-            setResolvedWebviewSrc(nextSrc);
-            setWebviewError(null);
-          }
-          return;
-        } catch (error) {
-          if (!cancelled) {
-            setResolvedWebviewSrc(null);
-            setWebviewError(error instanceof Error ? error.message : String(error));
-          }
-          return;
-        }
-      }
-
-      if (!cancelled) {
-        setResolvedWebviewSrc(webviewEntrypoint);
-        setWebviewError(null);
-      }
-    }
-
-    void resolveWebviewSource();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [webviewEntrypoint]);
+  const { resolvedWebviewSrc, webviewError } =
+    useResolvedPluginWebviewSource(webviewEntrypoint);
 
   const contextualWebviewSrc = resolvedWebviewSrc
     ? withPluginWebviewContext(resolvedWebviewSrc, {
@@ -1139,13 +1158,133 @@ function WorkbenchSurfacePane(props: HostSurfaceComponentProps) {
   return <WebviewSurfacePane surface={surface} />;
 }
 
+function PreviewProviderPane({
+  item,
+  threadId,
+}: {
+  item: DesktopThreadPreviewState["items"][number];
+  threadId: string;
+}) {
+  const renderer = item.renderer;
+  const webviewEntrypoint =
+    renderer?.render.kind === "webview" ? renderer.render.entrypoint : null;
+  const { resolvedWebviewSrc, webviewError } =
+    useResolvedPluginWebviewSource(webviewEntrypoint);
+
+  const contextualWebviewSrc =
+    resolvedWebviewSrc && renderer?.render.kind === "webview"
+      ? withPluginWebviewContext(resolvedWebviewSrc, {
+          pluginId: renderer.pluginId,
+          params: {
+            previewProviderId: renderer.providerId,
+            previewThreadId: threadId,
+            previewItemId: item.id,
+            previewKind: item.target.kind,
+            previewTitle: item.title,
+            previewContentType: item.contentType ?? undefined,
+            previewSrc: item.src ?? undefined,
+            previewFilename:
+              item.target.kind === "file"
+                ? item.target.filename ?? item.title
+                : undefined,
+            previewPath:
+              item.target.kind === "file" ? item.target.path : undefined,
+            previewUrl:
+              item.target.kind === "url" ? item.target.url : undefined,
+          },
+        })
+      : null;
+
+  if (!item.src) {
+    return (
+      <div className="flex h-full items-center justify-center p-6">
+        <Alert className="max-w-sm">
+          <AlertTitle>Preview unavailable</AlertTitle>
+          <AlertDescription>
+            This preview provider could not access the current item.
+          </AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
+
+  if (!isSupportedPluginWebviewEntrypoint(webviewEntrypoint)) {
+    return (
+      <div className="flex h-full items-center justify-center p-6">
+        <Alert className="max-w-sm">
+          <AlertTitle>Unsupported preview renderer</AlertTitle>
+          <AlertDescription>
+            Preview providers currently support plugin webviews only.
+          </AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex items-center justify-between gap-3 border-b border-border/70 px-3 py-2">
+        <div className="min-w-0">
+          <p className="truncate text-xs font-medium text-foreground">
+            {renderer?.title ?? "Custom preview"}
+          </p>
+          <p className="truncate text-xs text-muted-foreground">{item.title}</p>
+        </div>
+        <Button
+          disabled={!item.src}
+          onClick={() => {
+            if (!item.src) {
+              return;
+            }
+            window.open(item.src, "_blank", "noopener,noreferrer");
+          }}
+          type="button"
+          variant="outline"
+          size="sm"
+        >
+          <ExternalLink className="size-4" />
+          Open Source
+        </Button>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-hidden bg-background">
+        {webviewError ? (
+          <div className="flex h-full items-center justify-center p-6">
+            <Alert className="max-w-sm">
+              <AlertTitle>Renderer failed to load</AlertTitle>
+              <AlertDescription>{webviewError}</AlertDescription>
+            </Alert>
+          </div>
+        ) : contextualWebviewSrc ? (
+          <iframe
+            title={`${item.title} custom preview`}
+            src={contextualWebviewSrc}
+            className="min-h-0 h-full w-full bg-white"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+            referrerPolicy="no-referrer"
+          />
+        ) : (
+          <div className="flex h-full items-center justify-center bg-muted/10">
+            <div className="flex items-center gap-3 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" />
+              <span>Loading preview renderer…</span>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ThreadPreviewPane({
+  threadId,
   previewState,
   onClear,
   onCloseItem,
   onSelectItem,
   onSetVisible,
 }: {
+  threadId: string;
   previewState: DesktopThreadPreviewState;
   onClear: () => void;
   onCloseItem: (itemId: string) => void;
@@ -1229,6 +1368,8 @@ function ThreadPreviewPane({
           <div className="flex h-full items-center justify-center p-6">
             <p className="text-sm text-muted-foreground">No preview selected.</p>
           </div>
+        ) : activeItem.renderer ? (
+          <PreviewProviderPane item={activeItem} threadId={threadId} />
         ) : activeItem.target.kind === "file" ? (
           activePreviewUrl ? (
             <FilePreviewContent
@@ -1960,6 +2101,7 @@ export function App() {
                     activeThreadPreviewState.items.length > 0 ? (
                       <aside className="flex min-h-[320px] w-full min-w-0 border-t border-border/60 bg-muted/10 lg:min-h-0 lg:w-[420px] lg:border-l lg:border-t-0 xl:w-[480px] 2xl:w-[560px]">
                         <ThreadPreviewPane
+                          threadId={activeThreadId!}
                           previewState={activeThreadPreviewState}
                           onClear={handleClearPreviewTargets}
                           onCloseItem={handleClosePreviewItem}

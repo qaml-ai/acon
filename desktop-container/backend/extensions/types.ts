@@ -175,6 +175,45 @@ export interface CamelAIHostMcpServerRegistration
   id: string;
 }
 
+export type CamelAIPreviewSelector =
+  | {
+      kind: "fileExtension";
+      value: string;
+    }
+  | {
+      kind: "glob";
+      value: string;
+    }
+  | {
+      kind: "mime";
+      value: string;
+    }
+  | {
+      kind: "url";
+      value: string;
+    }
+  | {
+      kind: "urlHost";
+      value: string;
+    }
+  | {
+      kind: "urlRegex";
+      value: string;
+    };
+
+export type CamelAIPreviewProviderPriority = "option" | "default" | "builtin";
+
+export interface CamelAIPreviewProviderRegistration {
+  title: string;
+  description?: string;
+  selectors: CamelAIPreviewSelector[];
+  priority?: CamelAIPreviewProviderPriority;
+  render: {
+    kind: "webview";
+    webviewId: string;
+  };
+}
+
 export interface CamelAIHostMcpOAuthConfig {
   clientId: string | null;
   clientSecret: string | null;
@@ -318,6 +357,10 @@ export interface CamelAIPluginApi {
     id: string,
     command: CamelAICommandRegistration,
   ): CamelAIDisposable;
+  registerPreviewProvider(
+    id: string,
+    provider: CamelAIPreviewProviderRegistration,
+  ): CamelAIDisposable;
   registerTool(id: string, tool: CamelAIToolRegistration): CamelAIDisposable;
   registerMcpServer(
     id: string,
@@ -372,6 +415,7 @@ export interface CamelAIRuntimeRecord {
   compatibilityError: string | null;
   views: Map<string, CamelAIViewRegistration>;
   commands: Map<string, CamelAICommandRegistration>;
+  previewProviders: Map<string, CamelAIPreviewProviderRegistration>;
   tools: Map<string, CamelAIToolRegistration>;
   handlers: Map<CamelAIEventName, CamelAIEventHandler[]>;
   disposables: CamelAIDisposable[];

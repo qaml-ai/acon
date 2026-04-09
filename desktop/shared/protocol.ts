@@ -156,12 +156,20 @@ export type DesktopPreviewTarget =
       title?: string | null;
     };
 
+export interface DesktopPreviewRenderer {
+  pluginId: string;
+  providerId: string;
+  title: string | null;
+  render: DesktopPluginSurfaceRender;
+}
+
 export interface DesktopPreviewItem {
   id: string;
   title: string;
   target: DesktopPreviewTarget;
   src: string | null;
   contentType: string | null;
+  renderer?: DesktopPreviewRenderer | null;
 }
 
 export interface DesktopThreadPreviewState {

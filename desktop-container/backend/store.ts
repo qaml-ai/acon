@@ -222,6 +222,7 @@ function toDesktopPreviewState(
       item.target.kind === 'file'
         ? item.target.contentType ?? null
         : null,
+    renderer: null,
   }));
   const activeItemId =
     state?.activeItemId && items.some((item) => item.id === state.activeItemId)
