@@ -161,6 +161,36 @@ describe("ContainerRuntimeManager", () => {
     expect(containerfileSource).not.toContain("useradd --uid 1000");
   });
 
+  it("installs the shared guest toolchain in the image definition", () => {
+    const containerfileSource = readFileSync(
+      resolve(
+        process.cwd(),
+        "desktop-container/container-images/acpx-shared/Containerfile",
+      ),
+      "utf8",
+    );
+
+    for (const packageName of [
+      "python3",
+      "python3-pip",
+      "ruby",
+      "default-jdk-headless",
+      "ffmpeg",
+      "imagemagick",
+      "tesseract-ocr",
+      "tesseract-ocr-eng",
+      "pandoc",
+      "libreoffice",
+      "sqlite3",
+      "jq",
+      "git",
+      "curl",
+      "wget",
+    ]) {
+      expect(containerfileSource).toContain(packageName);
+    }
+  });
+
   it("restarts the provider container after a recoverable daemon startup failure", async () => {
     const provider = requireDesktopProvider("codex");
     const runtime = new ContainerRuntimeManager() as ContainerRuntimeManager & {
