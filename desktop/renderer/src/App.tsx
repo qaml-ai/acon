@@ -56,6 +56,7 @@ import type {
   DesktopPreviewTarget,
   DesktopThreadPreviewState,
   DesktopProvider,
+  DesktopShellCommand,
   DesktopServerEvent,
   DesktopSnapshot,
   DesktopTab,
@@ -70,6 +71,7 @@ import { getDesktopPreviewItemId } from "../../shared/preview";
 import { DesktopSidebar } from "./desktop-sidebar";
 import { SettingsPage } from "./settings-page";
 import { getDesktopIcon } from "./desktop-icons";
+import { ThreadRuntimeIndicator } from "./thread-runtime-indicator";
 
 const desktopShell = window.desktopShell;
 const fallbackBackendUrl = "http://127.0.0.1:4315";
@@ -1774,12 +1776,14 @@ function WorkbenchTabStrip({
   onCycleTabs,
   onCloseTab,
   onSelectTab,
+  threadRuntimeById,
   tabs,
 }: {
   activeTabId: string | null;
   onCycleTabs: (offset: -1 | 1) => void;
   onCloseTab: (tabId: string) => void;
   onSelectTab: (tabId: string) => void;
+  threadRuntimeById: DesktopSnapshot["threadRuntimeById"];
   tabs: DesktopTab[];
 }) {
   if (tabs.length === 0) {
@@ -1795,6 +1799,7 @@ function WorkbenchTabStrip({
       {tabs.map((tab) => {
         const TabIcon = getDesktopIcon(tab.icon);
         const isActive = tab.id === activeTabId;
+        const runtime = tab.threadId ? threadRuntimeById[tab.threadId] : null;
         const closeLabel =
           tab.kind === "thread"
             ? `Close ${tab.title} chat tab`
@@ -1840,6 +1845,7 @@ function WorkbenchTabStrip({
               }}
             >
               <TabIcon className="desktop-workbench-tab-icon" />
+              <ThreadRuntimeIndicator runtime={runtime} />
               <span className="desktop-workbench-tab-title">{tab.title}</span>
               {tab.subtitle ? (
                 <span className="desktop-workbench-tab-subtitle">
@@ -2090,6 +2096,7 @@ export function App() {
       snapshot?.views.find((view) => view.scope === "thread" && view.isDefault)?.id ??
       snapshot?.views.find((view) => view.scope === "thread")?.id ??
       null;
+    setShowSettings(false);
     setActiveTabId(null);
     if (defaultThreadViewId) {
       setActiveViewId(defaultThreadViewId);
@@ -2113,6 +2120,7 @@ export function App() {
         (tab) => tab.kind === "thread" && tab.threadId === threadId,
       ) ??
       null;
+    setShowSettings(false);
     setActiveThreadId(threadId);
     if (defaultThreadViewId) {
       setActiveViewId(defaultThreadViewId);
@@ -2126,6 +2134,7 @@ export function App() {
       snapshot?.tabs.find(
         (tab) => tab.kind === "workspace" && tab.viewId === viewId,
       ) ?? null;
+    setShowSettings(false);
     setActiveViewId(viewId);
     setActiveTabId(existingTab?.id ?? null);
     sendEvent({ type: "select_view", viewId });
@@ -2137,6 +2146,7 @@ export function App() {
       return;
     }
 
+    setShowSettings(false);
     setActiveTabId(tab.id);
     setActiveViewId(tab.viewId);
     if (tab.kind === "thread" && tab.threadId) {
@@ -2181,9 +2191,14 @@ export function App() {
       return;
     }
 
+    setShowSettings(false);
     handleSelectTab(nextTab.id);
     focusWorkbenchTab(nextTab.id);
   }, [activeTabId, handleSelectTab, snapshot?.tabs]);
+
+  const handleOpenSettings = useCallback(() => {
+    setShowSettings(true);
+  }, []);
 
   const handleSetModel = useCallback((model: string) => {
     if (!snapshot?.availableModels.some((option) => option.id === model)) {
@@ -2302,7 +2317,46 @@ export function App() {
   }, [activeThreadId, sendEvent]);
 
   useEffect(() => {
+    if (!desktopShell?.onCommand) {
+      return;
+    }
+
+    return desktopShell.onCommand((command: DesktopShellCommand) => {
+      switch (command) {
+        case "new_chat":
+          handleCreateThread();
+          return;
+        case "open_settings":
+          handleOpenSettings();
+          return;
+        case "toggle_sidebar":
+          window.dispatchEvent(new Event("desktop:toggle-sidebar"));
+          return;
+        case "close_tab":
+          if (activeTabId) {
+            handleCloseTab(activeTabId);
+          }
+          return;
+        case "next_tab":
+          handleCycleTabs(1);
+          return;
+        case "previous_tab":
+          handleCycleTabs(-1);
+          return;
+      }
+    });
+  }, [
+    activeTabId,
+    handleCloseTab,
+    handleCreateThread,
+    handleCycleTabs,
+    handleOpenSettings,
+  ]);
+
+  useEffect(() => {
     const handleWindowKeyDown = (event: KeyboardEvent) => {
+      const hasNativeCommandShortcuts = Boolean(desktopShell?.onCommand);
+
       if (event.defaultPrevented || event.isComposing) {
         return;
       }
@@ -2312,6 +2366,9 @@ export function App() {
       }
 
       if (event.key === "w") {
+        if (hasNativeCommandShortcuts) {
+          return;
+        }
         if (!activeTabId) {
           return;
         }
@@ -2327,6 +2384,9 @@ export function App() {
       }
 
       if (event.shiftKey && (event.key === "]" || event.key === "[")) {
+        if (hasNativeCommandShortcuts) {
+          return;
+        }
         event.preventDefault();
         handleCycleTabs(event.key === "]" ? 1 : -1);
         return;
@@ -2388,6 +2448,7 @@ export function App() {
               onCycleTabs={handleCycleTabs}
               onCloseTab={handleCloseTab}
               onSelectTab={handleSelectTab}
+              threadRuntimeById={snapshot?.threadRuntimeById ?? {}}
               tabs={snapshot?.tabs ?? []}
             />
           </div>
@@ -2414,9 +2475,9 @@ export function App() {
               activeViewId={activeViewId}
               connectionState={connectionState}
               onCreateThread={handleCreateThread}
-              onOpenSettings={() => setShowSettings(true)}
-              onSelectThread={(threadId) => { setShowSettings(false); handleSelectThread(threadId); }}
-              onSelectView={(viewId) => { setShowSettings(false); handleSelectView(viewId); }}
+              onOpenSettings={handleOpenSettings}
+              onSelectThread={handleSelectThread}
+              onSelectView={handleSelectView}
               sidebarPanels={snapshot?.sidebarPanels ?? []}
               showSettings={showSettings}
               snapshot={snapshot}

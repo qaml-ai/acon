@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, protocol, shell, net } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, protocol, shell, net } from 'electron';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -685,6 +685,146 @@ function publishBackendEvent(event) {
   }
 }
 
+function sendWindowCommand(command, targetWindow = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null) {
+  if (!targetWindow || targetWindow.isDestroyed()) {
+    return;
+  }
+
+  targetWindow.webContents.send('desktop:command', command);
+}
+
+function createApplicationMenu() {
+  const isMac = process.platform === 'darwin';
+  const showDevToolsMenu = Boolean(devRendererUrl) || !app.isPackaged;
+  const template = [];
+
+  if (isMac) {
+    template.push({
+      label: app.name,
+      submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        {
+          label: 'Settings...',
+          accelerator: 'CmdOrCtrl+,',
+          click: (_menuItem, browserWindow) => {
+            sendWindowCommand('open_settings', browserWindow);
+          },
+        },
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    });
+  }
+
+  template.push({
+    label: 'File',
+    submenu: [
+      {
+        label: 'New Chat',
+        accelerator: 'CmdOrCtrl+N',
+        click: (_menuItem, browserWindow) => {
+          sendWindowCommand('new_chat', browserWindow);
+        },
+      },
+      {
+        label: 'Close Tab',
+        accelerator: 'CmdOrCtrl+W',
+        click: (_menuItem, browserWindow) => {
+          sendWindowCommand('close_tab', browserWindow);
+        },
+      },
+      ...(isMac
+        ? []
+        : [
+            { type: 'separator' },
+            {
+              label: 'Settings...',
+              accelerator: 'CmdOrCtrl+,',
+              click: (_menuItem, browserWindow) => {
+                sendWindowCommand('open_settings', browserWindow);
+              },
+            },
+            { type: 'separator' },
+            { role: 'quit' },
+          ]),
+    ],
+  });
+
+  template.push({
+    label: 'Edit',
+    submenu: [
+      { role: 'undo' },
+      { role: 'redo' },
+      { type: 'separator' },
+      { role: 'cut' },
+      { role: 'copy' },
+      { role: 'paste' },
+      { role: 'pasteAndMatchStyle' },
+      { role: 'delete' },
+      { role: 'selectAll' },
+    ],
+  });
+
+  template.push({
+    label: 'View',
+    submenu: [
+      {
+        label: 'Toggle Sidebar',
+        accelerator: 'CmdOrCtrl+B',
+        click: (_menuItem, browserWindow) => {
+          sendWindowCommand('toggle_sidebar', browserWindow);
+        },
+      },
+      { type: 'separator' },
+      {
+        label: 'Next Tab',
+        accelerator: 'CmdOrCtrl+Shift+]',
+        click: (_menuItem, browserWindow) => {
+          sendWindowCommand('next_tab', browserWindow);
+        },
+      },
+      {
+        label: 'Previous Tab',
+        accelerator: 'CmdOrCtrl+Shift+[',
+        click: (_menuItem, browserWindow) => {
+          sendWindowCommand('previous_tab', browserWindow);
+        },
+      },
+      { type: 'separator' },
+      { role: 'reload' },
+      { role: 'forceReload' },
+      { role: 'togglefullscreen' },
+      ...(showDevToolsMenu
+        ? [{ role: 'toggleDevTools' }]
+        : []),
+    ],
+  });
+
+  template.push({
+    label: 'Window',
+    submenu: isMac
+      ? [
+          { role: 'minimize' },
+          { role: 'zoom' },
+          { type: 'separator' },
+          { role: 'front' },
+        ]
+      : [
+          { role: 'minimize' },
+          { role: 'zoom' },
+        ],
+  });
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 function createWindow() {
   const window = new BrowserWindow({
     width: 1440,
@@ -971,6 +1111,7 @@ ipcMain.on('desktop:ready', (_event, payload) => {
 
 app.whenReady().then(async () => {
   recordStartup('app_ready');
+  createApplicationMenu();
   protocol.handle('desktop-plugin', (request) => {
     try {
       return net.fetch(pathToFileURL(fromDesktopPluginUrl(request.url)).toString());

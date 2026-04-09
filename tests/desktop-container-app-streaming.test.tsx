@@ -731,6 +731,21 @@ describe("desktop container renderer streaming", () => {
     expect(screen.getAllByText("Claude test thread").length).toBeGreaterThan(0);
   });
 
+  it("shows running indicators in the sidebar and tab strip for active chats", async () => {
+    const snapshot = createSnapshot();
+    snapshot.threadRuntimeById["thread-1"] = {
+      active: true,
+      hasMessages: true,
+      sessionId: "session-1",
+      isRunning: true,
+      stopRequested: false,
+    };
+
+    await renderAppWithShell(snapshot);
+
+    expect(screen.getAllByLabelText("Chat running")).toHaveLength(2);
+  });
+
   it("switches back to the default thread view when a chat thread is selected", async () => {
     const snapshot = createSnapshot();
     snapshot.tabs.push({

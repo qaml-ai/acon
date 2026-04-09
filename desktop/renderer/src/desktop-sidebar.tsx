@@ -30,6 +30,7 @@ import type {
   DesktopView,
 } from "../../shared/protocol";
 import { getDesktopIcon } from "./desktop-icons";
+import { ThreadRuntimeIndicator } from "./thread-runtime-indicator";
 
 interface DesktopSidebarProps {
   activeThreadId: string | null;
@@ -83,10 +84,11 @@ function ChatRecentThreadsSidebarPanel({
   activeThreadId,
   onCreateThread,
   onSelectThread,
+  snapshot,
   threads,
 }: Pick<
   SidebarPanelComponentProps,
-  "activeThreadId" | "onCreateThread" | "onSelectThread" | "threads"
+  "activeThreadId" | "onCreateThread" | "onSelectThread" | "snapshot" | "threads"
 >) {
   return (
     <SidebarGroup>
@@ -99,30 +101,35 @@ function ChatRecentThreadsSidebarPanel({
       </SidebarGroupAction>
       <SidebarGroupContent>
         <SidebarMenu>
-          {threads.map((thread) => (
-            <SidebarMenuItem key={thread.id}>
-              <SidebarMenuButton
-                size="lg"
-                isActive={thread.id === activeThreadId}
-                tooltip={thread.title}
-                onClick={() => onSelectThread(thread.id)}
-                className="h-auto min-h-12"
-              >
-                <span className="flex size-4 items-center justify-center rounded-full bg-sidebar-accent text-xs font-semibold text-sidebar-accent-foreground">
-                  {thread.title.slice(0, 1).toUpperCase()}
-                </span>
-                <div className="grid flex-1 min-w-0 text-left text-sm leading-tight">
-                  <span className="truncate font-medium">
-                    {thread.title}
+          {threads.map((thread) => {
+            const runtime = snapshot?.threadRuntimeById[thread.id];
+
+            return (
+              <SidebarMenuItem key={thread.id}>
+                <SidebarMenuButton
+                  size="lg"
+                  isActive={thread.id === activeThreadId}
+                  tooltip={thread.title}
+                  onClick={() => onSelectThread(thread.id)}
+                  className="h-auto min-h-12"
+                >
+                  <span className="flex size-4 items-center justify-center rounded-full bg-sidebar-accent text-xs font-semibold text-sidebar-accent-foreground">
+                    {thread.title.slice(0, 1).toUpperCase()}
                   </span>
-                  <span className="truncate text-xs text-muted-foreground">
-                    {thread.lastMessagePreview ||
-                      formatTime(thread.updatedAt)}
-                  </span>
-                </div>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          ))}
+                  <div className="grid flex-1 min-w-0 text-left text-sm leading-tight">
+                    <span className="flex items-center gap-1.5 truncate font-medium">
+                      <span className="truncate">{thread.title}</span>
+                      <ThreadRuntimeIndicator runtime={runtime} className="size-3" />
+                    </span>
+                    <span className="truncate text-xs text-muted-foreground">
+                      {thread.lastMessagePreview ||
+                        formatTime(thread.updatedAt)}
+                    </span>
+                  </div>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            );
+          })}
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
