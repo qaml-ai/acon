@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { ContainerRuntimeManager } from "../desktop-container/backend/container-runtime";
 import { requireDesktopProvider } from "../desktop-container/backend/providers";
@@ -54,6 +55,7 @@ describe("ContainerRuntimeManager", () => {
     expect(daemonSource).toContain(
       "A typed JavaScript package named \\`@acon/host-rpc\\` is preinstalled for guest code.",
     );
+    expect(daemonSource).toContain("callMcpTool(serverId, toolName, args)");
     expect(daemonSource).toContain(
       'import { createHostRpcClient } from "@acon/host-rpc";',
     );
@@ -97,6 +99,34 @@ describe("ContainerRuntimeManager", () => {
     expect(packageJson).toContain('"types": "./index.d.ts"');
     expect(typeDefinitions).toContain("export class HostRpcClient");
     expect(typeDefinitions).toContain("listMcpServers(): Promise<HostMcpServerSummary[]>");
+    expect(typeDefinitions).toContain("export interface JsonRpcNotificationMessage");
+    expect(typeDefinitions).toContain("callMcpTool<TResult = unknown>(");
+  });
+
+  it("keeps the guest host RPC client version constant in sync with package metadata", async () => {
+    const packageJson = JSON.parse(
+      readFileSync(
+        resolve(
+          process.cwd(),
+          "desktop-container/container-images/npm-packages/acon-host-rpc/package.json",
+        ),
+        "utf8",
+      ),
+    ) as { version: string };
+    const hostRpcModule = (await import(
+      pathToFileURL(
+        resolve(
+          process.cwd(),
+          "desktop-container/container-images/npm-packages/acon-host-rpc/index.js",
+        ),
+      ).href
+    )) as {
+      DEFAULT_MCP_CLIENT_INFO: { version: string };
+      DEFAULT_MCP_CLIENT_VERSION: string;
+    };
+
+    expect(hostRpcModule.DEFAULT_MCP_CLIENT_VERSION).toBe(packageJson.version);
+    expect(hostRpcModule.DEFAULT_MCP_CLIENT_INFO.version).toBe(packageJson.version);
   });
 
   it("bootstraps the host RPC directory before dropping root", () => {

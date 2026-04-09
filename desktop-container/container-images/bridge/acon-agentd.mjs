@@ -32,6 +32,7 @@ This environment is for \`acon\`, the standalone camelAI desktop app.
 - Run \`acon-mcp tools <server-id>\` to list the tools exposed by a server.
 - Run \`acon-mcp <server-id>\` to expose that server over stdio for MCP clients in the container.
 - A typed JavaScript package named \`@acon/host-rpc\` is preinstalled for guest code.
+- Prefer \`listMcpServers()\`, \`listMcpTools(serverId)\`, and \`callMcpTool(serverId, toolName, args)\` for one-shot guest MCP usage instead of hand-rolling MCP JSON-RPC messages.
 - When running a web server in the guest container, bind it to \`0.0.0.0\` instead of \`localhost\`.
 - When opening a preview URL for a guest web server, use the current container IP instead of \`localhost\`.
 - Example:

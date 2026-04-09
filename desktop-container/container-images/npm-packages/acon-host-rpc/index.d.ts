@@ -1,9 +1,10 @@
 export const DEFAULT_HOST_RPC_SOCKET_PATH: "/data/host-rpc/bridge.sock";
 export const DEFAULT_HOST_RPC_TIMEOUT_MS: 30000;
 export const DEFAULT_MCP_PROTOCOL_VERSION: "2025-03-26";
+export const DEFAULT_MCP_CLIENT_VERSION: "0.1.0";
 export const DEFAULT_MCP_CLIENT_INFO: Readonly<{
   name: "@acon/host-rpc";
-  version: "1.0.0";
+  version: typeof DEFAULT_MCP_CLIENT_VERSION;
 }>;
 
 export type JsonRpcId = string | number | null;
@@ -16,7 +17,13 @@ export interface JsonRpcErrorObject {
 
 export interface JsonRpcRequestMessage {
   jsonrpc: "2.0";
-  id?: JsonRpcId;
+  id: JsonRpcId;
+  method: string;
+  params?: unknown;
+}
+
+export interface JsonRpcNotificationMessage {
+  jsonrpc: "2.0";
   method: string;
   params?: unknown;
 }
@@ -35,6 +42,7 @@ export interface JsonRpcErrorMessage {
 
 export type JsonRpcMessage =
   | JsonRpcRequestMessage
+  | JsonRpcNotificationMessage
   | JsonRpcResultMessage
   | JsonRpcErrorMessage;
 
@@ -97,11 +105,14 @@ export interface HostRpcMcpClientInfo {
   version?: string;
 }
 
-export interface HostRpcListMcpToolsOptions {
+export interface HostRpcMcpSessionOptions {
   sessionId?: string;
   protocolVersion?: string;
   clientInfo?: HostRpcMcpClientInfo;
 }
+
+export type HostRpcListMcpToolsOptions = HostRpcMcpSessionOptions;
+export type HostRpcCallMcpToolOptions = HostRpcMcpSessionOptions;
 
 export class HostRpcError extends Error {
   code: string | null;
@@ -121,8 +132,8 @@ export function createHostRpcClient(options?: HostRpcClientOptions): HostRpcClie
 
 export class HostRpcClient {
   constructor(options?: HostRpcClientOptions);
-  readonly socketPath: string;
-  readonly timeoutMs: number;
+  socketPath: string;
+  timeoutMs: number;
   request<TResult = unknown>(method: string, params?: unknown): Promise<TResult>;
   ping(params?: unknown): Promise<HostRpcPingResponse>;
   fetch(params: HostRpcFetchRequest): Promise<HostRpcFetchResponse>;
@@ -140,4 +151,10 @@ export class HostRpcClient {
     serverId: string,
     options?: HostRpcListMcpToolsOptions,
   ): Promise<HostMcpToolSummary[]>;
+  callMcpTool<TResult = unknown>(
+    serverId: string,
+    toolName: string,
+    toolArguments?: unknown,
+    options?: HostRpcCallMcpToolOptions,
+  ): Promise<TResult | null>;
 }
