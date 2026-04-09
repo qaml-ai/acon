@@ -18,7 +18,6 @@ const BUILTIN_MCP_LAUNCHER_PATH = resolve(
 const oauthConfigSchema = z.object({
   clientId: z.string().nullable().optional(),
   clientSecretRef: z.string().nullable().optional(),
-  clientSecret: z.string().nullable().optional(),
   clientName: z.string().nullable().optional(),
   clientUri: z.string().nullable().optional(),
   clientMetadataUrl: z.string().nullable().optional(),
@@ -49,24 +48,15 @@ const installedHttpServerSchema = z.object({
   version: z.string().nullable(),
 });
 
-const installedHttpWrapperAuthSchema = z.object({
+const restApiAuthSchema = z.object({
   type: z.enum(["none", "bearer", "header"]),
   secretRef: z.string().nullable(),
   headerName: z.string().nullable(),
 });
 
-const installedHttpWrapperServerSchema = z.object({
-  id: z.string(),
-  transport: z.literal("http-wrapper"),
-  baseUrl: z.string(),
-  auth: installedHttpWrapperAuthSchema,
-  name: z.string().nullable(),
-  version: z.string().nullable(),
-});
-
 const installedServerSchema = z.object({
   id: z.string(),
-  transport: z.enum(["stdio", "streamable-http", "sse", "http-wrapper"]),
+  transport: z.enum(["stdio", "streamable-http", "sse"]),
   command: z.string().optional(),
   args: z.array(z.string()).optional(),
   cwd: z.string().nullable().optional(),
@@ -77,7 +67,6 @@ const installedServerSchema = z.object({
   headers: z.record(z.string(), z.string()).optional(),
   headerSecretRefs: z.record(z.string(), z.string()).optional(),
   oauth: oauthConfigSchema.nullable().optional(),
-  auth: installedHttpWrapperAuthSchema.optional(),
   name: z.string().nullable(),
   version: z.string().nullable(),
 });
@@ -108,14 +97,6 @@ const installHttpServerInputSchema = z.object({
   version: z.string().nullable().optional(),
 });
 
-const installHttpWrapperServerInputSchema = z.object({
-  id: z.string(),
-  baseUrl: z.string(),
-  auth: installedHttpWrapperAuthSchema.nullable().optional(),
-  name: z.string().nullable().optional(),
-  version: z.string().nullable().optional(),
-});
-
 const promptToStoreSecretInputSchema = z.object({
   secretRef: z.string().nullable().optional(),
   title: z.string(),
@@ -130,7 +111,7 @@ const promptToStoreSecretOutputSchema = z.object({
 const installRestApiServerInputSchema = z.object({
   id: z.string(),
   baseUrl: z.string(),
-  auth: installedHttpWrapperAuthSchema.nullable().optional(),
+  auth: restApiAuthSchema.nullable().optional(),
   name: z.string().nullable().optional(),
   version: z.string().nullable().optional(),
 });
@@ -291,30 +272,6 @@ const extension: CamelAIExtensionModule = {
           },
           async (input) => {
             const installed = await api.installHttpHostMcpServer(input);
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: installed.replaced
-                    ? `Updated host MCP server ${installed.id}.`
-                    : `Installed host MCP server ${installed.id}.`,
-                },
-              ],
-              structuredContent: installed,
-            };
-          },
-        );
-
-        server.registerTool(
-          "install_http_wrapper_server",
-          {
-            description:
-              "Install or replace a generic HTTP wrapper host MCP server. The wrapper exposes one fetch tool scoped to a configured baseUrl and can inject auth from a host secret reference.",
-            inputSchema: installHttpWrapperServerInputSchema,
-            outputSchema: installServerOutputSchema,
-          },
-          async (input) => {
-            const installed = await api.installHttpWrapperHostMcpServer(input);
             return {
               content: [
                 {

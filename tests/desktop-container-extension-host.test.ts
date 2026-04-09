@@ -201,9 +201,9 @@ describe("CamelAIExtensionHost", () => {
       name: "Remote Server",
       oauth: {
         clientId: null,
+        clientSecretRef: null,
         clientMetadataUrl: null,
         clientName: "Acon",
-        clientSecret: null,
         clientUri: null,
         scope: "tools.read",
         tokenEndpointAuthMethod: null,

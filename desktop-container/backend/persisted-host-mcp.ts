@@ -15,19 +15,14 @@ import {
   type HostMcpServerRegistration,
 } from "./host-mcp";
 import {
-  createHttpWrapperHostMcpServer,
-  type HttpWrapperAuthConfig,
-} from "./http-wrapper-mcp";
-import {
   clearPersistedHostMcpOAuthState,
   createDefaultHostMcpOAuthConfig,
-  getPersistedHostMcpOAuthClientSecret,
-  setPersistedHostMcpOAuthClientSecret,
   type HostMcpOAuthConfig,
   type HostMcpOAuthManager,
 } from "./host-mcp-oauth";
 import {
   deletePersistedHostSecret,
+  getPersistedHostSecret,
   resolvePersistedSecretRefs,
 } from "./host-secrets";
 
@@ -58,19 +53,9 @@ export interface PersistedHostMcpHttpServerRecord {
   version: string | null;
 }
 
-export interface PersistedHostMcpHttpWrapperServerRecord {
-  auth: HttpWrapperAuthConfig;
-  baseUrl: string;
-  id: string;
-  name: string | null;
-  transport: "http-wrapper";
-  version: string | null;
-}
-
 export type PersistedHostMcpServerRecord =
   | PersistedHostMcpStdioServerRecord
-  | PersistedHostMcpHttpServerRecord
-  | PersistedHostMcpHttpWrapperServerRecord;
+  | PersistedHostMcpHttpServerRecord;
 
 export interface PersistedHostMcpStdioInstallOptions {
   args?: string[];
@@ -94,18 +79,9 @@ export interface PersistedHostMcpHttpInstallOptions {
   version?: string | null;
 }
 
-export interface PersistedHostMcpHttpWrapperInstallOptions {
-  auth?: HttpWrapperAuthConfig | null;
-  baseUrl: string;
-  id: string;
-  name?: string | null;
-  version?: string | null;
-}
-
 export type PersistedHostMcpInstallOptions =
   | PersistedHostMcpStdioInstallOptions
-  | PersistedHostMcpHttpInstallOptions
-  | PersistedHostMcpHttpWrapperInstallOptions;
+  | PersistedHostMcpHttpInstallOptions;
 
 export interface PersistedHostMcpInstallResult extends PersistedHostMcpServerRecord {
   configPath: string;
@@ -228,74 +204,11 @@ function normalizeTransport(value: unknown): PersistedHostMcpServerRecord["trans
   if (
     normalized !== "stdio" &&
     normalized !== "streamable-http" &&
-    normalized !== "sse" &&
-    normalized !== "http-wrapper"
+    normalized !== "sse"
   ) {
     throw new Error(`Unsupported persisted host MCP transport: ${normalized}.`);
   }
   return normalized;
-}
-
-function normalizeBaseUrl(value: unknown): string {
-  const raw = normalizeOptionalString(value, "Host MCP baseUrl");
-  if (!raw) {
-    throw new Error("Host MCP baseUrl must be a non-empty string.");
-  }
-
-  const url = new URL(raw);
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("Host MCP baseUrl must use http:// or https://.");
-  }
-  return url.toString();
-}
-
-function normalizeHttpWrapperAuthConfig(value: unknown): HttpWrapperAuthConfig {
-  if (value === undefined || value === null) {
-    return {
-      type: "none",
-      secretRef: null,
-      headerName: null,
-    };
-  }
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("HTTP wrapper auth must be an object when provided.");
-  }
-
-  const record = value as Record<string, unknown>;
-  const type =
-    typeof record.type === "string" && ["none", "bearer", "header"].includes(record.type)
-      ? (record.type as HttpWrapperAuthConfig["type"])
-      : "none";
-  if (type === "none") {
-    return {
-      type,
-      secretRef: null,
-      headerName: null,
-    };
-  }
-
-  const secretRef = normalizeOptionalString(record.secretRef, "HTTP wrapper auth secretRef");
-  if (!secretRef) {
-    throw new Error(`HTTP wrapper auth ${type} requires a non-empty secretRef.`);
-  }
-
-  if (type === "bearer") {
-    return {
-      type,
-      secretRef,
-      headerName: "Authorization",
-    };
-  }
-
-  const headerName = normalizeOptionalString(record.headerName, "HTTP wrapper auth headerName");
-  if (!headerName) {
-    throw new Error("HTTP wrapper header auth requires a non-empty headerName.");
-  }
-  return {
-    type,
-    secretRef,
-    headerName,
-  };
 }
 
 function normalizeOauthConfig(value: unknown): HostMcpOAuthConfig | null {
@@ -321,7 +234,6 @@ function normalizeOauthConfig(value: unknown): HostMcpOAuthConfig | null {
       record.clientName,
       "Host MCP OAuth clientName",
     ),
-    clientSecret: null,
     clientUri: normalizeOptionalString(record.clientUri, "Host MCP OAuth clientUri"),
     scope: normalizeOptionalString(record.scope, "Host MCP OAuth scope"),
     tokenEndpointAuthMethod: normalizeOptionalString(
@@ -382,17 +294,6 @@ export function normalizePersistedHostMcpServerRecord(
         "Host MCP envSecretRefs",
       ),
       name,
-      version,
-    };
-  }
-
-  if (transport === "http-wrapper") {
-    return {
-      auth: normalizeHttpWrapperAuthConfig(record.auth),
-      baseUrl: normalizeBaseUrl(record.baseUrl),
-      id,
-      name,
-      transport: "http-wrapper",
       version,
     };
   }
@@ -497,10 +398,6 @@ export function installPersistedHostMcpHttpServer(options: {
     typeof options.server.oauth?.clientSecretRef === "string"
       ? options.server.oauth.clientSecretRef.trim() || null
       : null;
-  const clientSecret =
-    typeof options.server.oauth?.clientSecret === "string"
-      ? options.server.oauth.clientSecret.trim() || null
-      : null;
   const installed = installPersistedHostMcpServer({
     ...options,
     server: {
@@ -509,36 +406,11 @@ export function installPersistedHostMcpHttpServer(options: {
       oauth: {
         ...(options.server.oauth ?? createDefaultHostMcpOAuthConfig()),
         clientSecretRef,
-        clientSecret: null,
       },
       transport: options.server.transport ?? "streamable-http",
     },
   });
-  setPersistedHostMcpOAuthClientSecret(
-    options.dataDirectory,
-    clientSecretRef ?? installed.id,
-    clientSecret,
-  );
   return installed;
-}
-
-export function installPersistedHostMcpHttpWrapperServer(options: {
-  dataDirectory: string;
-  workspaceDirectory: string;
-  server: PersistedHostMcpHttpWrapperInstallOptions;
-}): PersistedHostMcpInstallResult {
-  return installPersistedHostMcpServer({
-    ...options,
-    server: {
-      ...options.server,
-      auth: options.server.auth ?? {
-        type: "none",
-        secretRef: null,
-        headerName: null,
-      },
-      transport: "http-wrapper",
-    },
-  });
 }
 
 export function uninstallPersistedHostMcpServer(options: {
@@ -567,11 +439,7 @@ export function uninstallPersistedHostMcpServer(options: {
         deletePersistedHostSecret(options.dataDirectory, secretRef);
       }
       if (existing.oauth?.clientSecretRef) {
-        setPersistedHostMcpOAuthClientSecret(
-          options.dataDirectory,
-          existing.oauth.clientSecretRef,
-          null,
-        );
+        deletePersistedHostSecret(options.dataDirectory, existing.oauth.clientSecretRef);
       }
     }
   } catch {
@@ -623,36 +491,7 @@ export function createPersistedHostMcpServerRegistration(
     };
   }
 
-  if (server.transport === "http-wrapper") {
-    return {
-      id: server.id,
-      name: server.name ?? server.id,
-      version: server.version ?? null,
-      description: null,
-      pluginId: null,
-      source: "host",
-      createServer: () =>
-        createHttpWrapperHostMcpServer({
-          auth: server.auth,
-          baseUrl: server.baseUrl,
-          dataDirectory: options.dataDirectory,
-          id: server.id,
-          name: server.name,
-          version: server.version,
-        }),
-    };
-  }
-
-  const hydratedOauth =
-    server.oauth === null
-      ? null
-      : {
-          ...server.oauth,
-          clientSecret: getPersistedHostMcpOAuthClientSecret(
-            options.dataDirectory,
-            server.oauth.clientSecretRef ?? server.id,
-          ),
-        };
+  const hydratedOauth = server.oauth;
 
   return {
     id: server.id,

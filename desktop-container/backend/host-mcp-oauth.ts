@@ -12,18 +12,16 @@ import type {
   OAuthClientMetadata,
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
+import { getPersistedHostSecret } from "./host-secrets";
 import { HostSecretStore } from "./secret-store";
 
 const CALLBACK_PATH_PREFIX = "/host-mcp/oauth/callback/";
 const DEFAULT_OAUTH_TIMEOUT_MS = 5 * 60 * 1000;
 const HOST_MCP_OAUTH_STATE_SECRET_NAMESPACE = "host-mcp-oauth-state";
-const HOST_MCP_OAUTH_CLIENT_SECRET_SECRET_NAMESPACE =
-  "host-mcp-oauth-client-secret";
 
 export interface HostMcpOAuthConfig {
   clientId: string | null;
-  clientSecretRef?: string | null;
-  clientSecret: string | null;
+  clientSecretRef: string | null;
   clientName: string | null;
   clientUri: string | null;
   clientMetadataUrl: string | null;
@@ -37,7 +35,6 @@ export function createDefaultHostMcpOAuthConfig(): HostMcpOAuthConfig {
     clientSecretRef: null,
     clientMetadataUrl: null,
     clientName: null,
-    clientSecret: null,
     clientUri: null,
     scope: null,
     tokenEndpointAuthMethod: "none",
@@ -107,37 +104,6 @@ export function clearPersistedHostMcpOAuthState(
   serverId: string,
 ): void {
   new HostMcpOAuthStateStore(dataDirectory, serverId).clear();
-  new HostSecretStore({
-    dataDirectory,
-    namespace: HOST_MCP_OAUTH_CLIENT_SECRET_SECRET_NAMESPACE,
-  }).delete(serverId);
-}
-
-export function getPersistedHostMcpOAuthClientSecret(
-  dataDirectory: string,
-  serverId: string,
-): string | null {
-  return new HostSecretStore({
-    dataDirectory,
-    namespace: HOST_MCP_OAUTH_CLIENT_SECRET_SECRET_NAMESPACE,
-  }).load(serverId);
-}
-
-export function setPersistedHostMcpOAuthClientSecret(
-  dataDirectory: string,
-  serverId: string,
-  clientSecret: string | null | undefined,
-): void {
-  const normalizedClientSecret = normalizeOptionalString(clientSecret);
-  const store = new HostSecretStore({
-    dataDirectory,
-    namespace: HOST_MCP_OAUTH_CLIENT_SECRET_SECRET_NAMESPACE,
-  });
-  if (!normalizedClientSecret) {
-    store.delete(serverId);
-    return;
-  }
-  store.save(serverId, normalizedClientSecret);
 }
 function createAuthorizationResultHtml(title: string, body: string): string {
   return `<!doctype html>
@@ -491,16 +457,12 @@ export class PersistedHostMcpOAuthProvider implements OAuthClientProvider {
       options.serverId,
     );
     this.staticClientSecret =
-      normalizeOptionalString(options.oauth.clientSecret) ??
-      (normalizeOptionalString(options.oauth.clientSecretRef)
-        ? getPersistedHostMcpOAuthClientSecret(
+      normalizeOptionalString(options.oauth.clientSecretRef)
+        ? getPersistedHostSecret(
             options.dataDirectory,
             options.oauth.clientSecretRef ?? options.serverId,
           )
-        : getPersistedHostMcpOAuthClientSecret(
-            options.dataDirectory,
-            options.serverId,
-          ));
+        : null;
     this.clientMetadataUrl = this.resolveClientMetadataUrl();
     this.addClientAuthentication = this.addClientAuthentication.bind(this);
   }

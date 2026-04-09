@@ -42,12 +42,10 @@ import {
 import {
   createPersistedHostMcpServerRegistration,
   installPersistedHostMcpHttpServer,
-  installPersistedHostMcpHttpWrapperServer,
   installPersistedHostMcpStdioServer,
   listPersistedHostMcpServers,
   uninstallPersistedHostMcpServer,
   type PersistedHostMcpHttpInstallOptions,
-  type PersistedHostMcpHttpWrapperInstallOptions,
   type PersistedHostMcpInstallResult,
   type PersistedHostMcpServerRecord,
   type PersistedHostMcpStdioInstallOptions,
@@ -132,8 +130,6 @@ export class DesktopService {
         this.installStdioHostMcpServer(server, context),
       installHttpHostMcpServer: (server, context) =>
         this.installHttpHostMcpServer(server, context),
-      installHttpWrapperHostMcpServer: (server, context) =>
-        this.installHttpWrapperHostMcpServer(server, context),
       promptToStoreSecret: (options, context) =>
         this.promptToStoreSecret(options, context),
       uninstallInstalledHostMcpServer: (serverId, context) =>
@@ -297,58 +293,6 @@ export class DesktopService {
       }),
     );
     return installed;
-  }
-
-  async installHttpWrapperHostMcpServer(
-    server: PersistedHostMcpHttpWrapperInstallOptions,
-    context:
-      | string
-      | CamelAIHostMcpMutationContext = this.runtimeManager.getWorkspaceDirectory(),
-  ): Promise<PersistedHostMcpInstallResult> {
-    const workspaceDirectory =
-      typeof context === "string"
-        ? context
-        : context.workspaceDirectory;
-    if (typeof context !== "string") {
-      const action = this.listInstalledHostMcpServers().some(
-        (entry) => entry.id === server.id,
-      )
-        ? "update"
-        : "create";
-      await this.requestPermission({
-        kind: "host_mcp_mutation",
-        id: randomUUID(),
-        threadId: context.threadId,
-        pluginId: context.pluginId,
-        harness: context.harness,
-        action,
-        serverId: server.id,
-        transport: "http-wrapper",
-        command: null,
-        args: [],
-        cwd: null,
-        url: server.baseUrl,
-        name: server.name ?? null,
-        version: server.version ?? null,
-      });
-    }
-
-    const installed = installPersistedHostMcpHttpWrapperServer({
-      dataDirectory: this.dataDirectory,
-      workspaceDirectory,
-      server,
-    });
-    this.runtimeManager.registerHostMcpServer(
-      createPersistedHostMcpServerRegistration(installed, {
-        dataDirectory: this.dataDirectory,
-        oauthManager: this.hostMcpOAuthManager,
-      }),
-    );
-    return installed;
-  }
-
-  storeHttpWrapperSecret(secretRef: string, value: string): void {
-    setPersistedHostSecret(this.dataDirectory, secretRef, value);
   }
 
   async promptToStoreSecret(

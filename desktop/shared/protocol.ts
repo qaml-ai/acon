@@ -239,7 +239,7 @@ export interface DesktopPermissionRequestHostMcpMutation {
   harness: DesktopHarness;
   action: "create" | "update" | "delete";
   serverId: string;
-  transport: "stdio" | "streamable-http" | "sse" | "http-wrapper";
+  transport: "stdio" | "streamable-http" | "sse";
   command: string | null;
   args: string[];
   cwd: string | null;

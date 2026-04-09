@@ -9,10 +9,6 @@ import { z } from "zod";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { HostMcpRegistry, createRemoteProxyHostMcpServer } from "../desktop-container/backend/host-mcp";
-import {
-  createHttpWrapperHostMcpServer,
-  setPersistedHttpWrapperSecret,
-} from "../desktop-container/backend/http-wrapper-mcp";
 import { setPersistedHostSecret } from "../desktop-container/backend/host-secrets";
 import {
   HostMcpOAuthManager,
@@ -449,7 +445,7 @@ async function callTool(
   };
 }
 
-async function callHttpWrapperFetch(
+async function callFetchTool(
   registry: HostMcpRegistry,
   serverId: string,
   sessionId: string,
@@ -613,9 +609,9 @@ describe("host MCP remote proxy", () => {
       manager,
       oauth: {
         clientId: null,
+        clientSecretRef: null,
         clientMetadataUrl: null,
         clientName: "Acon OAuth Test",
-        clientSecret: null,
         clientUri: null,
         scope: "tools.read",
         tokenEndpointAuthMethod: null,
@@ -651,9 +647,9 @@ describe("host MCP remote proxy", () => {
       manager,
       oauth: {
         clientId: null,
+        clientSecretRef: null,
         clientMetadataUrl: null,
         clientName: "Acon OAuth Test",
-        clientSecret: null,
         clientUri: null,
         scope: "tools.read",
         tokenEndpointAuthMethod: null,
@@ -688,95 +684,6 @@ describe("host MCP remote proxy", () => {
     });
 
     manager.dispose();
-  });
-
-  it("wraps a baseUrl and injects a referenced bearer token", async () => {
-    scratchDirectory = mkdtempSync(join(tmpdir(), "acon-http-wrapper-test-"));
-    setPersistedHttpWrapperSecret(
-      scratchDirectory,
-      "example-api-token",
-      "token-123",
-    );
-
-    const upstream = createServer((request, response) => {
-      const requestUrl = new URL(request.url || "/", "http://127.0.0.1");
-      response.writeHead(200, {
-        "content-type": "application/json",
-      });
-      response.end(
-        JSON.stringify({
-          authorization: request.headers.authorization ?? null,
-          path: requestUrl.pathname,
-          query: requestUrl.search,
-        }),
-      );
-    });
-
-    await new Promise<void>((resolvePromise) => {
-      upstream.listen(0, "127.0.0.1", () => resolvePromise());
-    });
-    const address = upstream.address();
-    if (!address || typeof address === "string") {
-      throw new Error("Expected upstream HTTP wrapper test server to expose a TCP port.");
-    }
-
-    const registry = new HostMcpRegistry();
-    const sessionId = randomUUID();
-    registry.registerServer({
-      id: "http-wrapper",
-      createServer: () =>
-        createHttpWrapperHostMcpServer({
-          auth: {
-            type: "bearer",
-            secretRef: "example-api-token",
-            headerName: "Authorization",
-          },
-          baseUrl: `http://127.0.0.1:${address.port}/api`,
-          dataDirectory: scratchDirectory,
-          id: "http-wrapper",
-        }),
-    });
-
-    try {
-      await initializeRegistryServer(registry, "http-wrapper", sessionId);
-      const result = await callHttpWrapperFetch(
-        registry,
-        "http-wrapper",
-        sessionId,
-        {
-          path: "users",
-          query: {
-            page: 2,
-          },
-        },
-      );
-
-      expect(result).toEqual(
-        expect.objectContaining({
-          structuredContent: expect.objectContaining({
-            ok: true,
-            status: 200,
-            json: expect.objectContaining({
-              authorization: "Bearer token-123",
-              path: "/api/users",
-              query: "?page=2",
-            }),
-          }),
-        }),
-      );
-    } finally {
-      await registry.closeSession("http-wrapper", sessionId);
-      registry.dispose();
-      await new Promise<void>((resolvePromise, rejectPromise) => {
-        upstream.close((error) => {
-          if (error) {
-            rejectPromise(error);
-            return;
-          }
-          resolvePromise();
-        });
-      });
-    }
   });
 
   it("runs the repo-local REST API server over stdio with env secret refs", async () => {
@@ -833,7 +740,7 @@ describe("host MCP remote proxy", () => {
 
     try {
       await initializeRegistryServer(registry, "rest-api", sessionId);
-      const result = await callHttpWrapperFetch(
+      const result = await callFetchTool(
         registry,
         "rest-api",
         sessionId,
@@ -883,9 +790,9 @@ describe("host MCP remote proxy", () => {
       manager,
       oauth: {
         clientId: null,
+        clientSecretRef: null,
         clientMetadataUrl: null,
         clientName: "Acon OAuth Test",
-        clientSecret: null,
         clientUri: "https://example.com/oauth/acon-client.json",
         scope: "tools.read",
         tokenEndpointAuthMethod: null,
@@ -909,6 +816,7 @@ describe("host MCP remote proxy", () => {
 
   it("includes client_id in token requests even for client_secret_basic auth", async () => {
     scratchDirectory = mkdtempSync(join(tmpdir(), "acon-host-mcp-oauth-"));
+    setPersistedHostSecret(scratchDirectory, "oauth-basic-secret", "secret-123");
     const manager = new HostMcpOAuthManager({
       browserOpener: vi.fn(async () => {}),
     });
@@ -917,9 +825,9 @@ describe("host MCP remote proxy", () => {
       manager,
       oauth: {
         clientId: "client-123",
+        clientSecretRef: "oauth-basic-secret",
         clientMetadataUrl: null,
         clientName: "Acon OAuth Test",
-        clientSecret: "secret-123",
         clientUri: null,
         scope: "tools.read",
         tokenEndpointAuthMethod: "client_secret_basic",
@@ -955,9 +863,9 @@ describe("host MCP remote proxy", () => {
       manager,
       oauth: {
         clientId: null,
+        clientSecretRef: null,
         clientMetadataUrl: null,
         clientName: "Acon OAuth Test",
-        clientSecret: null,
         clientUri: null,
         scope: "tools.read",
         tokenEndpointAuthMethod: null,

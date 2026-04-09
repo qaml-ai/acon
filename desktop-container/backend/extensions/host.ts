@@ -34,7 +34,6 @@ import type {
   CamelAIMcpServerRegistration,
   CamelAIInstallHostMcpServerResult,
   CamelAIInstallHttpHostMcpServerOptions,
-  CamelAIInstallHttpWrapperHostMcpServerOptions,
   CamelAIInstallStdioHostMcpServerOptions,
   CamelAIManifest,
   CamelAIPersistedHostMcpServerRecord,
@@ -110,10 +109,6 @@ export interface CamelAIExtensionHostOptions {
   ) => boolean;
   installHttpHostMcpServer?: (
     server: CamelAIInstallHttpHostMcpServerOptions,
-    context: CamelAIHostMcpMutationContext,
-  ) => Promise<CamelAIInstallHostMcpServerResult>;
-  installHttpWrapperHostMcpServer?: (
-    server: CamelAIInstallHttpWrapperHostMcpServerOptions,
     context: CamelAIHostMcpMutationContext,
   ) => Promise<CamelAIInstallHostMcpServerResult>;
   promptToStoreSecret?: (
@@ -709,9 +704,6 @@ export class CamelAIExtensionHost {
       },
       registerMcpServer,
       unregisterMcpServer,
-      registerHostMcpServer: (registration) =>
-        registerMcpServer(registration.id, registration),
-      unregisterHostMcpServer: unregisterMcpServer,
       listInstalledHostMcpServers: () => {
         this.assertPluginPermission(record, "host-mcp");
         return this.options.listInstalledHostMcpServers?.() ?? [];
@@ -736,19 +728,6 @@ export class CamelAIExtensionHost {
         }
         const activeContext = this.resolveActivationContext(context);
         return await this.options.installHttpHostMcpServer(server, {
-          pluginId,
-          harness: activeContext.harness,
-          threadId: activeContext.activeThreadId,
-          workspaceDirectory: activeContext.workspaceDirectory,
-        });
-      },
-      installHttpWrapperHostMcpServer: async (server) => {
-        this.assertPluginPermission(record, "host-mcp");
-        if (!this.options.installHttpWrapperHostMcpServer) {
-          throw new Error("Host MCP installation is unavailable.");
-        }
-        const activeContext = this.resolveActivationContext(context);
-        return await this.options.installHttpWrapperHostMcpServer(server, {
           pluginId,
           harness: activeContext.harness,
           threadId: activeContext.activeThreadId,
