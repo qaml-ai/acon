@@ -41,6 +41,7 @@ import type {
   DesktopView,
 } from "../../shared/protocol";
 import { getDesktopIcon } from "./desktop-icons";
+import { ThreadRuntimeIndicator } from "./thread-runtime-indicator";
 
 interface DesktopSidebarProps {
   activeThreadId: string | null;
@@ -233,30 +234,35 @@ function ChatRecentThreadsSidebarPanel({
                       </button>
                     ) : (
                       <SidebarMenu>
-                        {groupThreads.map((thread) => (
-                          <SidebarMenuItem key={thread.id}>
-                            <SidebarMenuButton
-                              size="lg"
-                              isActive={thread.id === activeThreadId}
-                              tooltip={thread.title}
-                              onClick={() => onSelectThread(thread.id)}
-                              className="h-auto min-h-12 pl-8"
-                            >
-                              <span className="flex size-4 items-center justify-center rounded-full bg-sidebar-accent text-xs font-semibold text-sidebar-accent-foreground">
-                                {thread.title.slice(0, 1).toUpperCase()}
-                              </span>
-                              <div className="grid min-w-0 flex-1 text-left text-sm leading-tight">
-                                <span className="truncate font-medium">
-                                  {thread.title}
+                        {groupThreads.map((thread) => {
+                          const runtime = snapshot?.threadRuntimeById[thread.id];
+
+                          return (
+                            <SidebarMenuItem key={thread.id}>
+                              <SidebarMenuButton
+                                size="lg"
+                                isActive={thread.id === activeThreadId}
+                                tooltip={thread.title}
+                                onClick={() => onSelectThread(thread.id)}
+                                className="h-auto min-h-12 pl-8"
+                              >
+                                <span className="flex size-4 items-center justify-center rounded-full bg-sidebar-accent text-xs font-semibold text-sidebar-accent-foreground">
+                                  {thread.title.slice(0, 1).toUpperCase()}
                                 </span>
-                                <span className="truncate text-xs text-muted-foreground">
-                                  {thread.lastMessagePreview ||
-                                    formatTime(thread.updatedAt)}
-                                </span>
-                              </div>
-                            </SidebarMenuButton>
-                          </SidebarMenuItem>
-                        ))}
+                                <div className="grid min-w-0 flex-1 text-left text-sm leading-tight">
+                                  <span className="flex items-center gap-1.5 truncate font-medium">
+                                    <span className="truncate">{thread.title}</span>
+                                    <ThreadRuntimeIndicator runtime={runtime} className="size-3" />
+                                  </span>
+                                  <span className="truncate text-xs text-muted-foreground">
+                                    {thread.lastMessagePreview ||
+                                      formatTime(thread.updatedAt)}
+                                  </span>
+                                </div>
+                              </SidebarMenuButton>
+                            </SidebarMenuItem>
+                          );
+                        })}
                       </SidebarMenu>
                     )}
                   </CollapsibleContent>

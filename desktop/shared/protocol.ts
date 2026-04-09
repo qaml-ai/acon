@@ -343,6 +343,14 @@ export interface DesktopStartupDiagnostic {
   detail?: string;
 }
 
+export type DesktopShellCommand =
+  | "new_chat"
+  | "open_settings"
+  | "toggle_sidebar"
+  | "close_tab"
+  | "next_tab"
+  | "previous_tab";
+
 export type DesktopClientEvent =
   | {
       type: "create_group";

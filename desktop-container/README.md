@@ -45,6 +45,7 @@ Notes:
 
 - `prepare:container` copies a usable Apple `container` install into `desktop-container/vendor/apple-container/` and prebuilds the shared Codex/Claude image plus the internal `acon-agentd` runtime before runtime.
 - The shared agent image also installs a general-purpose guest toolchain: Python 3, Node.js 22, Ruby, OpenJDK, ffmpeg, ImageMagick, Tesseract OCR, Pandoc, LibreOffice, sqlite3, jq, git, curl, and wget. System package versions intentionally track the current Debian Bookworm packages used by the base image instead of pinning older versions from external lists.
+- The shared agent image also preinstalls curated Python libraries from `desktop-container/container-images/acpx-shared/python-requirements.txt` for Office documents, PDF processing, AI/ML, data analysis, parsing, image/media work, OCR, and LibreOffice UNO workflows.
 - `build` only builds the renderer.
 - `build:bundle` assembles the packaged desktop resources, bundles the backend entrypoint, stages builtin plugin manifests for packaged discovery, and produces an unpacked macOS `.app` bundle in `dist/bundle/`.
 - `dev` is the main command. It starts the renderer plus Electron and picks a free localhost port automatically.
