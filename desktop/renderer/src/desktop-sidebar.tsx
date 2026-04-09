@@ -1,12 +1,22 @@
-import type { ComponentType } from "react";
+import { useMemo, useState, type ComponentType } from "react";
 import {
+  ChevronRight,
   CircleHelp,
+  Folder,
+  Pencil,
+  MessageSquarePlus,
   Plus,
   Settings,
   TerminalSquare,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   Sidebar,
   SidebarContent,
@@ -35,8 +45,11 @@ interface DesktopSidebarProps {
   activeThreadId: string | null;
   activeViewId: string | null;
   connectionState: "connecting" | "open" | "closed";
-  onCreateThread: () => void;
+  onCreateGroup: (title?: string) => void;
+  onCreateThread: (groupId?: string) => void;
   onOpenSettings: () => void;
+  onRenameGroup: (groupId: string, title: string) => void;
+  onSelectGroup: (groupId: string) => void;
   onSelectThread: (threadId: string) => void;
   onSelectView: (viewId: string) => void;
   showSettings: boolean;
@@ -50,7 +63,10 @@ type SidebarPanelComponentProps = Pick<
   DesktopSidebarProps,
   | "activeThreadId"
   | "activeViewId"
+  | "onCreateGroup"
   | "onCreateThread"
+  | "onRenameGroup"
+  | "onSelectGroup"
   | "onSelectThread"
   | "onSelectView"
   | "snapshot"
@@ -81,49 +97,171 @@ function shouldShowRuntimeCard(snapshot: DesktopSnapshot | null): boolean {
 
 function ChatRecentThreadsSidebarPanel({
   activeThreadId,
+  onCreateGroup,
   onCreateThread,
+  onRenameGroup,
+  onSelectGroup,
   onSelectThread,
+  snapshot,
   threads,
 }: Pick<
   SidebarPanelComponentProps,
-  "activeThreadId" | "onCreateThread" | "onSelectThread" | "threads"
+  | "activeThreadId"
+  | "onCreateGroup"
+  | "onCreateThread"
+  | "onRenameGroup"
+  | "onSelectGroup"
+  | "onSelectThread"
+  | "snapshot"
+  | "threads"
 >) {
+  const [collapsedGroupIds, setCollapsedGroupIds] = useState<Record<string, boolean>>({});
+  const groups = snapshot?.threadGroups ?? [];
+  const activeGroupId = snapshot?.activeGroupId ?? null;
+  const threadsByGroupId = useMemo(() => {
+    const next = new Map<string, DesktopThread[]>();
+
+    for (const thread of threads) {
+      const groupThreads = next.get(thread.groupId) ?? [];
+      groupThreads.push(thread);
+      next.set(thread.groupId, groupThreads);
+    }
+
+    return next;
+  }, [threads]);
+
   return (
     <SidebarGroup>
-      <SidebarGroupLabel>Recent Chats</SidebarGroupLabel>
+      <SidebarGroupLabel>Chats</SidebarGroupLabel>
       <SidebarGroupAction
-        aria-label="Create new thread"
-        onClick={onCreateThread}
+        aria-label="Create new group"
+        onClick={() => {
+          const title = window.prompt("Name the new group", "New group");
+          if (!title || !title.trim()) {
+            return;
+          }
+          onCreateGroup(title.trim());
+        }}
       >
         <Plus />
       </SidebarGroupAction>
       <SidebarGroupContent>
-        <SidebarMenu>
-          {threads.map((thread) => (
-            <SidebarMenuItem key={thread.id}>
-              <SidebarMenuButton
-                size="lg"
-                isActive={thread.id === activeThreadId}
-                tooltip={thread.title}
-                onClick={() => onSelectThread(thread.id)}
-                className="h-auto min-h-12"
+        <div className="space-y-1 px-2">
+          {groups.map((group) => {
+            const groupThreads = threadsByGroupId.get(group.id) ?? [];
+            const isOpen = collapsedGroupIds[group.id] !== true;
+            const hasActiveThread = groupThreads.some((thread) => thread.id === activeThreadId);
+
+            return (
+              <Collapsible
+                key={group.id}
+                open={isOpen}
+                onOpenChange={(open) => {
+                  setCollapsedGroupIds((current) => ({
+                    ...current,
+                    [group.id]: !open,
+                  }));
+                }}
               >
-                <span className="flex size-4 items-center justify-center rounded-full bg-sidebar-accent text-xs font-semibold text-sidebar-accent-foreground">
-                  {thread.title.slice(0, 1).toUpperCase()}
-                </span>
-                <div className="grid flex-1 min-w-0 text-left text-sm leading-tight">
-                  <span className="truncate font-medium">
-                    {thread.title}
-                  </span>
-                  <span className="truncate text-xs text-muted-foreground">
-                    {thread.lastMessagePreview ||
-                      formatTime(thread.updatedAt)}
-                  </span>
+                <div
+                  className={`rounded-lg border px-2 py-1.5 ${
+                    group.id === activeGroupId
+                      ? "border-sidebar-border bg-sidebar-accent/50"
+                      : "border-transparent bg-transparent"
+                  }`}
+                >
+                  <div className="flex items-center gap-1">
+                    <CollapsibleTrigger asChild>
+                      <Button
+                        size="icon-xs"
+                        variant="ghost"
+                        aria-label={isOpen ? `Collapse ${group.title}` : `Expand ${group.title}`}
+                      >
+                        <ChevronRight
+                          className={`size-3 transition-transform ${isOpen ? "rotate-90" : ""}`}
+                        />
+                      </Button>
+                    </CollapsibleTrigger>
+                    <button
+                      type="button"
+                      className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-1 text-left hover:bg-sidebar-accent/60"
+                      onClick={() => onSelectGroup(group.id)}
+                    >
+                      <Folder className="size-3.5 shrink-0 text-muted-foreground" />
+                      <div className="grid min-w-0 flex-1 text-sm leading-tight">
+                        <span className="truncate font-medium">{group.title}</span>
+                        <span className="truncate text-xs text-muted-foreground">
+                          {groupThreads.length} thread{groupThreads.length === 1 ? "" : "s"}
+                        </span>
+                      </div>
+                      {hasActiveThread ? <Badge variant="secondary">Active</Badge> : null}
+                    </button>
+                    <Button
+                      size="icon-xs"
+                      variant="ghost"
+                      aria-label={`Rename ${group.title}`}
+                      onClick={() => {
+                        const title = window.prompt("Rename group", group.title);
+                        if (!title || !title.trim() || title.trim() === group.title) {
+                          return;
+                        }
+                        onRenameGroup(group.id, title.trim());
+                      }}
+                    >
+                      <Pencil />
+                    </Button>
+                    <Button
+                      size="icon-xs"
+                      variant="ghost"
+                      aria-label={`New chat in ${group.title}`}
+                      onClick={() => onCreateThread(group.id)}
+                    >
+                      <MessageSquarePlus />
+                    </Button>
+                  </div>
+                  <CollapsibleContent className="pt-1">
+                    {groupThreads.length === 0 ? (
+                      <button
+                        type="button"
+                        className="w-full rounded-md border border-dashed border-sidebar-border/70 px-3 py-2 text-left text-xs text-muted-foreground hover:bg-sidebar-accent/40"
+                        onClick={() => onCreateThread(group.id)}
+                      >
+                        Create the first chat in this group.
+                      </button>
+                    ) : (
+                      <SidebarMenu>
+                        {groupThreads.map((thread) => (
+                          <SidebarMenuItem key={thread.id}>
+                            <SidebarMenuButton
+                              size="lg"
+                              isActive={thread.id === activeThreadId}
+                              tooltip={thread.title}
+                              onClick={() => onSelectThread(thread.id)}
+                              className="h-auto min-h-12 pl-8"
+                            >
+                              <span className="flex size-4 items-center justify-center rounded-full bg-sidebar-accent text-xs font-semibold text-sidebar-accent-foreground">
+                                {thread.title.slice(0, 1).toUpperCase()}
+                              </span>
+                              <div className="grid min-w-0 flex-1 text-left text-sm leading-tight">
+                                <span className="truncate font-medium">
+                                  {thread.title}
+                                </span>
+                                <span className="truncate text-xs text-muted-foreground">
+                                  {thread.lastMessagePreview ||
+                                    formatTime(thread.updatedAt)}
+                                </span>
+                              </div>
+                            </SidebarMenuButton>
+                          </SidebarMenuItem>
+                        ))}
+                      </SidebarMenu>
+                    )}
+                  </CollapsibleContent>
                 </div>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          ))}
-        </SidebarMenu>
+              </Collapsible>
+            );
+          })}
+        </div>
       </SidebarGroupContent>
     </SidebarGroup>
   );
@@ -177,8 +315,11 @@ export function DesktopSidebar({
   activeThreadId,
   activeViewId,
   connectionState,
+  onCreateGroup,
   onCreateThread,
   onOpenSettings,
+  onRenameGroup,
+  onSelectGroup,
   onSelectThread,
   onSelectView,
   showSettings,
@@ -267,7 +408,10 @@ export function DesktopSidebar({
                 <HostComponent
                   activeThreadId={activeThreadId}
                   activeViewId={activeViewId}
+                  onCreateGroup={onCreateGroup}
                   onCreateThread={onCreateThread}
+                  onRenameGroup={onRenameGroup}
+                  onSelectGroup={onSelectGroup}
                   onSelectThread={onSelectThread}
                   onSelectView={onSelectView}
                   panel={panel}
@@ -298,7 +442,10 @@ export function DesktopSidebar({
               key={panel.id}
               activeThreadId={activeThreadId}
               activeViewId={activeViewId}
+              onCreateGroup={onCreateGroup}
               onCreateThread={onCreateThread}
+              onRenameGroup={onRenameGroup}
+              onSelectGroup={onSelectGroup}
               onSelectThread={onSelectThread}
               onSelectView={onSelectView}
               panel={panel}

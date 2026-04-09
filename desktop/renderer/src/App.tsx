@@ -14,6 +14,7 @@ import {
   ArrowRight,
   ExternalLink,
   Loader2,
+  Pencil,
   PanelRightClose,
   X,
 } from "lucide-react";
@@ -60,6 +61,7 @@ import type {
   DesktopSnapshot,
   DesktopTab,
   DesktopThread,
+  DesktopThreadGroup,
   DesktopView,
 } from "../../shared/protocol";
 import {
@@ -126,6 +128,25 @@ function getActiveThread(
 ): DesktopThread | null {
   if (!snapshot || !threadId) return null;
   return snapshot.threads.find((thread) => thread.id === threadId) ?? null;
+}
+
+function getActiveThreadGroup(
+  snapshot: DesktopSnapshot | null,
+): DesktopThreadGroup | null {
+  if (!snapshot) {
+    return null;
+  }
+
+  const activeGroupId = snapshot.activeGroupId;
+  if (!activeGroupId) {
+    return snapshot.threadGroups[0] ?? null;
+  }
+
+  return (
+    snapshot.threadGroups.find((group) => group.id === activeGroupId) ??
+    snapshot.threadGroups[0] ??
+    null
+  );
 }
 
 function getView(
@@ -710,37 +731,37 @@ function resolveKanbanLane(
   thread: DesktopThread,
 ): KanbanLaneId {
   const runtime = snapshot.threadRuntimeById[thread.id];
-  if (thread.metadata.archived) {
+  if (thread.archivedAt !== null) {
     return "finished";
   }
   if (runtime?.isRunning) {
     return "in_progress";
   }
-  switch (thread.metadata.lane) {
+  switch (thread.lane) {
     case "drafts":
     case "in_progress":
     case "ready_for_review":
     case "finished":
-      return thread.metadata.lane;
+      return thread.lane;
     default:
       return runtime?.hasMessages ? "ready_for_review" : "drafts";
   }
 }
 
-function metadataForKanbanLane(lane: KanbanLaneId): {
+function threadUpdatesForKanbanLane(lane: KanbanLaneId): {
   status: string;
   lane: KanbanLaneId;
-  archived: boolean;
+  archivedAt: number | null;
 } {
   switch (lane) {
     case "drafts":
-      return { status: "draft", lane, archived: false };
+      return { status: "draft", lane, archivedAt: null };
     case "in_progress":
-      return { status: "in_progress", lane, archived: false };
+      return { status: "in_progress", lane, archivedAt: null };
     case "ready_for_review":
-      return { status: "ready_for_review", lane, archived: false };
+      return { status: "ready_for_review", lane, archivedAt: null };
     case "finished":
-      return { status: "finished", lane, archived: true };
+      return { status: "finished", lane, archivedAt: Date.now() };
   }
 }
 
@@ -749,31 +770,40 @@ function KanbanBoardPane({
   onSendEvent,
 }: Pick<HostSurfaceComponentProps, "snapshot" | "onSendEvent">) {
   const [draggedThreadId, setDraggedThreadId] = useState<string | null>(null);
+  const activeGroup = useMemo(() => getActiveThreadGroup(snapshot), [snapshot]);
+  const activeGroupThreads = useMemo(
+    () =>
+      activeGroup
+        ? snapshot.threads.filter((thread) => thread.groupId === activeGroup.id)
+        : [],
+    [activeGroup, snapshot.threads],
+  );
 
   const lanes = useMemo(
     () =>
       KANBAN_LANES.map((lane) => ({
         ...lane,
-        threads: snapshot.threads.filter(
+        threads: activeGroupThreads.filter(
           (thread) => resolveKanbanLane(snapshot, thread) === lane.id,
         ),
       })),
-    [snapshot],
+    [activeGroupThreads, snapshot],
   );
 
   const handleCreateDraft = useCallback(() => {
     onSendEvent({
       type: "create_thread",
-      metadata: metadataForKanbanLane("drafts"),
+      groupId: activeGroup?.id,
+      ...threadUpdatesForKanbanLane("drafts"),
     });
-  }, [onSendEvent]);
+  }, [activeGroup?.id, onSendEvent]);
 
   const handleMoveThread = useCallback(
     (threadId: string, lane: KanbanLaneId) => {
       onSendEvent({
-        type: "update_thread_metadata",
+        type: "update_thread",
         threadId,
-        metadata: metadataForKanbanLane(lane),
+        updates: threadUpdatesForKanbanLane(lane),
       });
     },
     [onSendEvent],
@@ -805,13 +835,68 @@ function KanbanBoardPane({
           <div className="space-y-1">
             <h2 className="font-heading text-lg font-semibold">Kanban</h2>
             <p className="max-w-3xl text-sm text-muted-foreground">
-              Organize local chat threads as drafts, active work, review-ready
-              sessions, and finished archives.
+              Organize the current session group as drafts, active work,
+              review-ready sessions, and finished archives.
             </p>
           </div>
-          <Button size="sm" onClick={handleCreateDraft}>
-            New Draft
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Select
+              value={activeGroup?.id ?? undefined}
+              onValueChange={(groupId) => {
+                onSendEvent({
+                  type: "select_group",
+                  groupId,
+                });
+              }}
+            >
+              <SelectTrigger className="w-[220px] bg-background">
+                <SelectValue placeholder="Select group" />
+              </SelectTrigger>
+              <SelectContent>
+                {snapshot.threadGroups.map((group) => (
+                  <SelectItem key={group.id} value={group.id}>
+                    {group.title}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                const title = window.prompt("Name the new group", "New group");
+                if (!title || !title.trim()) {
+                  return;
+                }
+                onSendEvent({ type: "create_group", title: title.trim() });
+              }}
+            >
+              New Group
+            </Button>
+            {activeGroup ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  const title = window.prompt("Rename group", activeGroup.title);
+                  if (!title || !title.trim() || title.trim() === activeGroup.title) {
+                    return;
+                  }
+                  onSendEvent({
+                    type: "update_group",
+                    groupId: activeGroup.id,
+                    title: title.trim(),
+                  });
+                }}
+              >
+                <Pencil className="size-3.5" />
+                Rename Group
+              </Button>
+            ) : null}
+            <Button size="sm" onClick={handleCreateDraft}>
+              New Draft
+            </Button>
+          </div>
         </div>
 
         <div className="grid min-h-0 gap-4 xl:grid-cols-4">
@@ -876,7 +961,7 @@ function KanbanBoardPane({
                                   {runtime.stopRequested ? "Stopping" : "Running"}
                                 </Badge>
                               ) : null}
-                              {thread.metadata.archived ? (
+                              {thread.archivedAt !== null ? (
                                 <Badge variant="secondary">Archived</Badge>
                               ) : null}
                             </div>
@@ -2085,7 +2170,7 @@ export function App() {
     socket.send(JSON.stringify(event));
   }, []);
 
-  const handleCreateThread = useCallback(() => {
+  const handleCreateThread = useCallback((groupId?: string) => {
     const defaultThreadViewId =
       snapshot?.views.find((view) => view.scope === "thread" && view.isDefault)?.id ??
       snapshot?.views.find((view) => view.scope === "thread")?.id ??
@@ -2094,8 +2179,30 @@ export function App() {
     if (defaultThreadViewId) {
       setActiveViewId(defaultThreadViewId);
     }
-    sendEvent({ type: "create_thread" });
+    sendEvent({
+      type: "create_thread",
+      groupId,
+    });
   }, [sendEvent, snapshot?.views]);
+
+  const handleCreateGroup = useCallback((title?: string) => {
+    sendEvent({ type: "create_group", title });
+  }, [sendEvent]);
+
+  const handleSelectGroup = useCallback((groupId: string) => {
+    sendEvent({
+      type: "select_group",
+      groupId,
+    });
+  }, [sendEvent]);
+
+  const handleRenameGroup = useCallback((groupId: string, title: string) => {
+    sendEvent({
+      type: "update_group",
+      groupId,
+      title,
+    });
+  }, [sendEvent]);
 
   const handleSelectThread = useCallback((threadId: string) => {
     const defaultThreadViewId =
@@ -2413,8 +2520,11 @@ export function App() {
               activeThreadId={activeThreadId}
               activeViewId={activeViewId}
               connectionState={connectionState}
+              onCreateGroup={handleCreateGroup}
               onCreateThread={handleCreateThread}
               onOpenSettings={() => setShowSettings(true)}
+              onRenameGroup={handleRenameGroup}
+              onSelectGroup={handleSelectGroup}
               onSelectThread={(threadId) => { setShowSettings(false); handleSelectThread(threadId); }}
               onSelectView={(viewId) => { setShowSettings(false); handleSelectView(viewId); }}
               sidebarPanels={snapshot?.sidebarPanels ?? []}

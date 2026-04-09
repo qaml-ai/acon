@@ -39,8 +39,8 @@ import type {
   CamelAIThreadCreateOptions,
   CamelAIThreadEvent,
   CamelAIThreadEventHandler,
-  CamelAIThreadMetadataUpdate,
   CamelAIThreadRecord,
+  CamelAIThreadUpdate,
 } from "./extensions/types";
 import type { HostMcpServerRegistration } from "./host-mcp";
 import {
@@ -159,8 +159,7 @@ export class DesktopService {
         await this.sendMessage(threadId, content);
       },
       stopThread: async (threadId) => await this.stopThread(threadId),
-      updateThreadMetadata: (threadId, update) =>
-        this.updateThreadMetadata(threadId, update),
+      updateThread: (threadId, update) => this.updateThread(threadId, update),
       isPluginEnabled: (pluginId) => this.store.isPluginEnabled(pluginId),
     });
     const provider = this.getCurrentProvider();
@@ -224,10 +223,18 @@ export class DesktopService {
     const provider = options?.provider
       ? requireDesktopProvider(options.provider).id
       : this.store.getProvider();
-    const thread = this.store.createThread(options?.title, provider);
-    if (options?.metadata) {
-      this.store.updateThreadMetadata(thread.id, options.metadata);
+    const groupId = options?.groupId ?? this.store.getActiveGroupId();
+    if (!groupId) {
+      throw new Error("No active thread group is available.");
     }
+    const thread = this.store.createThread({
+      title: options?.title,
+      provider,
+      groupId,
+      status: options?.status,
+      lane: options?.lane,
+      archivedAt: options?.archivedAt,
+    });
     this.activateDefaultThreadView(thread.id);
     this.emitSnapshot();
     const record = this.requireThreadRecord(thread.id);
@@ -236,6 +243,21 @@ export class DesktopService {
       thread: record,
     });
     return record;
+  }
+
+  createGroup(title?: string): void {
+    this.store.createThreadGroup(title);
+    this.emitSnapshot();
+  }
+
+  updateGroup(groupId: string, title: string): void {
+    this.store.updateThreadGroup(groupId, title);
+    this.emitSnapshot();
+  }
+
+  selectGroup(groupId: string): void {
+    this.store.setActiveGroup(groupId);
+    this.emitSnapshot();
   }
 
   selectThread(threadId: string): CamelAIThreadRecord {
@@ -265,17 +287,17 @@ export class DesktopService {
     return true;
   }
 
-  updateThreadMetadata(
+  updateThread(
     threadId: string,
-    update: CamelAIThreadMetadataUpdate,
+    update: CamelAIThreadUpdate,
   ): CamelAIThreadRecord {
-    this.store.updateThreadMetadata(threadId, update);
+    this.store.updateThread(threadId, update);
     this.emitSnapshot();
     const record = this.requireThreadRecord(threadId);
     this.emitThreadEvent({
       type: "thread_updated",
       thread: record,
-      reason: "metadata",
+      reason: "thread",
     });
     return record;
   }
@@ -532,17 +554,15 @@ export class DesktopService {
     const activeRun = this.activeThreadRuns.get(thread.id);
     return {
       id: thread.id,
+      groupId: thread.groupId,
       provider: thread.provider,
       title: thread.title,
       createdAt: thread.createdAt,
       updatedAt: thread.updatedAt,
       lastMessagePreview: thread.lastMessagePreview,
-      metadata: {
-        status: thread.metadata.status,
-        lane: thread.metadata.lane,
-        archived: thread.metadata.archived,
-        archivedAt: thread.metadata.archivedAt,
-      },
+      status: thread.status,
+      lane: thread.lane,
+      archivedAt: thread.archivedAt,
       active: thread.id === this.store.getActiveThreadId(),
       hasMessages: this.store.getThreadMessages(thread.id).length > 0,
       sessionId: this.store.getProviderSessionId(thread.id, thread.provider),
@@ -573,7 +593,7 @@ export class DesktopService {
 
   private emitThreadUpdated(
     threadId: string,
-    reason: "message" | "metadata" | "selection" | "session",
+    reason: "message" | "thread" | "selection" | "session",
   ): void {
     const thread = this.store.getThread(threadId);
     if (!thread) {
@@ -709,6 +729,7 @@ export class DesktopService {
       harness,
       model,
       activeThreadId,
+      activeGroupId: this.store.getActiveGroupId(),
       runtimeStatus,
       runtimeDirectory:
         runtimeStatus.runtimeDirectory ?? this.runtimeManager.getRuntimeDirectory(),
@@ -724,9 +745,24 @@ export class DesktopService {
       case "create_thread": {
         this.createThread({
           title: event.title,
+          groupId: event.groupId,
           provider: this.store.getProvider(),
-          metadata: event.metadata,
+          status: event.status,
+          lane: event.lane,
+          archivedAt: event.archivedAt,
         });
+        return;
+      }
+      case "create_group": {
+        this.createGroup(event.title);
+        return;
+      }
+      case "select_group": {
+        this.selectGroup(event.groupId);
+        return;
+      }
+      case "update_group": {
+        this.updateGroup(event.groupId, event.title);
         return;
       }
       case "select_thread": {
@@ -802,10 +838,10 @@ export class DesktopService {
           !this.store.threadHasHarnessState(activeThread.id)
         ) {
           this.store.setThreadProvider(activeThread.id, provider);
-          this.emitThreadUpdated(activeThread.id, "metadata");
+          this.emitThreadUpdated(activeThread.id, "thread");
         } else {
           this.store.setProvider(provider);
-          this.createThread({ provider });
+          this.createThread({ provider, groupId: this.store.getActiveGroupId() ?? activeThread.groupId });
           void this.ensureRuntimeRunning("startup");
           return;
         }
@@ -835,8 +871,8 @@ export class DesktopService {
         void this.stopThread(event.threadId);
         return;
       }
-      case "update_thread_metadata": {
-        this.updateThreadMetadata(event.threadId, event.metadata);
+      case "update_thread": {
+        this.updateThread(event.threadId, event.updates);
         return;
       }
       case "ping": {
