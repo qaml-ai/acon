@@ -62,8 +62,10 @@ Host MCP notes:
 - Host code can register MCP servers on `DesktopService` with `registerHostMcpServer({ id, createServer })`.
 - Plugins can register in-process MCP servers with `api.registerMcpServer(id, { createServer })`; plugin-owned servers declare `serve-mcp`, while persisted host MCP registry mutation still requires `host-mcp`.
 - Persisted host MCP server registrations live under the desktop data directory at `host-mcp/servers/*.json`.
-- Persisted remote MCP servers can use `streamable-http` or legacy `sse` transport. Host-managed OAuth is configured automatically, and OAuth tokens/client state are kept on the host under `host-mcp/oauth/*.json`.
-- The builtin `host-mcp-manager` plugin registers a host MCP server that can list, install, and remove persisted stdio and remote HTTP host MCP servers from inside the guest.
+- Persisted remote MCP servers can use `streamable-http` or legacy `sse` transport. Host-managed OAuth is configured automatically, and OAuth tokens/client state are kept in the host secret store. On macOS this uses Keychain; other environments fall back to host-local secret files under the desktop data directory.
+- Persisted stdio MCP servers can attach `envSecretRefs`, and persisted remote HTTP MCP servers can attach `headerSecretRefs`, so secrets stay in the host vault and are only resolved at launch time.
+- The builtin `host-mcp-manager` plugin registers a host MCP server that can list, install, and remove persisted host MCP servers, prompt the user to store secrets in the host vault, and install the repo-local `rest-api` stdio MCP server.
+- Repo-shipped builtin stdio servers should be launched through `desktop-container/bin/acon-mcp-builtin.mjs <name>` so persisted configs stay stable even if the underlying implementation files move.
 - The builtin `preview-control` plugin registers a host MCP server that can open, replace, clear, and hide/show thread preview items for workspace files and URLs in the right-side preview pane.
 - Inside the container, `acon-mcp --help` shows the CLI surface.
 - `acon-mcp servers` lists the host MCP servers that the Electron app has registered for that backend session.

@@ -128,6 +128,17 @@ export interface CamelAIExtensionHostOptions {
     server: CamelAIInstallHttpHostMcpServerOptions,
     context: CamelAIHostMcpMutationContext,
   ) => Promise<CamelAIInstallHostMcpServerResult>;
+  promptToStoreSecret?: (
+    options: {
+      secretRef?: string | null;
+      title: string;
+      message?: string | null;
+      fieldLabel?: string | null;
+    },
+    context: Omit<CamelAIHostMcpMutationContext, "workspaceDirectory">,
+  ) => Promise<{
+    secretRef: string;
+  }>;
   openThreadPreviewItem?: (
     threadId: string | null,
     target: DesktopPreviewTarget,
@@ -749,9 +760,6 @@ export class CamelAIExtensionHost {
       },
       registerMcpServer,
       unregisterMcpServer,
-      registerHostMcpServer: (registration) =>
-        registerMcpServer(registration.id, registration),
-      unregisterHostMcpServer: unregisterMcpServer,
       listInstalledHostMcpServers: () => {
         this.assertPluginPermission(record, "host-mcp");
         return this.options.listInstalledHostMcpServers?.() ?? [];
@@ -780,6 +788,18 @@ export class CamelAIExtensionHost {
           harness: activeContext.harness,
           threadId: activeContext.activeThreadId,
           workspaceDirectory: activeContext.workspaceDirectory,
+        });
+      },
+      promptToStoreSecret: async (options) => {
+        this.assertPluginPermission(record, "host-mcp");
+        const activeContext = this.resolveActivationContext(context);
+        if (!this.options.promptToStoreSecret) {
+          throw new Error("Secret storage is unavailable.");
+        }
+        return await this.options.promptToStoreSecret(options, {
+          pluginId,
+          harness: activeContext.harness,
+          threadId: activeContext.activeThreadId,
         });
       },
       uninstallInstalledHostMcpServer: async (serverId) => {

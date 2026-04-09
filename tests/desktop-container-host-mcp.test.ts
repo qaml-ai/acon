@@ -2,17 +2,19 @@
 
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { z } from "zod";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { HostMcpRegistry, createRemoteProxyHostMcpServer } from "../desktop-container/backend/host-mcp";
+import { setPersistedHostSecret } from "../desktop-container/backend/host-secrets";
 import {
   HostMcpOAuthManager,
   PersistedHostMcpOAuthProvider,
 } from "../desktop-container/backend/host-mcp-oauth";
+import { createPersistedHostMcpServerRegistration } from "../desktop-container/backend/persisted-host-mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
@@ -361,13 +363,154 @@ async function callRemoteEcho(
   };
 }
 
+async function callTool(
+  registry: HostMcpRegistry,
+  serverId: string,
+  sessionId: string,
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<{
+  result: unknown;
+  tools: string[];
+}> {
+  const toolListResponse = await registry.dispatchRequest({
+    serverId,
+    sessionId,
+    message: {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/list",
+      params: {},
+    },
+  });
+  const toolListResult = toolListResponse.messages.find(
+    (message) =>
+      "id" in message &&
+      message.id === 2 &&
+      "result" in message,
+  );
+  const tools =
+    toolListResult &&
+    "result" in toolListResult &&
+    toolListResult.result &&
+    typeof toolListResult.result === "object" &&
+    Array.isArray((toolListResult.result as { tools?: unknown[] }).tools)
+      ? (toolListResult.result as { tools: Array<{ name?: unknown }> }).tools
+          .map((tool) => (typeof tool.name === "string" ? tool.name : ""))
+          .filter(Boolean)
+      : [];
+
+  const toolCallResponse = await registry.dispatchRequest({
+    serverId,
+    sessionId,
+    message: {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: {
+        name: toolName,
+        arguments: args,
+      },
+    },
+  });
+  const toolCallError = toolCallResponse.messages.find(
+    (message) =>
+      "id" in message &&
+      message.id === 3 &&
+      "error" in message,
+  );
+  if (
+    toolCallError &&
+    "error" in toolCallError &&
+    toolCallError.error &&
+    typeof toolCallError.error === "object"
+  ) {
+    throw new Error(
+      String((toolCallError.error as { message?: unknown }).message ?? "tools/call failed"),
+    );
+  }
+  const toolCallResult = toolCallResponse.messages.find(
+    (message) =>
+      "id" in message &&
+      message.id === 3 &&
+      "result" in message,
+  );
+
+  return {
+    result:
+      toolCallResult && "result" in toolCallResult
+        ? toolCallResult.result
+        : null,
+    tools,
+  };
+}
+
+async function callFetchTool(
+  registry: HostMcpRegistry,
+  serverId: string,
+  sessionId: string,
+  input: Record<string, unknown>,
+): Promise<unknown> {
+  const toolCallResponse = await registry.dispatchRequest({
+    serverId,
+    sessionId,
+    message: {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: {
+        name: "fetch",
+        arguments: input,
+      },
+    },
+  });
+  const toolCallError = toolCallResponse.messages.find(
+    (message) =>
+      "id" in message &&
+      message.id === 3 &&
+      "error" in message,
+  );
+  if (
+    toolCallError &&
+    "error" in toolCallError &&
+    toolCallError.error &&
+    typeof toolCallError.error === "object"
+  ) {
+    throw new Error(
+      String((toolCallError.error as { message?: unknown }).message ?? "tools/call failed"),
+    );
+  }
+
+  const toolCallResult = toolCallResponse.messages.find(
+    (message) =>
+      "id" in message &&
+      message.id === 3 &&
+      "result" in message,
+  );
+  return toolCallResult && "result" in toolCallResult
+    ? toolCallResult.result
+    : null;
+}
+
 describe("host MCP remote proxy", () => {
   let scratchDirectory: string;
+  let previousSecretStoreBackend: string | undefined;
+
+  beforeEach(() => {
+    previousSecretStoreBackend = process.env.ACON_SECRET_STORE_BACKEND;
+    process.env.ACON_SECRET_STORE_BACKEND = "file";
+  });
 
   afterEach(() => {
     if (scratchDirectory) {
       rmSync(scratchDirectory, { force: true, recursive: true });
     }
+    if (previousSecretStoreBackend === undefined) {
+      delete process.env.ACON_SECRET_STORE_BACKEND;
+    } else {
+      process.env.ACON_SECRET_STORE_BACKEND = previousSecretStoreBackend;
+    }
+    vi.restoreAllMocks();
   });
 
   it("proxies a remote Streamable HTTP MCP server", async () => {
@@ -466,9 +609,9 @@ describe("host MCP remote proxy", () => {
       manager,
       oauth: {
         clientId: null,
+        clientSecretRef: null,
         clientMetadataUrl: null,
         clientName: "Acon OAuth Test",
-        clientSecret: null,
         clientUri: null,
         scope: "tools.read",
         tokenEndpointAuthMethod: null,
@@ -504,9 +647,9 @@ describe("host MCP remote proxy", () => {
       manager,
       oauth: {
         clientId: null,
+        clientSecretRef: null,
         clientMetadataUrl: null,
         clientName: "Acon OAuth Test",
-        clientSecret: null,
         clientUri: null,
         scope: "tools.read",
         tokenEndpointAuthMethod: null,
@@ -524,36 +667,15 @@ describe("host MCP remote proxy", () => {
       token_type: "Bearer",
     });
     expect(
-      JSON.parse(
-        readFileSync(
-          resolve(
-            scratchDirectory,
-            "host-mcp",
-            "oauth",
-            "oauth-server.json",
-          ),
-          "utf8",
+      existsSync(
+        resolve(
+          scratchDirectory,
+          "host-mcp",
+          "oauth",
+          "oauth-server.json",
         ),
-      ) as {
-        clientInformation?: {
-          client_id?: string;
-        };
-        tokens?: {
-          access_token?: string;
-          refresh_token?: string;
-        };
-      },
-    ).toEqual(
-      expect.objectContaining({
-        clientInformation: {
-          client_id: "client-123",
-        },
-        tokens: expect.objectContaining({
-          access_token: "access-123",
-          refresh_token: "refresh-123",
-        }),
-      }),
-    );
+      ),
+    ).toBe(false);
 
     secondProvider.invalidateCredentials("tokens");
     expect(secondProvider.tokens()).toBeUndefined();
@@ -562,6 +684,100 @@ describe("host MCP remote proxy", () => {
     });
 
     manager.dispose();
+  });
+
+  it("runs the repo-local REST API server over stdio with env secret refs", async () => {
+    scratchDirectory = mkdtempSync(join(tmpdir(), "acon-rest-api-mcp-test-"));
+    setPersistedHostSecret(scratchDirectory, "rest-api-token", "token-123");
+
+    const upstream = createServer((request, response) => {
+      const requestUrl = new URL(request.url || "/", "http://127.0.0.1");
+      response.writeHead(200, {
+        "content-type": "application/json",
+      });
+      response.end(
+        JSON.stringify({
+          authorization: request.headers.authorization ?? null,
+          path: requestUrl.pathname,
+          query: requestUrl.search,
+        }),
+      );
+    });
+
+    await new Promise<void>((resolvePromise) => {
+      upstream.listen(0, "127.0.0.1", () => resolvePromise());
+    });
+    const address = upstream.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected upstream REST API test server to expose a TCP port.");
+    }
+
+    const registry = new HostMcpRegistry();
+    const sessionId = randomUUID();
+    registry.registerServer(
+      createPersistedHostMcpServerRegistration(
+        {
+          id: "rest-api",
+          transport: "stdio",
+          command: resolve(process.cwd(), "desktop-container/bin/acon-mcp-builtin.mjs"),
+          args: ["rest-api"],
+          cwd: null,
+          env: {
+            REST_API_BASE_URL: `http://127.0.0.1:${address.port}/api`,
+            REST_API_AUTH_TYPE: "bearer",
+          },
+          envSecretRefs: {
+            REST_API_AUTH_SECRET: "rest-api-token",
+          },
+          name: "REST API MCP",
+          version: "0.1.0",
+        },
+        {
+          dataDirectory: scratchDirectory,
+        },
+      ),
+    );
+
+    try {
+      await initializeRegistryServer(registry, "rest-api", sessionId);
+      const result = await callFetchTool(
+        registry,
+        "rest-api",
+        sessionId,
+        {
+          path: "users",
+          query: {
+            page: 2,
+          },
+        },
+      );
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          structuredContent: expect.objectContaining({
+            ok: true,
+            status: 200,
+            json: expect.objectContaining({
+              authorization: "Bearer token-123",
+              path: "/api/users",
+              query: "?page=2",
+            }),
+          }),
+        }),
+      );
+    } finally {
+      await registry.closeSession("rest-api", sessionId);
+      registry.dispose();
+      await new Promise<void>((resolvePromise, rejectPromise) => {
+        upstream.close((error) => {
+          if (error) {
+            rejectPromise(error);
+            return;
+          }
+          resolvePromise();
+        });
+      });
+    }
   });
 
   it("defaults OAuth registration to a public client and falls back clientMetadataUrl to clientUri", async () => {
@@ -574,9 +790,9 @@ describe("host MCP remote proxy", () => {
       manager,
       oauth: {
         clientId: null,
+        clientSecretRef: null,
         clientMetadataUrl: null,
         clientName: "Acon OAuth Test",
-        clientSecret: null,
         clientUri: "https://example.com/oauth/acon-client.json",
         scope: "tools.read",
         tokenEndpointAuthMethod: null,
@@ -600,6 +816,7 @@ describe("host MCP remote proxy", () => {
 
   it("includes client_id in token requests even for client_secret_basic auth", async () => {
     scratchDirectory = mkdtempSync(join(tmpdir(), "acon-host-mcp-oauth-"));
+    setPersistedHostSecret(scratchDirectory, "oauth-basic-secret", "secret-123");
     const manager = new HostMcpOAuthManager({
       browserOpener: vi.fn(async () => {}),
     });
@@ -608,9 +825,9 @@ describe("host MCP remote proxy", () => {
       manager,
       oauth: {
         clientId: "client-123",
+        clientSecretRef: "oauth-basic-secret",
         clientMetadataUrl: null,
         clientName: "Acon OAuth Test",
-        clientSecret: "secret-123",
         clientUri: null,
         scope: "tools.read",
         tokenEndpointAuthMethod: "client_secret_basic",
@@ -646,9 +863,9 @@ describe("host MCP remote proxy", () => {
       manager,
       oauth: {
         clientId: null,
+        clientSecretRef: null,
         clientMetadataUrl: null,
         clientName: "Acon OAuth Test",
-        clientSecret: null,
         clientUri: null,
         scope: "tools.read",
         tokenEndpointAuthMethod: null,

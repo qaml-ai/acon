@@ -58,6 +58,7 @@ import {
   type PersistedHostMcpServerRecord,
   type PersistedHostMcpStdioInstallOptions,
 } from "./persisted-host-mcp";
+import { setPersistedHostSecret } from "./host-secrets";
 
 type Listener = (event: DesktopServerEvent) => void;
 type ThreadEventListener = CamelAIThreadEventHandler;
@@ -68,7 +69,7 @@ interface ActiveThreadRun {
 
 interface PendingPermissionRequestRecord {
   request: DesktopPermissionRequest;
-  resolve: () => void;
+  resolve: (response: { secretValue?: string | null }) => void;
   reject: (error: Error) => void;
 }
 
@@ -139,6 +140,8 @@ export class DesktopService {
         this.installStdioHostMcpServer(server, context),
       installHttpHostMcpServer: (server, context) =>
         this.installHttpHostMcpServer(server, context),
+      promptToStoreSecret: (options, context) =>
+        this.promptToStoreSecret(options, context),
       uninstallInstalledHostMcpServer: (serverId, context) =>
         this.uninstallInstalledHostMcpServer(serverId, context),
       openThreadPreviewItem: (threadId, target) =>
@@ -388,6 +391,48 @@ export class DesktopService {
       }),
     );
     return installed;
+  }
+
+  async promptToStoreSecret(
+    options: {
+      secretRef?: string | null;
+      title: string;
+      message?: string | null;
+      fieldLabel?: string | null;
+    },
+    context: Omit<CamelAIHostMcpMutationContext, "workspaceDirectory">,
+  ): Promise<{ secretRef: string }> {
+    const secretRef =
+      typeof options.secretRef === "string" && options.secretRef.trim()
+        ? options.secretRef.trim()
+        : `secret-${randomUUID()}`;
+    const response = await this.requestPermission({
+      kind: "secret_prompt",
+      id: randomUUID(),
+      threadId: context.threadId,
+      pluginId: context.pluginId,
+      harness: context.harness,
+      secretRef,
+      title: options.title.trim() || "Store secret",
+      message:
+        typeof options.message === "string" && options.message.trim()
+          ? options.message.trim()
+          : null,
+      fieldLabel:
+        typeof options.fieldLabel === "string" && options.fieldLabel.trim()
+          ? options.fieldLabel.trim()
+          : null,
+    });
+
+    const secretValue =
+      typeof response.secretValue === "string" && response.secretValue.trim()
+        ? response.secretValue.trim()
+        : null;
+    if (!secretValue) {
+      throw new Error(`No secret value was provided for ${secretRef}.`);
+    }
+    setPersistedHostSecret(this.dataDirectory, secretRef, secretValue);
+    return { secretRef };
   }
 
   async uninstallInstalledHostMcpServer(
@@ -778,7 +823,9 @@ export class DesktopService {
         return;
       }
       case "respond_permission_request": {
-        this.resolvePermissionRequest(event.requestId, event.decision);
+        this.resolvePermissionRequest(event.requestId, event.decision, {
+          secretValue: event.secretValue ?? null,
+        });
         return;
       }
       default: {
@@ -796,8 +843,8 @@ export class DesktopService {
 
   private async requestPermission(
     request: DesktopPermissionRequest,
-  ): Promise<void> {
-    return await new Promise<void>((resolve, reject) => {
+  ): Promise<{ secretValue?: string | null }> {
+    return await new Promise<{ secretValue?: string | null }>((resolve, reject) => {
       this.pendingPermissionRequests.push({
         request,
         resolve,
@@ -814,6 +861,9 @@ export class DesktopService {
   private resolvePermissionRequest(
     requestId: string,
     decision: "approve" | "deny",
+    payload?: {
+      secretValue?: string | null;
+    },
   ): void {
     const index = this.pendingPermissionRequests.findIndex(
       (entry) => entry.request.id === requestId,
@@ -825,17 +875,19 @@ export class DesktopService {
     const [pending] = this.pendingPermissionRequests.splice(index, 1);
     this.emitSnapshot();
     if (decision === "approve") {
-      pending.resolve();
+      pending.resolve(payload ?? {});
       return;
     }
 
     const action =
       pending.request.kind === "host_mcp_mutation"
         ? pending.request.action
-        : "perform";
+        : "store";
     pending.reject(
       new Error(
-        `User denied permission to ${action} host MCP server ${pending.request.serverId}.`,
+        pending.request.kind === "host_mcp_mutation"
+          ? `User denied permission to ${action} host MCP server ${pending.request.serverId}.`
+          : `User denied permission to store secret ${pending.request.secretRef}.`,
       ),
     );
   }

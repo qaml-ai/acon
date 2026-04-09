@@ -99,8 +99,7 @@ function toStructuredContent(
 
 const extension: CamelAIExtensionModule = {
   activate(api) {
-    api.registerHostMcpServer({
-      id: PREVIEW_CONTROL_ID,
+    api.registerMcpServer(PREVIEW_CONTROL_ID, {
       createServer: () => {
         const server = new McpServer({
           name: PREVIEW_CONTROL_ID,
