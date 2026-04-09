@@ -199,6 +199,13 @@ export interface DesktopAuthState {
   label: string;
 }
 
+export interface DesktopThreadMetadata {
+  status: string | null;
+  lane: string | null;
+  archived: boolean;
+  archivedAt: number | null;
+}
+
 export interface DesktopThread {
   id: string;
   provider: DesktopProvider;
@@ -206,6 +213,7 @@ export interface DesktopThread {
   createdAt: number;
   updatedAt: number;
   lastMessagePreview: string | null;
+  metadata: DesktopThreadMetadata;
 }
 
 export interface DesktopMessage {

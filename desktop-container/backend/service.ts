@@ -12,6 +12,7 @@ import type {
   DesktopRuntimeStatus,
   DesktopServerEvent,
   DesktopSnapshot,
+  DesktopThread,
   DesktopThreadPreviewState,
   DesktopView,
 } from "../../desktop/shared/protocol";
@@ -33,7 +34,14 @@ import {
 import { ContainerRuntimeManager, type RuntimeManager } from "./container-runtime";
 import { CamelAIExtensionHost } from "./extensions/host";
 import { getHarnessAdapterForProvider } from "./extensions/harness-adapters";
-import type { CamelAIHostMcpMutationContext } from "./extensions/types";
+import type {
+  CamelAIHostMcpMutationContext,
+  CamelAIThreadCreateOptions,
+  CamelAIThreadEvent,
+  CamelAIThreadEventHandler,
+  CamelAIThreadMetadataUpdate,
+  CamelAIThreadRecord,
+} from "./extensions/types";
 import type { HostMcpServerRegistration } from "./host-mcp";
 import {
   HostMcpOAuthManager,
@@ -53,6 +61,7 @@ import {
 import { setPersistedHostSecret } from "./host-secrets";
 
 type Listener = (event: DesktopServerEvent) => void;
+type ThreadEventListener = CamelAIThreadEventHandler;
 
 interface ActiveThreadRun {
   stopRequested: boolean;
@@ -100,6 +109,7 @@ export class DesktopService {
   private readonly extensionHost: CamelAIExtensionHost;
   private readonly activeThreadRuns = new Map<string, ActiveThreadRun>();
   private readonly listeners = new Set<Listener>();
+  private readonly threadEventListeners = new Set<ThreadEventListener>();
   private readonly pendingPermissionRequests: PendingPermissionRequestRecord[] = [];
   private runtimeStatus: DesktopRuntimeStatus;
   private runtimeStartupPromise: Promise<void> | null = null;
@@ -141,6 +151,17 @@ export class DesktopService {
       clearThreadPreview: (threadId) => this.clearThreadPreview(threadId),
       setThreadPreviewVisibility: (threadId, visible) =>
         this.setThreadPreviewVisibility(threadId, visible),
+      listThreads: () => this.listThreads(),
+      getThread: (threadId) => this.getThreadRecord(threadId),
+      subscribeThreadEvents: (listener) => this.subscribeThreadEvents(listener),
+      selectThread: (threadId) => this.selectThread(threadId),
+      createThread: (options) => this.createThread(options),
+      sendMessage: async (threadId, content) => {
+        await this.sendMessage(threadId, content);
+      },
+      stopThread: async (threadId) => await this.stopThread(threadId),
+      updateThreadMetadata: (threadId, update) =>
+        this.updateThreadMetadata(threadId, update),
       isPluginEnabled: (pluginId) => this.store.isPluginEnabled(pluginId),
     });
     const provider = this.getCurrentProvider();
@@ -173,6 +194,13 @@ export class DesktopService {
     };
   }
 
+  subscribeThreadEvents(listener: ThreadEventListener): () => void {
+    this.threadEventListeners.add(listener);
+    return () => {
+      this.threadEventListeners.delete(listener);
+    };
+  }
+
   dispose(): void {
     this.rejectPendingPermissionRequests(
       new Error("Desktop service disposed before the permission request was resolved."),
@@ -180,7 +208,77 @@ export class DesktopService {
     this.hostMcpOAuthManager.dispose();
     this.runtimeManager.dispose();
     this.listeners.clear();
+    this.threadEventListeners.clear();
     this.activeThreadRuns.clear();
+  }
+
+  listThreads(): CamelAIThreadRecord[] {
+    return this.store.listThreads().map((thread) => this.toPluginThreadRecord(thread));
+  }
+
+  getThreadRecord(threadId: string): CamelAIThreadRecord | null {
+    const thread = this.store.getThread(threadId);
+    return thread ? this.toPluginThreadRecord(thread) : null;
+  }
+
+  createThread(options?: CamelAIThreadCreateOptions): CamelAIThreadRecord {
+    const provider = options?.provider
+      ? requireDesktopProvider(options.provider).id
+      : this.store.getProvider();
+    const thread = this.store.createThread(options?.title, provider);
+    if (options?.metadata) {
+      this.store.updateThreadMetadata(thread.id, options.metadata);
+    }
+    this.activateDefaultThreadView(thread.id);
+    this.emitSnapshot();
+    const record = this.requireThreadRecord(thread.id);
+    this.emitThreadEvent({
+      type: "thread_created",
+      thread: record,
+    });
+    return record;
+  }
+
+  selectThread(threadId: string): CamelAIThreadRecord {
+    if (!this.activateDefaultThreadView(threadId)) {
+      this.store.setActiveThread(threadId);
+    }
+    this.emitSnapshot();
+    void this.ensureRuntimeRunning("startup");
+    const record = this.requireThreadRecord(threadId);
+    this.emitThreadEvent({
+      type: "thread_selected",
+      thread: record,
+    });
+    return record;
+  }
+
+  async sendMessage(threadId: string, content: string): Promise<void> {
+    await this.sendThreadTurn(threadId, content);
+  }
+
+  async stopThread(threadId: string): Promise<boolean> {
+    const activeRun = this.activeThreadRuns.get(threadId);
+    if (!activeRun || activeRun.stopRequested) {
+      return false;
+    }
+    await this.requestThreadStop(threadId);
+    return true;
+  }
+
+  updateThreadMetadata(
+    threadId: string,
+    update: CamelAIThreadMetadataUpdate,
+  ): CamelAIThreadRecord {
+    this.store.updateThreadMetadata(threadId, update);
+    this.emitSnapshot();
+    const record = this.requireThreadRecord(threadId);
+    this.emitThreadEvent({
+      type: "thread_updated",
+      thread: record,
+      reason: "metadata",
+    });
+    return record;
   }
 
   registerHostMcpServer(registration: HostMcpServerRegistration): void {
@@ -411,6 +509,64 @@ export class DesktopService {
     return snapshot;
   }
 
+  private toPluginThreadRecord(thread: DesktopThread): CamelAIThreadRecord {
+    const activeRun = this.activeThreadRuns.get(thread.id);
+    return {
+      id: thread.id,
+      provider: thread.provider,
+      title: thread.title,
+      createdAt: thread.createdAt,
+      updatedAt: thread.updatedAt,
+      lastMessagePreview: thread.lastMessagePreview,
+      metadata: {
+        status: thread.metadata.status,
+        lane: thread.metadata.lane,
+        archived: thread.metadata.archived,
+        archivedAt: thread.metadata.archivedAt,
+      },
+      active: thread.id === this.store.getActiveThreadId(),
+      hasMessages: this.store.getThreadMessages(thread.id).length > 0,
+      sessionId: this.store.getProviderSessionId(thread.id, thread.provider),
+      isRunning: Boolean(activeRun),
+      stopRequested: activeRun?.stopRequested === true,
+    };
+  }
+
+  private requireThreadRecord(threadId: string): CamelAIThreadRecord {
+    const thread = this.store.getThread(threadId);
+    if (!thread) {
+      throw new Error(`Thread ${threadId} does not exist.`);
+    }
+    return this.toPluginThreadRecord(thread);
+  }
+
+  private emitThreadEvent(event: CamelAIThreadEvent): void {
+    for (const listener of this.threadEventListeners) {
+      void Promise.resolve(listener(event)).catch((error) => {
+        logDesktop("desktop-service", "thread-event-listener-error", {
+          error: error instanceof Error ? error.message : String(error),
+          eventType: event.type,
+          threadId: event.thread.id,
+        });
+      });
+    }
+  }
+
+  private emitThreadUpdated(
+    threadId: string,
+    reason: "message" | "metadata" | "selection" | "session",
+  ): void {
+    const thread = this.store.getThread(threadId);
+    if (!thread) {
+      return;
+    }
+    this.emitThreadEvent({
+      type: "thread_updated",
+      thread: this.toPluginThreadRecord(thread),
+      reason,
+    });
+  }
+
   openThreadPreviewItem(
     threadId: string | null | undefined,
     target: DesktopPreviewTarget,
@@ -547,17 +703,14 @@ export class DesktopService {
   handleClientEvent(event: DesktopClientEvent): void {
     switch (event.type) {
       case "create_thread": {
-        const thread = this.store.createThread(event.title, this.store.getProvider());
-        this.activateDefaultThreadView(thread.id);
-        this.emitSnapshot();
+        this.createThread({
+          title: event.title,
+          provider: this.store.getProvider(),
+        });
         return;
       }
       case "select_thread": {
-        if (!this.activateDefaultThreadView(event.threadId)) {
-          this.store.setActiveThread(event.threadId);
-        }
-        this.emitSnapshot();
-        void this.ensureRuntimeRunning("startup");
+        this.selectThread(event.threadId);
         return;
       }
       case "select_view": {
@@ -629,9 +782,12 @@ export class DesktopService {
           !this.store.threadHasHarnessState(activeThread.id)
         ) {
           this.store.setThreadProvider(activeThread.id, provider);
+          this.emitThreadUpdated(activeThread.id, "metadata");
         } else {
           this.store.setProvider(provider);
-          this.store.createThread(undefined, provider);
+          this.createThread({ provider });
+          void this.ensureRuntimeRunning("startup");
+          return;
         }
         this.emitSnapshot();
         void this.ensureRuntimeRunning("startup");
@@ -652,7 +808,7 @@ export class DesktopService {
         return;
       }
       case "send_message": {
-        void this.sendThreadTurn(event.threadId, event.content);
+        void this.sendMessage(event.threadId, event.content);
         return;
       }
       case "stop_thread": {
@@ -975,6 +1131,7 @@ export class DesktopService {
       threadId,
       message: extractTextContent(assistant.content),
     });
+    this.emitThreadUpdated(threadId, "message");
   }
 
   private async sendThreadTurn(threadId: string, content: string): Promise<void> {
@@ -1014,6 +1171,7 @@ export class DesktopService {
     const promptContent = promptUpdate.content;
     this.store.appendMessage(threadId, "user", promptContent, "done");
     this.emitSnapshot();
+    this.emitThreadUpdated(threadId, "message");
     if (activeRun) {
       void this.forwardPromptToActiveThread(threadId, promptContent, activeRun);
       return;
@@ -1023,10 +1181,12 @@ export class DesktopService {
       stopRequested: false,
     };
     this.activeThreadRuns.set(threadId, nextActiveRun);
+    this.emitThreadUpdated(threadId, "session");
     try {
       await this.processThreadTurn(threadId, promptContent, nextActiveRun);
     } finally {
       this.activeThreadRuns.delete(threadId);
+      this.emitThreadUpdated(threadId, "session");
     }
   }
 
@@ -1062,13 +1222,14 @@ export class DesktopService {
     }
   }
 
-  private async stopThread(threadId: string): Promise<void> {
+  private async requestThreadStop(threadId: string): Promise<void> {
     const activeRun = this.activeThreadRuns.get(threadId);
     if (!activeRun || activeRun.stopRequested) {
       return;
     }
 
     activeRun.stopRequested = true;
+    this.emitThreadUpdated(threadId, "session");
     const provider = requireDesktopProvider(this.store.getThreadProvider(threadId));
     const model = this.getCurrentModel(provider);
     try {
@@ -1079,6 +1240,7 @@ export class DesktopService {
       });
     } catch (error) {
       activeRun.stopRequested = false;
+      this.emitThreadUpdated(threadId, "session");
       this.broadcast({
         type: "error",
         threadId,
@@ -1112,6 +1274,7 @@ export class DesktopService {
       );
       assistantId = assistant.id;
       this.emitSnapshot();
+      this.emitThreadUpdated(threadId, "session");
 
       const streamingMessageIds: Record<string, string | null> = {
         [threadId]: assistant.id,
@@ -1224,6 +1387,7 @@ export class DesktopService {
         stopReason: result.stopReason,
       });
       this.emitSnapshot();
+      this.emitThreadUpdated(threadId, "message");
     } catch (error) {
       logDesktop("desktop-service", "send_message:error", {
         turnId,
@@ -1251,6 +1415,7 @@ export class DesktopService {
           );
         }
         this.emitSnapshot();
+        this.emitThreadUpdated(threadId, "message");
         if (!activeRun.stopRequested) {
           this.broadcast({
             type: "error",

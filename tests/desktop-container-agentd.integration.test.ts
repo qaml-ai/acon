@@ -1187,9 +1187,38 @@ integrationDescribe("desktop-container agent runtime integration", () => {
             ["acon-mcp", "--help"],
           );
           expect(helpResult.stderr.trim()).toBe("");
-          expect(helpResult.stdout).toContain("Expose host MCP servers inside the container.");
-          expect(helpResult.stdout).toContain("acon-mcp servers [--json]");
-          expect(helpResult.stdout).toContain("acon-mcp tools <server-id> [--json]");
+          expect(helpResult.stdout).toContain(
+            "Browse and invoke host MCP integrations from inside the container.",
+          );
+          expect(helpResult.stdout).toContain("acon-mcp servers");
+          expect(helpResult.stdout).toContain("acon-mcp call <server-id> <tool-name>");
+
+          const serversHelpResult = await runContainerCommand(
+            harness.userDataDir,
+            providerCase.id,
+            ["acon-mcp", "servers", "--help"],
+          );
+          expect(serversHelpResult.stderr.trim()).toBe("");
+          expect(serversHelpResult.stdout).toContain("acon-mcp servers");
+
+          const toolsHelpResult = await runContainerCommand(
+            harness.userDataDir,
+            providerCase.id,
+            ["acon-mcp", "tools", "--help"],
+          );
+          expect(toolsHelpResult.stderr.trim()).toBe("");
+          expect(toolsHelpResult.stdout).toContain("acon-mcp tools <server-id>");
+          expect(toolsHelpResult.stdout).toContain("The registered host MCP server id.");
+
+          const callHelpResult = await runContainerCommand(
+            harness.userDataDir,
+            providerCase.id,
+            ["acon-mcp", "call", "--help"],
+          );
+          expect(callHelpResult.stderr.trim()).toBe("");
+          expect(callHelpResult.stdout).toContain(
+            "acon-mcp call <server-id> <tool-name> [--input",
+          );
 
           const jsClientResult = await runContainerCommand(
             harness.userDataDir,
@@ -1203,17 +1232,24 @@ integrationDescribe("desktop-container agent runtime integration", () => {
                 'import { createHostRpcClient } from "@acon/host-rpc";',
                 'const client = createHostRpcClient();',
                 'const servers = await client.listMcpServers();',
+                `const toolResult = await client.callMcpTool("${HOST_MCP_TEST_SERVER_ID}", "host_echo", { provider: "${providerCase.id}", text: "container-js" });`,
                 'process.stdout.write(JSON.stringify({',
                 '  typedPackageLinked: existsSync("/workspace/node_modules/@acon/host-rpc/index.d.ts"),',
                 '  serverIds: servers.map((server) => server.id).sort(),',
+                '  echoedText: toolResult?.structuredContent?.echoedText ?? null,',
+                '  provider: toolResult?.structuredContent?.provider ?? null,',
                 '}) + "\\n");',
               ].join(" "),
             ],
           );
-          expect(JSON.parse(jsClientResult.stdout)).toEqual({
-            typedPackageLinked: true,
-            serverIds: [HOST_MCP_TEST_SERVER_ID],
-          });
+          expect(JSON.parse(jsClientResult.stdout)).toEqual(
+            expect.objectContaining({
+              typedPackageLinked: true,
+              serverIds: expect.arrayContaining([HOST_MCP_TEST_SERVER_ID]),
+              echoedText: "container-js",
+              provider: providerCase.id,
+            }),
+          );
 
           const serversResult = await runContainerCommand(
             harness.userDataDir,
@@ -1231,22 +1267,24 @@ integrationDescribe("desktop-container agent runtime integration", () => {
             "host_echo - Echo a string via the host MCP registry.",
           );
 
-          const toolsResult = await runContainerCommand(
+          const toolCallResult = await runContainerCommand(
             harness.userDataDir,
             providerCase.id,
-            ["acon-mcp", "tools", HOST_MCP_TEST_SERVER_ID, "--json"],
-          );
-          const tools = JSON.parse(toolsResult.stdout) as Array<{
-            name?: string;
-            description?: string;
-          }>;
-          expect(tools).toEqual(
-            expect.arrayContaining([
-              expect.objectContaining({
-                name: "host_echo",
-                description: "Echo a string via the host MCP registry.",
+            [
+              "acon-mcp",
+              "call",
+              HOST_MCP_TEST_SERVER_ID,
+              "host_echo",
+              "--input",
+              JSON.stringify({
+                provider: providerCase.id,
+                text: "container-cli",
               }),
-            ]),
+            ],
+          );
+          expect(toolCallResult.stdout).toContain(`echo:${providerCase.id}:container-cli`);
+          expect(toolCallResult.stdout).toContain(
+            '"echoedText": "container-cli"',
           );
         } finally {
           await harness.dispose();
