@@ -87,9 +87,7 @@ export function FileLink({
   }
 
   if (tempInfo) {
-    const previewUrl = workspaceId
-      ? `/api/workspaces/${workspaceId}/${tempInfo.urlSegment}/${encodePathSegments(tempInfo.relativePath)}`
-      : '';
+    const previewUrl = `/api/workspaces/${effectiveWorkspaceId}/${tempInfo.urlSegment}/${encodePathSegments(tempInfo.relativePath)}`;
     const displayName = tempInfo.relativePath.split('/').pop() || tempInfo.relativePath;
     const previewTarget: PreviewTarget = {
       kind: 'file',

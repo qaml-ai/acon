@@ -18,6 +18,7 @@ interface MarkdownRendererProps {
 
 const CODEX_CITATION_REGEX = /cite[^]+/g;
 const TEMP_FILE_PATH_REGEX = /(^|[\s(])((?:\/mnt\/user-(?:uploads|outputs))\/[^\s)<`]+)(?=$|[\s).,!?])/gm;
+const WORKSPACE_TEMP_URL_REGEX = /^\/api\/workspaces\/[^/]+\/(uploads|outputs)\/(.+)$/;
 
 export function normalizeCodexCitationMarkers(content: string): string {
   if (!content.includes('cite')) {
@@ -44,6 +45,39 @@ function injectTempFileMarkdownLinks(content: string): string {
       );
     })
     .join('');
+}
+
+function decodePathSegments(path: string): string {
+  return path
+    .split('/')
+    .map((segment) => decodeURIComponent(segment))
+    .join('/');
+}
+
+function getPathnameFromHref(href: string): string {
+  if (href.startsWith('/')) {
+    return href;
+  }
+
+  try {
+    const parsed = new URL(href);
+    return parsed.pathname;
+  } catch {
+    return href;
+  }
+}
+
+export function resolvePreviewableTempFilePathFromHref(href: string): string | null {
+  const pathname = getPathnameFromHref(href.trim());
+  const match = WORKSPACE_TEMP_URL_REGEX.exec(pathname);
+  if (!match) {
+    return null;
+  }
+
+  const [, bucket, encodedPath] = match;
+  const root =
+    bucket === 'uploads' ? '/mnt/user-uploads/' : '/mnt/user-outputs/';
+  return `${root}${decodePathSegments(encodedPath)}`;
 }
 
 // Inline code component - simple styled span
@@ -185,6 +219,23 @@ const createComponents = (variant: 'default' | 'user'): Components => ({
           {typeof children === 'string' ? children : path}
         </FileLink>
       );
+    }
+
+    if (href) {
+      const tempFilePath = resolvePreviewableTempFilePathFromHref(href);
+      if (tempFilePath) {
+        return (
+          <FileLink
+            path={tempFilePath}
+            className={cn(
+              'underline underline-offset-2 hover:no-underline',
+              variant === 'user' ? 'text-primary-foreground/90' : 'text-primary'
+            )}
+          >
+            {typeof children === 'string' ? children : tempFilePath}
+          </FileLink>
+        );
+      }
     }
 
     // Internal API links (workspace outputs) should not open in new tab
