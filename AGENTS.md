@@ -33,4 +33,7 @@ Core areas:
 - When running a web server inside the guest container, bind it to `0.0.0.0` instead of `localhost`.
 - When opening a preview URL for a guest web server, use the current container IP instead of `localhost`.
 - User plugins are installed into the desktop data directory under `plugins/`, and the builtin Extension Lab view is the primary install/manage entrypoint for them.
+- User-uploaded files are mounted into the guest container at `/mnt/user-uploads`. Read user-provided input files from there when the prompt references them.
+- User-deliverable artifacts such as spreadsheets, reports, exports, and generated documents should be written to `/mnt/user-outputs` so the desktop app can offer them back to the user via download.
+- When producing a deliverable in `/mnt/user-outputs`, mention the full output path in the assistant response so the desktop app can surface the result clearly.
 - Keep this file current when the standalone architecture changes.

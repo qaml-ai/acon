@@ -1167,6 +1167,24 @@ export class DesktopService {
       return localPath;
     }
 
+    const normalizedTransferPath =
+      target.source === "upload" && trimmedPath.startsWith("/mnt/user-uploads/")
+        ? trimmedPath.slice("/mnt/user-uploads/".length)
+        : target.source === "output" && trimmedPath.startsWith("/mnt/user-outputs/")
+          ? trimmedPath.slice("/mnt/user-outputs/".length)
+          : trimmedPath;
+    const transferRoot =
+      target.source === "upload"
+        ? this.runtimeManager.getUserUploadsDirectory()
+        : this.runtimeManager.getUserOutputsDirectory();
+    const candidatePath = resolve(
+      transferRoot,
+      normalizedTransferPath.replace(/^\/+/, ""),
+    );
+    if (existsSync(candidatePath) && statSync(candidatePath).isFile()) {
+      return candidatePath;
+    }
+
     if (existsSync(trimmedPath) && statSync(trimmedPath).isFile()) {
       return trimmedPath;
     }

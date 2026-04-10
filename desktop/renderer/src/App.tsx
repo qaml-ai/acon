@@ -13,6 +13,7 @@ import {
   Archive,
   ArrowLeft,
   ArrowRight,
+  Download,
   ExternalLink,
   Loader2,
   Pencil,
@@ -20,9 +21,17 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { ChatPreviewProvider } from "@/components/chat-preview/preview-context";
-import { FilePreviewContent } from "@/components/chat-file-preview";
+import {
+  ChatPreviewProvider,
+  useChatPreviewContext,
+} from "@/components/chat-preview/preview-context";
+import {
+  FilePreviewContent,
+  parseUploadRefs,
+} from "@/components/chat-file-preview";
+import type { Attachment } from "@/components/attachment-list";
 import { ContentBlockRenderer } from "@/components/message-bubble";
+import { FileCard } from "@/components/file-card";
 import { FloatingTodoList, type TodoItem } from "@/components/floating-todo";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -62,6 +71,7 @@ import {
   mergeTeammateMessages,
   normalizeToolResultMessages,
 } from "@/lib/streaming";
+import { toast } from "sonner";
 import type { ContentBlock, Message, PreviewTarget } from "@/types";
 import type {
   DesktopClientEvent,
@@ -90,6 +100,7 @@ import { ThreadRuntimeIndicator } from "./thread-runtime-indicator";
 const desktopShell = window.desktopShell;
 const fallbackBackendUrl = "http://127.0.0.1:4315";
 const EMPTY_THREAD_DRAFT_KEY = "__no_thread__";
+const DESKTOP_WORKSPACE_ID = "desktop";
 const THREAD_PREVIEW_LAYOUT_STORAGE_KEY = "desktop-thread-preview-layout";
 const THREAD_PREVIEW_MIN_WIDTH = 320;
 const THREAD_PREVIEW_MAX_WIDTH_RATIO = 0.65;
@@ -426,24 +437,86 @@ function appendAssistantDeltaContent(
   return nextContent;
 }
 
+type DraftAttachment = Attachment & {
+  originalName: string;
+  uploadPath: string;
+};
+
+type ElectronFile = File & {
+  path?: string;
+};
+
+function getDesktopFilePath(file: File): string | null {
+  const candidate = (file as ElectronFile).path;
+  return typeof candidate === "string" && candidate.trim() ? candidate : null;
+}
+
+function buildUploadReference(attachment: DraftAttachment): string {
+  return `(user uploaded file named ${JSON.stringify(attachment.originalName)} to /mnt/user-uploads/${attachment.uploadPath})`;
+}
+
+function revokeAttachmentPreviewUrls(attachments: DraftAttachment[]) {
+  for (const attachment of attachments) {
+    if (attachment.previewUrl?.startsWith("blob:")) {
+      URL.revokeObjectURL(attachment.previewUrl);
+    }
+  }
+}
+
+function UploadedFileChips({
+  refs,
+}: {
+  refs: ReturnType<typeof parseUploadRefs>["refs"];
+}) {
+  const previewContext = useChatPreviewContext();
+  if (!previewContext || refs.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      {refs.map((ref) => (
+        <FileCard
+          key={ref.mountPath}
+          filename={ref.originalName}
+          onClick={() => {
+            previewContext.openPreviewTarget({
+              kind: "file",
+              source: "upload",
+              workspaceId: DESKTOP_WORKSPACE_ID,
+              path: ref.filename,
+              filename: ref.originalName,
+            });
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
 function MessageRow({ message }: { message: Message }) {
   if (message.isMeta || message.sourceToolUseID) {
     return null;
   }
 
   if (message.role === "user") {
-    const content = coerceTextContent(message.content);
-    if (!content) {
+    const rawContent = coerceTextContent(message.content);
+    if (!rawContent) {
       return null;
     }
+    const uploadInfo = parseUploadRefs(rawContent);
+    const visibleContent = uploadInfo.cleanContent;
 
     return (
       <div className="group flex flex-col items-end gap-2 py-3">
-        <div className="max-w-[85%] rounded-3xl border border-border bg-muted/30 px-4 py-3 text-foreground">
-          <div className="max-w-none">
-            <MarkdownRenderer content={content} variant="user" />
+        <UploadedFileChips refs={uploadInfo.refs} />
+        {visibleContent ? (
+          <div className="max-w-[85%] rounded-3xl border border-border bg-muted/30 px-4 py-3 text-foreground">
+            <div className="max-w-none">
+              <MarkdownRenderer content={visibleContent} variant="user" />
+            </div>
           </div>
-        </div>
+        ) : null}
         <div className="flex items-center gap-0.5 text-xs text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
           <span>{formatTime(message.created_at)}</span>
         </div>
@@ -569,11 +642,27 @@ function Composer({
   onSubmitMessage: (threadId: string, content: string) => void;
 }) {
   const [draft, setDraft] = useState(initialDraft);
+  const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const attachmentsRef = useRef<DraftAttachment[]>([]);
+
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
 
   useEffect(() => {
     setDraft(initialDraft);
+    setAttachments((previousAttachments) => {
+      revokeAttachmentPreviewUrls(previousAttachments);
+      return [];
+    });
   }, [activeThreadId, initialDraft]);
+
+  useEffect(() => {
+    return () => {
+      revokeAttachmentPreviewUrls(attachmentsRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (!activeThreadId) {
@@ -603,11 +692,205 @@ function Composer({
   }, [activeThreadId, onDraftChange]);
 
   const handleSubmit = useCallback(() => {
-    if (!activeThreadId || !draft.trim()) return;
-    onSubmitMessage(activeThreadId, draft);
+    if (!activeThreadId) return;
+    const uploadRefs = attachments
+      .filter((attachment) => attachment.status === "complete")
+      .map((attachment) => buildUploadReference(attachment));
+    const trimmedDraft = draft.trim();
+    const content = [trimmedDraft, uploadRefs.join("\n")]
+      .filter((value) => value.length > 0)
+      .join(trimmedDraft ? "\n\n" : "\n");
+    if (!content) return;
+
+    onSubmitMessage(activeThreadId, content);
     setDraft("");
+    revokeAttachmentPreviewUrls(attachments);
+    setAttachments([]);
     onDraftChange(activeThreadId, "");
-  }, [activeThreadId, draft, onDraftChange, onSubmitMessage]);
+  }, [activeThreadId, attachments, draft, onDraftChange, onSubmitMessage]);
+
+  const handleStageFiles = useCallback(async (
+    entries: Array<{
+      sourcePath: string;
+      file?: File;
+    }>,
+  ) => {
+    if (!desktopShell?.importLocalFiles) {
+      toast.error("Desktop file staging is unavailable.");
+      return;
+    }
+
+    const pendingAttachments: DraftAttachment[] = entries.map(({ file, sourcePath }) => ({
+      id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      name: file?.name ?? sourcePath.split(/[\\/]/).pop() ?? "file",
+      originalName: file?.name ?? sourcePath.split(/[\\/]/).pop() ?? "file",
+      path: "",
+      uploadPath: "",
+      size: file?.size ?? 0,
+      contentType: file?.type || undefined,
+      previewUrl:
+        file && file.type.startsWith("image/")
+          ? URL.createObjectURL(file)
+          : undefined,
+      progress: 20,
+      status: "uploading",
+    }));
+
+    setAttachments((current) => [...current, ...pendingAttachments]);
+
+    try {
+      const importedFiles = await desktopShell.importLocalFiles(
+        entries.map((entry) => entry.sourcePath),
+      );
+      setAttachments((current) =>
+        current.map((attachment) => {
+          const index = pendingAttachments.findIndex((pending) => pending.id === attachment.id);
+          if (index === -1) {
+            return attachment;
+          }
+          const imported = importedFiles[index];
+          return imported
+            ? {
+                ...attachment,
+                name: imported.originalName,
+                originalName: imported.originalName,
+                path: imported.relativePath,
+                uploadPath: imported.relativePath,
+                size: imported.size,
+                progress: 100,
+                status: "complete",
+              }
+            : {
+                ...attachment,
+                progress: undefined,
+                status: "error",
+                error: "The desktop app did not return a staged file.",
+              };
+        }),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setAttachments((current) =>
+        current.map((attachment) =>
+          pendingAttachments.some((pending) => pending.id === attachment.id)
+            ? {
+                ...attachment,
+                progress: undefined,
+                status: "error",
+                error: message,
+              }
+            : attachment,
+        ),
+      );
+      toast.error(message || "Failed to upload files.");
+    }
+  }, []);
+
+  const handleFilesSelected = useCallback(async (files: File[]) => {
+    const pathEntries: Array<{ sourcePath: string; file: File }> = [];
+    const payloadFiles: File[] = [];
+
+    for (const file of files) {
+      const sourcePath = getDesktopFilePath(file);
+      if (sourcePath) {
+        pathEntries.push({ sourcePath, file });
+        continue;
+      }
+      payloadFiles.push(file);
+    }
+
+    if (pathEntries.length > 0) {
+      await handleStageFiles(pathEntries);
+    }
+
+    if (payloadFiles.length === 0) {
+      return;
+    }
+
+    if (!desktopShell?.importFilePayloads) {
+      toast.error("These files could not be imported from the desktop environment.");
+      return;
+    }
+
+    const pendingAttachments: DraftAttachment[] = payloadFiles.map((file) => ({
+      id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      name: file.name || "file",
+      originalName: file.name || "file",
+      path: "",
+      uploadPath: "",
+      size: file.size,
+      contentType: file.type || undefined,
+      previewUrl:
+        file.type.startsWith("image/")
+          ? URL.createObjectURL(file)
+          : undefined,
+      progress: 20,
+      status: "uploading",
+    }));
+
+    setAttachments((current) => [...current, ...pendingAttachments]);
+
+    try {
+      const payloads = await Promise.all(
+        payloadFiles.map(async (file) => ({
+          name: file.name || "file",
+          bytes: await file.arrayBuffer(),
+        })),
+      );
+      const importedFiles = await desktopShell.importFilePayloads(payloads);
+      setAttachments((current) =>
+        current.map((attachment) => {
+          const index = pendingAttachments.findIndex((pending) => pending.id === attachment.id);
+          if (index === -1) {
+            return attachment;
+          }
+          const imported = importedFiles[index];
+          return imported
+            ? {
+                ...attachment,
+                name: imported.originalName,
+                originalName: imported.originalName,
+                path: imported.relativePath,
+                uploadPath: imported.relativePath,
+                size: imported.size,
+                progress: 100,
+                status: "complete",
+              }
+            : {
+                ...attachment,
+                progress: undefined,
+                status: "error",
+                error: "The desktop app did not return a staged file.",
+              };
+        }),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setAttachments((current) =>
+        current.map((attachment) =>
+          pendingAttachments.some((pending) => pending.id === attachment.id)
+            ? {
+                ...attachment,
+                progress: undefined,
+                status: "error",
+                error: message,
+              }
+            : attachment,
+        ),
+      );
+      toast.error(message || "Failed to upload files.");
+    }
+  }, [handleStageFiles]);
+
+  const handleAttachmentRemove = useCallback((attachmentId: string) => {
+    setAttachments((current) => {
+      const removed = current.find((attachment) => attachment.id === attachmentId);
+      if (removed?.previewUrl?.startsWith("blob:")) {
+        URL.revokeObjectURL(removed.previewUrl);
+      }
+      return current.filter((attachment) => attachment.id !== attachmentId);
+    });
+  }, []);
 
   return (
     <div className="flex flex-col gap-2">
@@ -654,6 +937,9 @@ function Composer({
         onChange={handleChange}
         onSubmit={handleSubmit}
         onStop={activeThreadId ? () => onStopThread(activeThreadId) : undefined}
+        attachments={attachments}
+        onFilesSelected={handleFilesSelected}
+        onAttachmentRemove={handleAttachmentRemove}
         placeholder="Type a message..."
         isAssistantRunning={isStreaming}
         textareaRef={composerTextareaRef}
@@ -1812,6 +2098,24 @@ function ThreadPreviewPane({
     previewState.items[0] ??
     null;
   const activePreviewUrl = activeItem?.src ?? null;
+  const handleDownload = useCallback(async () => {
+    if (activeItem?.target.kind !== "file" || !desktopShell?.downloadFile) {
+      return;
+    }
+
+    try {
+      const result = await desktopShell.downloadFile({
+        source: activeItem.target.source,
+        path: activeItem.target.path,
+        filename: activeItem.target.filename ?? activeItem.title,
+      });
+      if (!result.canceled) {
+        toast.success("File saved.");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    }
+  }, [activeItem]);
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
@@ -1825,6 +2129,19 @@ function ThreadPreviewPane({
           </p>
         </div>
         <div className="flex items-center gap-1">
+          {activeItem?.target.kind === "file" && desktopShell?.downloadFile ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label={`Download ${activeItem.title}`}
+              onClick={() => {
+                void handleDownload();
+              }}
+            >
+              <Download className="size-4" />
+              Save As
+            </Button>
+          ) : null}
           <Button
             variant="ghost"
             size="icon-sm"
