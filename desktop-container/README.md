@@ -44,8 +44,8 @@ bun run start
 Notes:
 
 - `prepare:container` copies a usable Apple `container` install into `desktop-container/vendor/apple-container/` and prebuilds the shared Codex/Claude image plus the internal `acon-agentd` runtime before runtime.
-- The shared agent image also installs a general-purpose guest toolchain: Python 3, Node.js 22, Ruby, OpenJDK, ffmpeg, ImageMagick, Tesseract OCR, Pandoc, LibreOffice, sqlite3, jq, git, curl, and wget. System package versions intentionally track the current Debian Bookworm packages used by the base image instead of pinning older versions from external lists.
-- The shared agent image also preinstalls curated Python libraries from `desktop-container/container-images/acpx-shared/python-requirements.txt` for Office documents, PDF processing, AI/ML, data analysis, parsing, image/media work, OCR, and LibreOffice UNO workflows.
+- The shared agent image also installs a general-purpose guest toolchain: Python 3, Node.js 22, Ruby, OpenJDK, ffmpeg, ImageMagick, Tesseract OCR, Pandoc, LibreOffice, sqlite3, jq, git, curl, wget, `postgresql-client`, and ODBC/FreeTDS packages for warehouse and database connectivity. System package versions intentionally track the current Debian Bookworm packages used by the base image instead of pinning older versions from external lists.
+- The shared agent image also preinstalls curated Python libraries from `desktop-container/container-images/acpx-shared/python-requirements.txt` plus `desktop-container/container-images/acpx-shared/python-connectivity-requirements.txt` for Office documents, PDF processing, AI/ML, data analysis, DuckDB/Postgres/Redshift/BigQuery/Snowflake/Databricks/SQL Server connectivity, DynamoDB and MongoDB document-store access, Redis, Neo4j, OpenSearch, ClickHouse, Trino, DuckDB CLI access, SQLAlchemy-based database workflows, parsing, image/media work, OCR, and LibreOffice UNO workflows.
 - `build` only builds the renderer.
 - `build:bundle` assembles the packaged desktop resources, bundles the backend entrypoint, stages builtin plugin manifests for packaged discovery, and produces an unpacked macOS `.app` bundle in `dist/bundle/`.
 - `dev` is the main command. It starts the renderer plus Electron and picks a free localhost port automatically.
@@ -61,11 +61,11 @@ Notes:
 Host MCP notes:
 
 - Host code can register MCP servers on `DesktopService` with `registerHostMcpServer({ id, createServer })`.
-- Plugins can register in-process MCP servers with `api.registerMcpServer(id, { createServer })`; plugin-owned servers declare `serve-mcp`, while persisted host MCP registry mutation still requires `host-mcp`.
+- Plugins can register in-process MCP servers with `api.registerMcpServer(id, { createServer })`; plugin-owned servers declare `serve-mcp`, persisted host MCP registry mutation requires `host-mcp`, and host-side plugin bundle installation requires `host-plugins`.
 - Persisted host MCP server registrations live under the desktop data directory at `host-mcp/servers/*.json`.
 - Persisted remote MCP servers can use `streamable-http` or legacy `sse` transport. Host-managed OAuth is configured automatically, and OAuth tokens/client state are kept in the host secret store. On macOS this uses Keychain; other environments fall back to host-local secret files under the desktop data directory.
 - Persisted stdio MCP servers can attach `envSecretRefs`, and persisted remote HTTP MCP servers can attach `headerSecretRefs`, so secrets stay in the host vault and are only resolved at launch time.
-- The builtin `host-mcp-manager` plugin registers a host MCP server that can list, install, and remove persisted host MCP servers, prompt the user to store secrets in the host vault, and install the repo-local `rest-api` stdio MCP server.
+- The builtin `host-mcp-manager` plugin registers a host MCP server that can list, install, and remove persisted host MCP servers, prompt the user to store secrets in the host vault, install the repo-local `rest-api` stdio MCP server, and install local plugin bundles from the managed guest workspace into the desktop user's plugin directory.
 - Repo-shipped builtin stdio servers should be launched through `desktop-container/bin/acon-mcp-builtin.mjs <name>` so persisted configs stay stable even if the underlying implementation files move.
 - The builtin `preview-control` plugin registers a host MCP server that can open, replace, clear, and hide/show thread preview items for workspace files and URLs in the right-side preview pane.
 - Inside the container, `acon-mcp --help` shows the CLI surface.

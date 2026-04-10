@@ -15,7 +15,7 @@ import type {
 } from "../desktop-container/backend/container-runtime";
 import type { DesktopServerEvent } from "../desktop/shared/protocol";
 
-function createRuntimeManagerStub() {
+function createRuntimeManagerStub(options: { managedWorkspaceDirectory?: string } = {}) {
   const pendingPrompts: Array<{
     options: StreamContainerPromptOptions;
     resolve: (value: StreamContainerPromptResult) => void;
@@ -24,9 +24,11 @@ function createRuntimeManagerStub() {
 
   const registerHostMcpServer = vi.fn();
   const unregisterHostMcpServer = vi.fn();
+  const managedWorkspaceDirectory =
+    options.managedWorkspaceDirectory ?? "/managed-workspace";
   const runtime: RuntimeManager = {
     getWorkspaceDirectory: () => "/workspace",
-    getManagedWorkspaceDirectory: () => "/workspace",
+    getManagedWorkspaceDirectory: () => managedWorkspaceDirectory,
     getUserUploadsDirectory: () =>
       resolve(process.env.DESKTOP_DATA_DIR ?? tmpdir(), "transfers", "uploads"),
     getUserOutputsDirectory: () =>
@@ -537,6 +539,89 @@ describe("DesktopService", () => {
     expect(getPersistedHostSecret(sandboxDataDir, "linear-api-key")).toBe(
       "test-secret-123",
     );
+  });
+
+  it("requires approval before installing a workspace plugin bundle", async () => {
+    const managedWorkspaceDirectory = resolve(
+      sandboxDataDir,
+      "workspaces",
+      "default",
+      "root",
+    );
+    const pluginDirectory = resolve(managedWorkspaceDirectory, "plugins", "todo-plugin");
+    mkdirSync(pluginDirectory, { recursive: true });
+    writeFileSync(
+      resolve(pluginDirectory, "package.json"),
+      JSON.stringify(
+        {
+          name: "@test/todo-plugin",
+          version: "0.2.0",
+          type: "module",
+          camelai: {
+            id: "todo-plugin",
+            name: "Todo Plugin",
+            main: "./index.mjs",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      resolve(pluginDirectory, "index.mjs"),
+      "export default { activate() {} };",
+      "utf8",
+    );
+
+    const { runtime } = createRuntimeManagerStub({
+      managedWorkspaceDirectory,
+    });
+    const service = new DesktopService(runtime);
+
+    const installPromise = service.installPluginFromWorkspace(
+      {
+        path: "plugins/todo-plugin",
+      },
+      {
+        pluginId: "host-mcp-manager",
+        harness: "codex",
+        threadId: "thread-1",
+        workspaceDirectory: "/workspace",
+      },
+    );
+
+    const installRequest = await waitFor(() => {
+      const request = service.getSnapshot().pendingPermissionRequest;
+      expect(request).toEqual(
+        expect.objectContaining({
+          kind: "plugin_mutation",
+          action: "install",
+          targetPluginId: "todo-plugin",
+          sourcePath: "plugins/todo-plugin",
+        }),
+      );
+      return request!;
+    });
+
+    const installedPluginPath = resolve(sandboxDataDir, "plugins", "todo-plugin");
+    expect(existsSync(installedPluginPath)).toBe(false);
+
+    service.handleClientEvent({
+      type: "respond_permission_request",
+      requestId: installRequest.id,
+      decision: "approve",
+    });
+
+    await expect(installPromise).resolves.toEqual({
+      pluginId: "todo-plugin",
+      pluginName: "Todo Plugin",
+      version: "0.2.0",
+      installPath: installedPluginPath,
+      replaced: false,
+    });
+    expect(existsSync(resolve(installedPluginPath, "package.json"))).toBe(true);
+    expect(CamelAIExtensionHost.prototype.refresh).toHaveBeenCalled();
   });
 
   it("loads, installs, and removes persisted host MCP servers", async () => {

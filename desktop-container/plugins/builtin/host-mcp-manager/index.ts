@@ -130,6 +130,32 @@ const uninstallServerOutputSchema = z.object({
   removed: z.boolean(),
 });
 
+const installedPluginSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  version: z.string(),
+  source: z.enum(["builtin", "user"]),
+  enabled: z.boolean(),
+  disableable: z.boolean(),
+  path: z.string(),
+});
+
+const listInstalledPluginsOutputSchema = z.object({
+  plugins: z.array(installedPluginSchema),
+});
+
+const installWorkspacePluginInputSchema = z.object({
+  path: z.string(),
+});
+
+const installWorkspacePluginOutputSchema = z.object({
+  pluginId: z.string(),
+  pluginName: z.string(),
+  version: z.string(),
+  installPath: z.string(),
+  replaced: z.boolean(),
+});
+
 const extension: CamelAIExtensionModule = {
   activate(api) {
     api.registerMcpServer(HOST_MCP_MANAGER_ID, {
@@ -313,6 +339,56 @@ const extension: CamelAIExtensionModule = {
                 id,
                 removed,
               },
+            };
+          },
+        );
+
+        server.registerTool(
+          "list_installed_plugins",
+          {
+            description:
+              "List plugins currently discovered by the desktop app, including builtin and user-installed plugins.",
+            outputSchema: listInstalledPluginsOutputSchema,
+          },
+          async () => {
+            const plugins = api.listInstalledPlugins();
+            return {
+              content: [
+                {
+                  type: "text",
+                  text:
+                    plugins.length > 0
+                      ? `Installed plugins: ${plugins.map((entry) => entry.id).join(", ")}`
+                      : "No plugins are currently installed.",
+                },
+              ],
+              structuredContent: {
+                plugins,
+              },
+            };
+          },
+        );
+
+        server.registerTool(
+          "install_workspace_plugin",
+          {
+            description:
+              "Install or update a plugin bundle from a folder inside the managed guest workspace.",
+            inputSchema: installWorkspacePluginInputSchema,
+            outputSchema: installWorkspacePluginOutputSchema,
+          },
+          async (input) => {
+            const installed = await api.installPluginFromWorkspace(input);
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: installed.replaced
+                    ? `Updated plugin ${installed.pluginId}.`
+                    : `Installed plugin ${installed.pluginId}.`,
+                },
+              ],
+              structuredContent: installed,
             };
           },
         );
