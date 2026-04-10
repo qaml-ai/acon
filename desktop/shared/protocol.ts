@@ -66,7 +66,6 @@ export interface DesktopPluginWebviewContribution {
 
 export type DesktopPluginPermission =
   | "host-mcp"
-  | "host-agent-assets"
   | "host-plugins"
   | "serve-mcp"
   | "thread-preview";
@@ -328,27 +327,10 @@ export interface DesktopPermissionRequestPluginMutation {
   version: string | null;
 }
 
-export interface DesktopPermissionRequestAgentAssetMutation {
-  kind: "agent_asset_mutation";
-  id: string;
-  threadId: string | null;
-  pluginId: string;
-  harness: DesktopHarness;
-  action: "install" | "update" | "delete";
-  targetPluginId: string;
-  targetPluginName: string | null;
-  provider: DesktopProvider;
-  installSkills: boolean;
-  installMcpServers: boolean;
-  skillIds: string[];
-  mcpServerIds: string[];
-}
-
 export type DesktopPermissionRequest =
   | DesktopPermissionRequestHostMcpMutation
   | DesktopPermissionRequestSecretPrompt
-  | DesktopPermissionRequestPluginMutation
-  | DesktopPermissionRequestAgentAssetMutation;
+  | DesktopPermissionRequestPluginMutation;
 
 export interface DesktopSnapshot {
   threadGroups: DesktopThreadGroup[];

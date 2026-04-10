@@ -194,51 +194,6 @@ const listPluginAgentAssetsOutputSchema = z.object({
   plugins: z.array(pluginAgentAssetsBundleSchema),
 });
 
-const installPluginAgentAssetsInputSchema = z.object({
-  pluginId: z.string(),
-  provider: pluginAgentAssetProviderSchema,
-  skills: z.boolean().optional(),
-  mcpServers: z.boolean().optional(),
-});
-
-const installPluginAgentAssetsOutputSchema = z.object({
-  pluginId: z.string(),
-  pluginName: z.string(),
-  pluginVersion: z.string(),
-  provider: pluginAgentAssetProviderSchema,
-  installedSkills: z.array(
-    z.object({
-      id: z.string(),
-      installPath: z.string(),
-    }),
-  ),
-  installedMcpServers: z.array(
-    z.object({
-      id: z.string(),
-      targetId: z.string(),
-    }),
-  ),
-  replaced: z.boolean(),
-});
-
-const uninstallPluginAgentAssetsInputSchema = z.object({
-  pluginId: z.string(),
-  provider: pluginAgentAssetProviderSchema,
-});
-
-const uninstallPluginAgentAssetsOutputSchema = z.object({
-  pluginId: z.string(),
-  provider: pluginAgentAssetProviderSchema,
-  removedSkills: z.array(
-    z.object({
-      id: z.string(),
-      installPath: z.string(),
-    }),
-  ),
-  removedMcpServerIds: z.array(z.string()),
-  removed: z.boolean(),
-});
-
 const extension: CamelAIExtensionModule = {
   activate(api) {
     api.registerMcpServer(HOST_MCP_MANAGER_ID, {
@@ -456,7 +411,7 @@ const extension: CamelAIExtensionModule = {
           "install_workspace_plugin",
           {
             description:
-              "Install or update a plugin bundle from a folder inside the managed guest workspace.",
+              "Install or update a plugin bundle from a folder inside the managed guest workspace. Declared camelai.agentAssets are reconciled automatically on plugin refresh.",
             inputSchema: installWorkspacePluginInputSchema,
             outputSchema: installWorkspacePluginOutputSchema,
           },
@@ -499,54 +454,6 @@ const extension: CamelAIExtensionModule = {
               structuredContent: {
                 plugins,
               },
-            };
-          },
-        );
-
-        server.registerTool(
-          "install_plugin_agent_assets",
-          {
-            description:
-              "Install bundled skills and/or MCP server configs from an installed plugin into the selected agent runtime home.",
-            inputSchema: installPluginAgentAssetsInputSchema,
-            outputSchema: installPluginAgentAssetsOutputSchema,
-          },
-          async (input) => {
-            const installed = await api.installPluginAgentAssets(input);
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: installed.replaced
-                    ? `Updated ${installed.pluginId} agent assets for ${installed.provider}.`
-                    : `Installed ${installed.pluginId} agent assets for ${installed.provider}.`,
-                },
-              ],
-              structuredContent: installed,
-            };
-          },
-        );
-
-        server.registerTool(
-          "uninstall_plugin_agent_assets",
-          {
-            description:
-              "Remove plugin-installed skills and MCP server configs from the selected agent runtime home.",
-            inputSchema: uninstallPluginAgentAssetsInputSchema,
-            outputSchema: uninstallPluginAgentAssetsOutputSchema,
-          },
-          async (input) => {
-            const removed = await api.uninstallPluginAgentAssets(input);
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: removed.removed
-                    ? `Removed ${removed.pluginId} agent assets from ${removed.provider}.`
-                    : `No ${removed.pluginId} agent assets were installed for ${removed.provider}.`,
-                },
-              ],
-              structuredContent: removed,
             };
           },
         );

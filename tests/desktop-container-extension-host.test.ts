@@ -640,7 +640,7 @@ describe("CamelAIExtensionHost", () => {
     }
   });
 
-  it("lists and installs bundled plugin agent assets through the builtin host MCP manager", async () => {
+  it("lists bundled plugin agent assets through the builtin host MCP manager", async () => {
     const registerMcpServer = vi.fn();
     const listPluginAgentAssets = vi.fn().mockReturnValue([
       {
@@ -672,36 +672,8 @@ describe("CamelAIExtensionHost", () => {
         ],
       },
     ]);
-    const installPluginAgentAssets = vi.fn().mockResolvedValue({
-      pluginId: "agent-assets-plugin",
-      pluginName: "Agent Assets Plugin",
-      pluginVersion: "0.3.0",
-      provider: "codex",
-      installedSkills: [
-        {
-          id: "authoring",
-          installPath: "/tmp/runtime/providers/codex/home/.codex/skills/agent-assets-plugin--authoring",
-        },
-      ],
-      installedMcpServers: [
-        {
-          id: "docs",
-          targetId: "plugin.agent-assets-plugin.docs",
-        },
-      ],
-      replaced: false,
-    });
-    const uninstallPluginAgentAssets = vi.fn().mockResolvedValue({
-      pluginId: "agent-assets-plugin",
-      provider: "codex",
-      removedSkills: [],
-      removedMcpServerIds: [],
-      removed: false,
-    });
     const host = new CamelAIExtensionHost({
       listPluginAgentAssets,
-      installPluginAgentAssets,
-      uninstallPluginAgentAssets,
       registerMcpServer,
     });
     const context = createActivationContext();
@@ -754,50 +726,6 @@ describe("CamelAIExtensionHost", () => {
                 }),
               ],
             },
-          }),
-        }),
-      );
-
-      const installResponse = await registry.dispatchRequest({
-        serverId: "plugin:host-mcp-manager:host-mcp-manager",
-        sessionId,
-        message: {
-          jsonrpc: "2.0",
-          id: 23,
-          method: "tools/call",
-          params: {
-            name: "install_plugin_agent_assets",
-            arguments: {
-              pluginId: "agent-assets-plugin",
-              provider: "codex",
-            },
-          },
-        },
-      });
-      const installMessage = getResultMessage(
-        installResponse.messages as Array<Record<string, unknown>>,
-        23,
-      );
-
-      expect(installPluginAgentAssets).toHaveBeenCalledWith(
-        {
-          pluginId: "agent-assets-plugin",
-          provider: "codex",
-        },
-        expect.objectContaining({
-          pluginId: "host-mcp-manager",
-          harness: "claude-code",
-          threadId: "thread-1",
-          workspaceDirectory: "/tmp/workspace",
-        }),
-      );
-      expect(installMessage).toEqual(
-        expect.objectContaining({
-          result: expect.objectContaining({
-            structuredContent: expect.objectContaining({
-              pluginId: "agent-assets-plugin",
-              provider: "codex",
-            }),
           }),
         }),
       );

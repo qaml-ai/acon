@@ -3,7 +3,6 @@ export type CamelAIProvider = "claude" | "codex";
 export const CAMELAI_PLUGIN_API_VERSION = 1;
 export type CamelAIPermission =
   | "host-mcp"
-  | "host-agent-assets"
   | "host-plugins"
   | "serve-mcp"
   | "thread-preview";
@@ -420,45 +419,6 @@ export interface CamelAIPluginAgentAssetsBundleRecord {
   installedByProvider: CamelAIPluginAgentAssetInstallState[];
 }
 
-export interface CamelAIInstallPluginAgentAssetsOptions {
-  pluginId: string;
-  provider: CamelAIPluginAgentAssetProvider;
-  skills?: boolean;
-  mcpServers?: boolean;
-}
-
-export interface CamelAIInstallPluginAgentAssetsResult {
-  pluginId: string;
-  pluginName: string;
-  pluginVersion: string;
-  provider: CamelAIPluginAgentAssetProvider;
-  installedSkills: Array<{
-    id: string;
-    installPath: string;
-  }>;
-  installedMcpServers: Array<{
-    id: string;
-    targetId: string;
-  }>;
-  replaced: boolean;
-}
-
-export interface CamelAIUninstallPluginAgentAssetsOptions {
-  pluginId: string;
-  provider: CamelAIPluginAgentAssetProvider;
-}
-
-export interface CamelAIUninstallPluginAgentAssetsResult {
-  pluginId: string;
-  provider: CamelAIPluginAgentAssetProvider;
-  removedSkills: Array<{
-    id: string;
-    installPath: string;
-  }>;
-  removedMcpServerIds: string[];
-  removed: boolean;
-}
-
 export type CamelAIEventName =
   | "runtime_ready"
   | "session_start"
@@ -533,12 +493,6 @@ export interface CamelAIActivationApi {
   listPluginAgentAssets(
     pluginId?: string | null,
   ): CamelAIPluginAgentAssetsBundleRecord[];
-  installPluginAgentAssets(
-    options: CamelAIInstallPluginAgentAssetsOptions,
-  ): Promise<CamelAIInstallPluginAgentAssetsResult>;
-  uninstallPluginAgentAssets(
-    options: CamelAIUninstallPluginAgentAssetsOptions,
-  ): Promise<CamelAIUninstallPluginAgentAssetsResult>;
   openThreadPreviewItem(
     target: CamelAIPreviewTarget,
     threadId?: string | null,

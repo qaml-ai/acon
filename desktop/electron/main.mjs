@@ -96,36 +96,6 @@ async function showPluginPermissionDialog(request) {
   return response.response === 0;
 }
 
-async function showAgentAssetPermissionDialog(request) {
-  const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? undefined;
-  const actionLabel =
-    request.action === 'delete'
-      ? 'Remove plugin agent assets'
-      : request.action === 'update'
-        ? 'Update plugin agent assets'
-        : 'Install plugin agent assets';
-  const detailLines = [
-    `Plugin ID: ${request.targetPluginId}`,
-    request.targetPluginName ? `Name: ${request.targetPluginName}` : null,
-    `Provider: ${request.provider}`,
-    request.installSkills ? `Skills: ${request.skillIds.join(', ') || '(none)'}` : null,
-    request.installMcpServers ? `MCP servers: ${request.mcpServerIds.join(', ') || '(none)'}` : null,
-    `Requested by plugin: ${request.pluginId}`,
-    `Harness: ${request.harness}`,
-  ].filter(Boolean);
-  const response = await dialog.showMessageBox(window, {
-    type: 'warning',
-    buttons: ['Approve', 'Deny'],
-    defaultId: 1,
-    cancelId: 1,
-    noLink: true,
-    title: actionLabel,
-    message: `${actionLabel}?`,
-    detail: detailLines.join('\n'),
-  });
-  return response.response === 0;
-}
-
 function escapeHtml(value) {
   return String(value)
     .replaceAll('&', '&amp;')
@@ -720,26 +690,6 @@ function publishBackendEvent(event) {
       )
       .catch((error) => {
         console.error('[desktop-backend] failed to resolve plugin permission request', error);
-        return sendBackendEvent({
-          type: 'respond_permission_request',
-          requestId: event.request.id,
-          decision: 'deny',
-        });
-      });
-    return;
-  }
-
-  if (event.type === 'permission_request' && event.request.kind === 'agent_asset_mutation') {
-    void showAgentAssetPermissionDialog(event.request)
-      .then((approved) =>
-        sendBackendEvent({
-          type: 'respond_permission_request',
-          requestId: event.request.id,
-          decision: approved ? 'approve' : 'deny',
-        }),
-      )
-      .catch((error) => {
-        console.error('[desktop-backend] failed to resolve agent asset permission request', error);
         return sendBackendEvent({
           type: 'respond_permission_request',
           requestId: event.request.id,

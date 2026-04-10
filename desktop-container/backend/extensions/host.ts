@@ -45,8 +45,6 @@ import type {
   CamelAIInstallPluginResult,
   CamelAIInstallHostMcpServerResult,
   CamelAIInstallHttpHostMcpServerOptions,
-  CamelAIInstallPluginAgentAssetsOptions,
-  CamelAIInstallPluginAgentAssetsResult,
   CamelAIInstallStdioHostMcpServerOptions,
   CamelAIInstallWorkspacePluginOptions,
   CamelAIInstalledPluginRecord,
@@ -57,8 +55,6 @@ import type {
   CamelAIPluginApi,
   CamelAIRuntimeRecord,
   CamelAIToolRegistration,
-  CamelAIUninstallPluginAgentAssetsOptions,
-  CamelAIUninstallPluginAgentAssetsResult,
   DiscoveredCamelAIExtension,
 } from "./types";
 
@@ -103,7 +99,6 @@ const BUILTIN_EXTENSION_MODULES: Record<string, CamelAIExtensionModule> = {
 };
 const VALID_PLUGIN_PERMISSIONS = new Set<DesktopPluginPermission>([
   "host-mcp",
-  "host-agent-assets",
   "host-plugins",
   "thread-preview",
   "serve-mcp",
@@ -167,14 +162,6 @@ export interface CamelAIExtensionHostOptions {
   listPluginAgentAssets?: (
     pluginId?: string | null,
   ) => CamelAIPluginAgentAssetsBundleRecord[];
-  installPluginAgentAssets?: (
-    options: CamelAIInstallPluginAgentAssetsOptions,
-    context: CamelAIHostPluginMutationContext,
-  ) => Promise<CamelAIInstallPluginAgentAssetsResult>;
-  uninstallPluginAgentAssets?: (
-    options: CamelAIUninstallPluginAgentAssetsOptions,
-    context: CamelAIHostPluginMutationContext,
-  ) => Promise<CamelAIUninstallPluginAgentAssetsResult>;
   openThreadPreviewItem?: (
     threadId: string | null,
     target: DesktopPreviewTarget,
@@ -1060,34 +1047,8 @@ export class CamelAIExtensionHost {
         });
       },
       listPluginAgentAssets: (pluginId) => {
-        this.assertPluginPermission(record, "host-agent-assets");
+        this.assertPluginPermission(record, "host-plugins");
         return this.options.listPluginAgentAssets?.(pluginId) ?? [];
-      },
-      installPluginAgentAssets: async (options) => {
-        this.assertPluginPermission(record, "host-agent-assets");
-        if (!this.options.installPluginAgentAssets) {
-          throw new Error("Plugin agent asset installation is unavailable.");
-        }
-        const activeContext = this.resolveActivationContext(context);
-        return await this.options.installPluginAgentAssets(options, {
-          pluginId,
-          harness: activeContext.harness,
-          threadId: activeContext.activeThreadId,
-          workspaceDirectory: activeContext.workspaceDirectory,
-        });
-      },
-      uninstallPluginAgentAssets: async (options) => {
-        this.assertPluginPermission(record, "host-agent-assets");
-        if (!this.options.uninstallPluginAgentAssets) {
-          throw new Error("Plugin agent asset removal is unavailable.");
-        }
-        const activeContext = this.resolveActivationContext(context);
-        return await this.options.uninstallPluginAgentAssets(options, {
-          pluginId,
-          harness: activeContext.harness,
-          threadId: activeContext.activeThreadId,
-          workspaceDirectory: activeContext.workspaceDirectory,
-        });
       },
       openThreadPreviewItem: (target, threadId = context.activeThreadId) => {
         this.assertPluginPermission(record, "thread-preview");

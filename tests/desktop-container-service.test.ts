@@ -85,6 +85,53 @@ async function waitFor<T>(assertion: () => T, timeoutMs = 5_000): Promise<T> {
     : new Error("Timed out waiting for test condition.");
 }
 
+function createPluginSnapshotRecord(options: {
+  id: string;
+  name: string;
+  version: string;
+  path: string;
+  source?: "builtin" | "user";
+  enabled?: boolean;
+  disableable?: boolean;
+}) {
+  return {
+    id: options.id,
+    name: options.name,
+    version: options.version,
+    description: null,
+    source: options.source ?? "user",
+    enabled: options.enabled ?? true,
+    disableable: options.disableable ?? true,
+    path: options.path,
+    main: resolve(options.path, "index.mjs"),
+    webviews: [],
+    permissions: [],
+    settings: null,
+    compatibility: {
+      currentApiVersion: 1,
+      declaredApiVersion: 1,
+      minApiVersion: 1,
+      compatible: true,
+      reason: null,
+    },
+    capabilities: {
+      views: [],
+      panels: [],
+      commands: [],
+      tools: [],
+    },
+    runtime: {
+      activated: true,
+      activationError: null,
+      subscribedEvents: [],
+      registeredViewIds: [],
+      registeredPanelIds: [],
+      registeredCommandIds: [],
+      registeredToolIds: [],
+    },
+  };
+}
+
 describe("DesktopService", () => {
   let sandboxDataDir: string;
   let previousDataDir: string | undefined;
@@ -626,8 +673,8 @@ describe("DesktopService", () => {
     expect(CamelAIExtensionHost.prototype.refresh).toHaveBeenCalled();
   });
 
-  it("installs bundled agent assets into the codex runtime home after approval", async () => {
-    const pluginDirectory = resolve(sandboxDataDir, "plugins", "agent-assets-plugin");
+  it("reconciles declarative plugin agent assets for both providers on startup", async () => {
+    const pluginDirectory = resolve(sandboxDataDir, "plugins", "declarative-assets-plugin");
     mkdirSync(resolve(pluginDirectory, "agent-assets", "skills", "authoring"), {
       recursive: true,
     });
@@ -635,12 +682,12 @@ describe("DesktopService", () => {
       resolve(pluginDirectory, "package.json"),
       JSON.stringify(
         {
-          name: "@test/agent-assets-plugin",
-          version: "0.3.0",
+          name: "@test/declarative-assets-plugin",
+          version: "0.5.0",
           type: "module",
           camelai: {
-            id: "agent-assets-plugin",
-            name: "Agent Assets Plugin",
+            id: "declarative-assets-plugin",
+            name: "Declarative Assets Plugin",
             main: "./index.mjs",
             agentAssets: {
               skills: "./agent-assets/skills",
@@ -667,7 +714,6 @@ describe("DesktopService", () => {
             docs: {
               command: "npx",
               args: ["-y", "@test/docs-mcp"],
-              cwd: "tools",
             },
           },
         },
@@ -677,98 +723,95 @@ describe("DesktopService", () => {
       "utf8",
     );
 
+    vi.spyOn(CamelAIExtensionHost.prototype, "getSnapshot").mockImplementation(() => ({
+      views: [],
+      panels: [],
+      plugins: [
+        createPluginSnapshotRecord({
+          id: "declarative-assets-plugin",
+          name: "Declarative Assets Plugin",
+          version: "0.5.0",
+          path: pluginDirectory,
+        }),
+      ],
+    }));
+
     const runtimeDirectory = resolve(sandboxDataDir, "runtime");
     const { runtime } = createRuntimeManagerStub({
       runtimeDirectory,
     });
-    const service = new DesktopService(runtime);
+    new DesktopService(runtime);
 
-    const installPromise = service.installPluginAgentAssets(
-      {
-        pluginId: "agent-assets-plugin",
-        provider: "codex",
-      },
-      {
-        pluginId: "host-mcp-manager",
-        harness: "codex",
-        threadId: "thread-1",
-        workspaceDirectory: "/workspace",
-      },
-    );
-
-    const installRequest = await waitFor(() => {
-      const request = service.getSnapshot().pendingPermissionRequest;
-      expect(request).toEqual(
-        expect.objectContaining({
-          kind: "agent_asset_mutation",
-          action: "install",
-          targetPluginId: "agent-assets-plugin",
-          provider: "codex",
-          skillIds: ["authoring"],
-          mcpServerIds: ["docs"],
-        }),
+    await waitFor(() => {
+      const codexConfigPath = resolve(
+        runtimeDirectory,
+        "providers",
+        "codex",
+        "home",
+        ".codex",
+        "config.toml",
       );
-      return request!;
-    });
-
-    service.handleClientEvent({
-      type: "respond_permission_request",
-      requestId: installRequest.id,
-      decision: "approve",
-    });
-
-    await expect(installPromise).resolves.toEqual({
-      pluginId: "agent-assets-plugin",
-      pluginName: "Agent Assets Plugin",
-      pluginVersion: "0.3.0",
-      provider: "codex",
-      installedSkills: [
-        {
-          id: "authoring",
-          installPath: resolve(
+      const claudeStatePath = resolve(
+        runtimeDirectory,
+        "providers",
+        "claude",
+        "home",
+        ".claude.json",
+      );
+      expect(
+        existsSync(
+          resolve(
             runtimeDirectory,
             "providers",
             "codex",
             "home",
             ".codex",
             "skills",
-            "agent-assets-plugin--authoring",
+            "declarative-assets-plugin--authoring",
+            "SKILL.md",
           ),
-        },
-      ],
-      installedMcpServers: [
-        {
-          id: "docs",
-          targetId: "plugin.agent-assets-plugin.docs",
-        },
-      ],
-      replaced: false,
-    });
-
-    expect(
-      existsSync(
-        resolve(
-          runtimeDirectory,
-          "providers",
-          "codex",
-          "home",
-          ".codex",
-          "skills",
-          "agent-assets-plugin--authoring",
-          "SKILL.md",
         ),
-      ),
-    ).toBe(true);
-    expect(
-      readFileSync(
-        resolve(runtimeDirectory, "providers", "codex", "home", ".codex", "config.toml"),
-        "utf8",
-      ),
-    ).toContain('[mcp_servers."plugin.agent-assets-plugin.docs"]');
+      ).toBe(true);
+      expect(
+        existsSync(
+          resolve(
+            runtimeDirectory,
+            "providers",
+            "claude",
+            "home",
+            ".claude",
+            "skills",
+            "declarative-assets-plugin--authoring",
+            "SKILL.md",
+          ),
+        ),
+      ).toBe(true);
+      expect(
+        readFileSync(
+          resolve(runtimeDirectory, "providers", "codex", "home", ".codex", "config.toml"),
+          "utf8",
+        ),
+      ).toContain('[mcp_servers."plugin.declarative-assets-plugin.docs"]');
+      expect(
+        JSON.parse(
+          readFileSync(
+            resolve(runtimeDirectory, "providers", "claude", "home", ".claude.json"),
+            "utf8",
+          ),
+        ).projects["/workspace"].mcpServers,
+      ).toEqual(
+        expect.objectContaining({
+          "plugin.declarative-assets-plugin.docs": expect.objectContaining({
+            command: "npx",
+            args: ["-y", "@test/docs-mcp"],
+          }),
+        }),
+      );
+    });
   });
 
-  it("installs bundled agent assets into the claude runtime state and removes them again", async () => {
-    const pluginDirectory = resolve(sandboxDataDir, "plugins", "claude-assets-plugin");
+  it("removes declarative plugin agent assets when the plugin is disabled", async () => {
+    const pluginDirectory = resolve(sandboxDataDir, "plugins", "toggle-assets-plugin");
     mkdirSync(resolve(pluginDirectory, "agent-assets", "skills", "research"), {
       recursive: true,
     });
@@ -776,13 +819,14 @@ describe("DesktopService", () => {
       resolve(pluginDirectory, "package.json"),
       JSON.stringify(
         {
-          name: "@test/claude-assets-plugin",
-          version: "0.4.0",
+          name: "@test/toggle-assets-plugin",
+          version: "0.6.0",
           type: "module",
           camelai: {
-            id: "claude-assets-plugin",
-            name: "Claude Assets Plugin",
+            id: "toggle-assets-plugin",
+            name: "Toggle Assets Plugin",
             main: "./index.mjs",
+            disableable: true,
             agentAssets: {
               skills: "./agent-assets/skills",
               mcpServers: "./agent-assets/mcp.json",
@@ -817,97 +861,104 @@ describe("DesktopService", () => {
       "utf8",
     );
 
+    let pluginEnabled = true;
+    vi.spyOn(CamelAIExtensionHost.prototype, "getSnapshot").mockImplementation(() => ({
+      views: [],
+      panels: [],
+      plugins: [
+        createPluginSnapshotRecord({
+          id: "toggle-assets-plugin",
+          name: "Toggle Assets Plugin",
+          version: "0.6.0",
+          path: pluginDirectory,
+          enabled: pluginEnabled,
+        }),
+      ],
+    }));
+
     const runtimeDirectory = resolve(sandboxDataDir, "runtime");
     const { runtime } = createRuntimeManagerStub({
       runtimeDirectory,
     });
     const service = new DesktopService(runtime);
 
-    const installPromise = service.installPluginAgentAssets(
-      {
-        pluginId: "claude-assets-plugin",
-        provider: "claude",
-      },
-      {
-        pluginId: "host-mcp-manager",
-        harness: "claude-code",
-        threadId: "thread-1",
-        workspaceDirectory: "/workspace",
-      },
-    );
-
-    const installRequest = await waitFor(() => {
-      const request = service.getSnapshot().pendingPermissionRequest;
-      expect(request).toEqual(
-        expect.objectContaining({
-          kind: "agent_asset_mutation",
-          action: "install",
-          targetPluginId: "claude-assets-plugin",
-          provider: "claude",
-        }),
-      );
-      return request!;
+    await waitFor(() => {
+      expect(
+        existsSync(
+          resolve(
+            runtimeDirectory,
+            "providers",
+            "codex",
+            "home",
+            ".codex",
+            "skills",
+            "toggle-assets-plugin--research",
+            "SKILL.md",
+          ),
+        ),
+      ).toBe(true);
+      expect(
+        existsSync(
+          resolve(
+            runtimeDirectory,
+            "providers",
+            "claude",
+            "home",
+            ".claude",
+            "skills",
+            "toggle-assets-plugin--research",
+            "SKILL.md",
+          ),
+        ),
+      ).toBe(true);
     });
 
+    pluginEnabled = false;
     service.handleClientEvent({
-      type: "respond_permission_request",
-      requestId: installRequest.id,
-      decision: "approve",
+      type: "set_plugin_enabled",
+      pluginId: "toggle-assets-plugin",
+      enabled: false,
     });
-    await installPromise;
 
-    const claudeStatePath = resolve(runtimeDirectory, "providers", "claude", "home", ".claude.json");
+    await waitFor(() => {
+      expect(CamelAIExtensionHost.prototype.refresh).toHaveBeenCalled();
+      const persisted = JSON.parse(
+        readFileSync(resolve(sandboxDataDir, "state.json"), "utf8"),
+      ) as {
+        pluginEnabledById?: Record<string, boolean>;
+      };
+      expect(persisted.pluginEnabledById?.["toggle-assets-plugin"]).toBe(false);
+    });
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+
+    const codexConfigPath = resolve(
+      runtimeDirectory,
+      "providers",
+      "codex",
+      "home",
+      ".codex",
+      "config.toml",
+    );
+    const claudeStatePath = resolve(
+      runtimeDirectory,
+      "providers",
+      "claude",
+      "home",
+      ".claude.json",
+    );
     expect(
-      JSON.parse(readFileSync(claudeStatePath, "utf8")).projects["/workspace"].mcpServers,
-    ).toEqual(
-      expect.objectContaining({
-        "plugin.claude-assets-plugin.remote": expect.objectContaining({
-          transport: "streamable-http",
-          url: "https://example.com/mcp",
-        }),
-      }),
-    );
-
-    const uninstallPromise = service.uninstallPluginAgentAssets(
-      {
-        pluginId: "claude-assets-plugin",
-        provider: "claude",
-      },
-      {
-        pluginId: "host-mcp-manager",
-        harness: "claude-code",
-        threadId: "thread-1",
-        workspaceDirectory: "/workspace",
-      },
-    );
-
-    const uninstallRequest = await waitFor(() => {
-      const request = service.getSnapshot().pendingPermissionRequest;
-      expect(request).toEqual(
-        expect.objectContaining({
-          kind: "agent_asset_mutation",
-          action: "delete",
-          targetPluginId: "claude-assets-plugin",
-          provider: "claude",
-        }),
-      );
-      return request!;
-    });
-
-    service.handleClientEvent({
-      type: "respond_permission_request",
-      requestId: uninstallRequest.id,
-      decision: "approve",
-    });
-
-    await expect(uninstallPromise).resolves.toEqual(
-      expect.objectContaining({
-        pluginId: "claude-assets-plugin",
-        provider: "claude",
-        removed: true,
-        removedMcpServerIds: ["plugin.claude-assets-plugin.remote"],
-      }),
-    );
+      existsSync(
+        resolve(
+          runtimeDirectory,
+          "providers",
+          "codex",
+          "home",
+          ".codex",
+          "skills",
+          "toggle-assets-plugin--research",
+        ),
+      ),
+    ).toBe(false);
     expect(
       existsSync(
         resolve(
@@ -917,10 +968,15 @@ describe("DesktopService", () => {
           "home",
           ".claude",
           "skills",
-          "claude-assets-plugin--research",
+          "toggle-assets-plugin--research",
         ),
       ),
     ).toBe(false);
+    if (existsSync(codexConfigPath)) {
+      expect(readFileSync(codexConfigPath, "utf8")).not.toContain(
+        '[mcp_servers."plugin.toggle-assets-plugin.remote"]',
+      );
+    }
     expect(
       JSON.parse(readFileSync(claudeStatePath, "utf8")).projects["/workspace"].mcpServers,
     ).toEqual({});
