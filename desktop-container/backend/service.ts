@@ -43,6 +43,7 @@ import type {
   CamelAIThreadEventHandler,
   CamelAIThreadRecord,
   CamelAIThreadUpdate,
+  CamelAIPluginAgentAssetsBundleRecord,
 } from "./extensions/types";
 import type { HostMcpServerRegistration } from "./host-mcp";
 import {
@@ -65,6 +66,10 @@ import {
   readPluginManifestFromDirectory,
   resolvePluginWorkspaceSourcePath,
 } from "./persisted-plugins";
+import {
+  getInstalledPluginAgentAssetsStatus,
+  reconcilePluginAgentAssets,
+} from "./plugin-agent-assets";
 import { setPersistedHostSecret } from "./host-secrets";
 
 type Listener = (event: DesktopServerEvent) => void;
@@ -153,6 +158,8 @@ export class DesktopService {
       listInstalledPlugins: () => this.listInstalledPlugins(),
       installPluginFromWorkspace: (options, context) =>
         this.installPluginFromWorkspace(options, context),
+      listPluginAgentAssets: (pluginId) => this.listPluginAgentAssets(pluginId),
+      listPluginAgentAssets: (pluginId) => this.listPluginAgentAssets(pluginId),
       openThreadPreviewItem: (threadId, target) =>
         this.openThreadPreviewItem(threadId, target),
       setThreadPreviewItems: (threadId, targets, activeIndex) =>
@@ -182,6 +189,7 @@ export class DesktopService {
     void this.extensionHost
       .initialize(this.getExtensionActivationContext())
       .then(() => {
+        this.reconcileDeclaredPluginAgentAssets();
         this.ensureDefaultTab();
         this.ensureDefaultThreadPanels();
         this.emitSnapshot();
@@ -336,6 +344,38 @@ export class DesktopService {
     return this.getSnapshot().plugins;
   }
 
+  listPluginAgentAssets(pluginId?: string | null): CamelAIPluginAgentAssetsBundleRecord[] {
+    const plugins = pluginId ? [this.requirePluginAgentAssetPlugin(pluginId)] : this.listInstalledPlugins();
+    return plugins.flatMap((plugin) => {
+      const manifest = readPluginManifestFromDirectory(plugin.path);
+      const agentAssets = manifest.agentAssets;
+      if (!agentAssets) {
+        return [];
+      }
+      return [
+        {
+          pluginId: plugin.id,
+          pluginName: plugin.name,
+          pluginVersion: plugin.version,
+          source: plugin.source,
+          path: plugin.path,
+          skills: agentAssets.skills.map((skill) => ({
+            id: skill.id,
+          })),
+          mcpServers: agentAssets.mcpServers.map((server) => ({
+            id: server.id,
+            transport: server.transport,
+            name: server.name,
+            version: server.version,
+          })),
+          installedByProvider: getInstalledPluginAgentAssetsStatus({
+            runtimeDirectory: this.runtimeManager.getRuntimeDirectory(),
+            pluginId: plugin.id,
+          }),
+        } satisfies CamelAIPluginAgentAssetsBundleRecord,
+      ];
+    });
+  }
   async installStdioHostMcpServer(
     server: PersistedHostMcpStdioInstallOptions,
     context:
@@ -642,6 +682,29 @@ export class DesktopService {
       throw new Error(`Thread ${threadId} does not exist.`);
     }
     return this.toPluginThreadRecord(thread);
+  }
+
+  private requirePluginAgentAssetPlugin(pluginId: string) {
+    const installedPlugin = this.listInstalledPlugins().find((plugin) => plugin.id === pluginId);
+    if (installedPlugin) {
+      return installedPlugin;
+    }
+
+    const persistedPluginPath = resolve(this.dataDirectory, "plugins", pluginId);
+    if (existsSync(persistedPluginPath) && statSync(persistedPluginPath).isDirectory()) {
+      const manifest = readPluginManifestFromDirectory(persistedPluginPath);
+      return {
+        id: manifest.id,
+        name: manifest.name,
+        version: manifest.version,
+        source: "user" as const,
+        enabled: true,
+        disableable: true,
+        path: persistedPluginPath,
+      };
+    }
+
+    throw new Error(`Plugin ${pluginId} is not installed.`);
   }
 
   private emitThreadEvent(event: CamelAIThreadEvent): void {
@@ -1061,6 +1124,7 @@ export class DesktopService {
   private async handleRefreshPlugins(): Promise<void> {
     try {
       await this.extensionHost.refresh(this.getExtensionActivationContext());
+      this.reconcileDeclaredPluginAgentAssets();
       this.reconcileWorkbenchState();
       this.ensureDefaultTab();
       this.emitSnapshot();
@@ -1073,6 +1137,28 @@ export class DesktopService {
       });
       this.emitSnapshot();
     }
+  }
+
+  private reconcileDeclaredPluginAgentAssets(): void {
+    const plugins = this.listInstalledPlugins().flatMap((plugin) => {
+      try {
+        const manifest = readPluginManifestFromDirectory(plugin.path);
+        return [{
+          pluginId: plugin.id,
+          pluginName: plugin.name,
+          pluginVersion: plugin.version,
+          enabled: plugin.enabled && plugin.compatibility.compatible,
+          agentAssets: manifest.agentAssets,
+        }];
+      } catch {
+        return [];
+      }
+    });
+
+    reconcilePluginAgentAssets({
+      runtimeDirectory: this.runtimeManager.getRuntimeDirectory(),
+      plugins,
+    });
   }
 
   private async handleSetPluginEnabled(

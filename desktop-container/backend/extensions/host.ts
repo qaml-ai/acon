@@ -49,6 +49,7 @@ import type {
   CamelAIInstallWorkspacePluginOptions,
   CamelAIInstalledPluginRecord,
   CamelAIManifest,
+  CamelAIPluginAgentAssetsBundleRecord,
   CamelAIPersistedHostMcpServerRecord,
   CamelAIPreviewProviderRegistration,
   CamelAIPluginApi,
@@ -158,6 +159,12 @@ export interface CamelAIExtensionHostOptions {
     options: CamelAIInstallWorkspacePluginOptions,
     context: CamelAIHostPluginMutationContext,
   ) => Promise<CamelAIInstallPluginResult>;
+  listPluginAgentAssets?: (
+    pluginId?: string | null,
+  ) => CamelAIPluginAgentAssetsBundleRecord[];
+  listPluginAgentAssets?: (
+    pluginId?: string | null,
+  ) => CamelAIPluginAgentAssetsBundleRecord[];
   openThreadPreviewItem?: (
     threadId: string | null,
     target: DesktopPreviewTarget,
@@ -367,6 +374,22 @@ function discoverExtensions(): DiscoveredCamelAIExtension[] {
               ? rawManifest.disableable
               : undefined,
           settings: parseSettingsSchema(rawManifest.settings),
+          agentAssets:
+            rawManifest.agentAssets &&
+            typeof rawManifest.agentAssets === "object" &&
+            !Array.isArray(rawManifest.agentAssets)
+              ? {
+                  skillsPath:
+                    typeof (rawManifest.agentAssets as Record<string, unknown>).skills === "string"
+                      ? ((rawManifest.agentAssets as Record<string, unknown>).skills as string)
+                      : null,
+                  mcpServersPath:
+                    typeof (rawManifest.agentAssets as Record<string, unknown>).mcpServers ===
+                    "string"
+                      ? ((rawManifest.agentAssets as Record<string, unknown>).mcpServers as string)
+                      : null,
+                }
+              : null,
           webviews:
             rawManifest.webviews && typeof rawManifest.webviews === "object"
               ? Object.fromEntries(
@@ -1025,6 +1048,14 @@ export class CamelAIExtensionHost {
           threadId: activeContext.activeThreadId,
           workspaceDirectory: activeContext.workspaceDirectory,
         });
+      },
+      listPluginAgentAssets: (pluginId) => {
+        this.assertPluginPermission(record, "host-plugins");
+        return this.options.listPluginAgentAssets?.(pluginId) ?? [];
+      },
+      listPluginAgentAssets: (pluginId) => {
+        this.assertPluginPermission(record, "host-plugins");
+        return this.options.listPluginAgentAssets?.(pluginId) ?? [];
       },
       openThreadPreviewItem: (target, threadId = context.activeThreadId) => {
         this.assertPluginPermission(record, "thread-preview");

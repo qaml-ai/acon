@@ -156,6 +156,43 @@ const installWorkspacePluginOutputSchema = z.object({
   replaced: z.boolean(),
 });
 
+const pluginAgentAssetProviderSchema = z.enum(["codex", "claude"]);
+
+const installedPluginAgentAssetsStatusSchema = z.object({
+  provider: pluginAgentAssetProviderSchema,
+  installedSkillIds: z.array(z.string()),
+  installedMcpServerIds: z.array(z.string()),
+});
+
+const pluginAgentAssetsBundleSchema = z.object({
+  pluginId: z.string(),
+  pluginName: z.string(),
+  pluginVersion: z.string(),
+  source: z.enum(["builtin", "user"]),
+  path: z.string(),
+  skills: z.array(
+    z.object({
+      id: z.string(),
+    }),
+  ),
+  mcpServers: z.array(
+    z.object({
+      id: z.string(),
+      transport: z.enum(["stdio", "streamable-http", "sse"]),
+      name: z.string().nullable(),
+      version: z.string().nullable(),
+    }),
+  ),
+  installedByProvider: z.array(installedPluginAgentAssetsStatusSchema),
+});
+
+const listPluginAgentAssetsInputSchema = z.object({
+  pluginId: z.string().nullable().optional(),
+});
+
+const listPluginAgentAssetsOutputSchema = z.object({
+  plugins: z.array(pluginAgentAssetsBundleSchema),
+});
 const extension: CamelAIExtensionModule = {
   activate(api) {
     api.registerMcpServer(HOST_MCP_MANAGER_ID, {
@@ -373,7 +410,7 @@ const extension: CamelAIExtensionModule = {
           "install_workspace_plugin",
           {
             description:
-              "Install or update a plugin bundle from a folder inside the managed guest workspace.",
+              "Install or update a plugin bundle from a folder inside the managed guest workspace. Declared camelai.agentAssets are reconciled automatically on plugin refresh.",
             inputSchema: installWorkspacePluginInputSchema,
             outputSchema: installWorkspacePluginOutputSchema,
           },
@@ -393,6 +430,32 @@ const extension: CamelAIExtensionModule = {
           },
         );
 
+        server.registerTool(
+          "list_plugin_agent_assets",
+          {
+            description:
+              "List installed plugins that declare bundled camelai.agentAssets skills or MCP servers, plus provider install status.",
+            inputSchema: listPluginAgentAssetsInputSchema,
+            outputSchema: listPluginAgentAssetsOutputSchema,
+          },
+          async (input) => {
+            const plugins = api.listPluginAgentAssets(input.pluginId ?? null);
+            return {
+              content: [
+                {
+                  type: "text",
+                  text:
+                    plugins.length > 0
+                      ? `Plugins with bundled agent assets: ${plugins.map((entry) => entry.pluginId).join(", ")}`
+                      : "No installed plugins currently declare bundled agent assets.",
+                },
+              ],
+              structuredContent: {
+                plugins,
+              },
+            };
+          },
+        );
         return server;
       },
     });

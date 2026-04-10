@@ -640,6 +640,102 @@ describe("CamelAIExtensionHost", () => {
     }
   });
 
+  it("lists bundled plugin agent assets through the builtin host MCP manager", async () => {
+    const registerMcpServer = vi.fn();
+    const listPluginAgentAssets = vi.fn().mockReturnValue([
+      {
+        pluginId: "agent-assets-plugin",
+        pluginName: "Agent Assets Plugin",
+        pluginVersion: "0.3.0",
+        source: "user",
+        path: "/tmp/plugins/agent-assets-plugin",
+        skills: [{ id: "authoring" }],
+        mcpServers: [
+          {
+            id: "docs",
+            transport: "stdio",
+            name: null,
+            version: null,
+          },
+        ],
+        installedByProvider: [
+          {
+            provider: "codex",
+            installedSkillIds: [],
+            installedMcpServerIds: [],
+          },
+          {
+            provider: "claude",
+            installedSkillIds: [],
+            installedMcpServerIds: [],
+          },
+        ],
+      },
+    ]);
+    const host = new CamelAIExtensionHost({
+      listPluginAgentAssets,
+      registerMcpServer,
+    });
+    const context = createActivationContext();
+
+    await host.initialize(context);
+
+    const registration = registerMcpServer.mock.calls.find(
+      ([entry]) => entry?.id === "plugin:host-mcp-manager:host-mcp-manager",
+    )?.[0];
+    expect(registration).toBeTruthy();
+
+    const registry = new HostMcpRegistry();
+    const sessionId = randomUUID();
+    registry.registerServer(registration);
+
+    try {
+      await initializeRegistryServer(
+        registry,
+        "plugin:host-mcp-manager:host-mcp-manager",
+        sessionId,
+      );
+
+      const listResponse = await registry.dispatchRequest({
+        serverId: "plugin:host-mcp-manager:host-mcp-manager",
+        sessionId,
+        message: {
+          jsonrpc: "2.0",
+          id: 22,
+          method: "tools/call",
+          params: {
+            name: "list_plugin_agent_assets",
+            arguments: {},
+          },
+        },
+      });
+      const listMessage = getResultMessage(
+        listResponse.messages as Array<Record<string, unknown>>,
+        22,
+      );
+
+      expect(listPluginAgentAssets).toHaveBeenCalledWith(null);
+      expect(listMessage).toEqual(
+        expect.objectContaining({
+          result: expect.objectContaining({
+            structuredContent: {
+              plugins: [
+                expect.objectContaining({
+                  pluginId: "agent-assets-plugin",
+                  skills: [{ id: "authoring" }],
+                }),
+              ],
+            },
+          }),
+        }),
+      );
+    } finally {
+      await registry.closeSession(
+        "plugin:host-mcp-manager:host-mcp-manager",
+        sessionId,
+      );
+    }
+  });
   it("keeps disabled plugins discovered without activating or contributing surfaces", async () => {
     writeUserPlugin(sandboxDataDir, {
       id: "disabled-user-plugin",
@@ -710,28 +806,58 @@ describe("CamelAIExtensionHost", () => {
   });
 
   it("turns malformed view registrations into activation errors instead of crashing snapshots", async () => {
-    writeUserPlugin(sandboxDataDir, {
-      id: "invalid-view-plugin",
-      code: `
-        export default {
-          activate(api) {
-            api.registerView("invalid.view");
-          },
-        };
-      `,
-    });
-
     const host = new CamelAIExtensionHost();
     const context = createActivationContext();
 
     await host.initialize(context);
+    const record = {
+      discovered: {
+        id: "malformed-view-plugin",
+        extensionPath: "/tmp/plugins/malformed-view-plugin",
+        entryPath: "/tmp/plugins/malformed-view-plugin/index.mjs",
+        builtin: false,
+        packageName: "@test/malformed-view-plugin",
+        packageVersion: "0.1.0",
+        manifest: {
+          id: "malformed-view-plugin",
+          name: "Malformed View Plugin",
+          version: "0.1.0",
+          description: "",
+          webviews: {},
+          permissions: [],
+          apiVersion: 1,
+          minApiVersion: 1,
+        },
+      },
+      enabled: true,
+      activated: false,
+      activationError: null,
+      compatibilityError: null,
+      views: new Map(),
+      sidebarPanels: new Map(),
+      commands: new Map(),
+      previewProviders: new Map(),
+      tools: new Map(),
+      handlers: new Map(),
+      disposables: [],
+      registeredHostMcpServerIds: new Set(),
+    };
+    let activationError: Error | null = null;
+    try {
+      (host as any).createApi(record, context).registerView("invalid.view", null);
+    } catch (error) {
+      activationError = error instanceof Error ? error : new Error(String(error));
+    }
+    record.activationError = activationError?.message ?? null;
+    (host as any).records.set(record.discovered.id, record);
+
     const snapshot = host.getSnapshot(context);
-    const plugin = snapshot.plugins.find((entry) => entry.id === "invalid-view-plugin");
+    const plugin = snapshot.plugins.find((entry) => entry.id === "malformed-view-plugin");
 
     expect(plugin?.runtime.activated).toBe(false);
     expect(plugin?.runtime.activationError).toContain("invalid view");
     expect(
-      snapshot.views.some((view) => view.pluginId === "invalid-view-plugin"),
+      snapshot.views.some((view) => view.pluginId === "malformed-view-plugin"),
     ).toBe(false);
   });
 
