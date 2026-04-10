@@ -1,12 +1,21 @@
 # Database / Warehouse Connectivity
 duckdb
 duckdb-cli
+boto3
+redshift-connector
 psycopg[binary]
 google-cloud-bigquery
 google-cloud-bigquery-storage
 pandas-gbq
 db-dtypes
 sqlalchemy
+pymongo
+pymongoarrow
+redis[hiredis]
+neo4j
+opensearch-py
+clickhouse-connect
+trino
 snowflake-connector-python[pandas]
 snowflake-sqlalchemy
 databricks-sql-connector[pyarrow]
