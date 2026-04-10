@@ -230,21 +230,24 @@ export interface DesktopAuthState {
   label: string;
 }
 
-export interface DesktopThreadMetadata {
-  status: string | null;
-  lane: string | null;
-  archived: boolean;
-  archivedAt: number | null;
+export interface DesktopThreadGroup {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface DesktopThread {
   id: string;
+  groupId: string;
   provider: DesktopProvider;
   title: string;
   createdAt: number;
   updatedAt: number;
   lastMessagePreview: string | null;
-  metadata: DesktopThreadMetadata;
+  status: string | null;
+  lane: string | null;
+  archivedAt: number | null;
 }
 
 export interface DesktopThreadRuntimeState {
@@ -312,11 +315,13 @@ export type DesktopPermissionRequest =
   | DesktopPermissionRequestSecretPrompt;
 
 export interface DesktopSnapshot {
+  threadGroups: DesktopThreadGroup[];
   threads: DesktopThread[];
   messagesByThread: Record<string, DesktopMessage[]>;
   tabs: DesktopTab[];
   activeTabId: string | null;
   activeThreadId: string | null;
+  activeGroupId: string | null;
   activeViewId: string | null;
   threadPreviewStateById: Record<string, DesktopThreadPreviewState>;
   threadRuntimeById: Record<string, DesktopThreadRuntimeState>;
@@ -338,15 +343,39 @@ export interface DesktopStartupDiagnostic {
   detail?: string;
 }
 
+export type DesktopShellCommand =
+  | "new_chat"
+  | "open_settings"
+  | "toggle_sidebar"
+  | "close_tab"
+  | "next_tab"
+  | "previous_tab";
+
 export type DesktopClientEvent =
+  | {
+      type: "create_group";
+      title?: string;
+    }
+  | {
+      type: "select_group";
+      groupId: string;
+    }
+  | {
+      type: "update_group";
+      groupId: string;
+      title: string;
+    }
+  | {
+      type: "delete_group";
+      groupId: string;
+    }
   | {
       type: "create_thread";
       title?: string;
-      metadata?: {
-        status?: string | null;
-        lane?: string | null;
-        archived?: boolean | null;
-      };
+      groupId?: string;
+      status?: string | null;
+      lane?: string | null;
+      archivedAt?: number | null;
     }
   | {
       type: "select_thread";
@@ -404,12 +433,14 @@ export type DesktopClientEvent =
       threadId: string;
     }
   | {
-      type: "update_thread_metadata";
+      type: "update_thread";
       threadId: string;
-      metadata: {
+      updates: {
+        title?: string | null;
+        groupId?: string | null;
         status?: string | null;
         lane?: string | null;
-        archived?: boolean | null;
+        archivedAt?: number | null;
       };
     }
   | {

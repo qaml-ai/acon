@@ -202,6 +202,140 @@ describe("DesktopService", () => {
     unsubscribe();
   });
 
+  it("creates new threads inside the active group", () => {
+    const threadId = "thread-1";
+    writeFileSync(
+      resolve(sandboxDataDir, "state.json"),
+      JSON.stringify(
+        {
+          activeThreadId: threadId,
+          activeViewId: null,
+          provider: "claude",
+          modelsByProvider: {
+            claude: "sonnet",
+          },
+          threads: [
+            {
+              id: threadId,
+              groupId: "group-1",
+              provider: "claude",
+              title: "Thread one",
+              createdAt: 1,
+              updatedAt: 1,
+              lastMessagePreview: null,
+              status: null,
+              lane: null,
+              archivedAt: null,
+            },
+          ],
+          threadGroups: [
+            {
+              id: "group-1",
+              title: "Group one",
+              createdAt: 1,
+              updatedAt: 1,
+            },
+          ],
+          activeGroupId: "group-1",
+          messagesByThread: {
+            [threadId]: [],
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const { runtime } = createRuntimeManagerStub();
+    const service = new DesktopService(runtime);
+
+    const snapshot = service.getSnapshot();
+    expect(snapshot.threadGroups).toHaveLength(1);
+    expect(snapshot.activeGroupId).toBe(snapshot.threadGroups[0]?.id ?? null);
+    expect(snapshot.threads[0]?.groupId).toBe(snapshot.threadGroups[0]?.id);
+
+    service.handleClientEvent({ type: "create_thread" });
+
+    const nextSnapshot = service.getSnapshot();
+    expect(nextSnapshot.threads).toHaveLength(2);
+    expect(
+      nextSnapshot.threads.every(
+        (thread) => thread.groupId === nextSnapshot.threadGroups[0]?.id,
+      ),
+    ).toBe(true);
+  });
+
+  it("creates and selects groups independently from thread selection", () => {
+    const { runtime } = createRuntimeManagerStub();
+    const service = new DesktopService(runtime);
+
+    const initialSnapshot = service.getSnapshot();
+    expect(initialSnapshot.threadGroups).toHaveLength(1);
+
+    service.handleClientEvent({ type: "create_group", title: "Bugs" });
+    const createdSnapshot = service.getSnapshot();
+    const createdGroup = createdSnapshot.threadGroups.find(
+      (group) => group.title === "Bugs",
+    );
+
+    expect(createdGroup).toBeTruthy();
+    expect(createdSnapshot.activeGroupId).toBe(createdGroup?.id ?? null);
+
+    service.handleClientEvent({
+      type: "select_group",
+      groupId: initialSnapshot.threadGroups[0]!.id,
+    });
+
+    const selectedSnapshot = service.getSnapshot();
+    expect(selectedSnapshot.activeGroupId).toBe(initialSnapshot.threadGroups[0]!.id);
+    expect(selectedSnapshot.activeThreadId).toBe(initialSnapshot.activeThreadId);
+  });
+
+  it("renames an existing group", () => {
+    const { runtime } = createRuntimeManagerStub();
+    const service = new DesktopService(runtime);
+    const groupId = service.getSnapshot().threadGroups[0]!.id;
+
+    service.handleClientEvent({
+      type: "update_group",
+      groupId,
+      title: "Planning",
+    });
+
+    const snapshot = service.getSnapshot();
+    expect(snapshot.threadGroups.find((group) => group.id === groupId)?.title).toBe("Planning");
+  });
+
+  it("deletes a non-default group and moves its threads to the default group", () => {
+    const { runtime } = createRuntimeManagerStub();
+    const service = new DesktopService(runtime);
+    const defaultGroupId = service.getSnapshot().threadGroups[0]!.id;
+
+    service.handleClientEvent({ type: "create_group", title: "Bugs" });
+    const createdGroupId = service
+      .getSnapshot()
+      .threadGroups.find((group) => group.title === "Bugs")!.id;
+
+    service.handleClientEvent({
+      type: "create_thread",
+      groupId: createdGroupId,
+    });
+    const movedThreadId = service.getSnapshot().activeThreadId!;
+
+    service.handleClientEvent({
+      type: "delete_group",
+      groupId: createdGroupId,
+    });
+
+    const snapshot = service.getSnapshot();
+    expect(snapshot.threadGroups.some((group) => group.id === createdGroupId)).toBe(false);
+    expect(snapshot.threads.find((thread) => thread.id === movedThreadId)?.groupId).toBe(
+      defaultGroupId,
+    );
+    expect(snapshot.activeGroupId).toBe(defaultGroupId);
+  });
+
   it("stops the active turn with runtime cancellation", async () => {
     const { runtime, pendingPrompts, streamPrompt, cancelPrompt } = createRuntimeManagerStub();
     const service = new DesktopService(runtime);

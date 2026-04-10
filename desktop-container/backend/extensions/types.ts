@@ -25,21 +25,17 @@ export type CamelAIThreadStateValue =
   | CamelAIThreadStateValue[]
   | { [key: string]: CamelAIThreadStateValue };
 
-export interface CamelAIThreadMetadata {
-  status: string | null;
-  lane: string | null;
-  archived: boolean;
-  archivedAt: number | null;
-}
-
 export interface CamelAIThreadRecord {
   id: string;
+  groupId: string;
   provider: DesktopProvider;
   title: string;
   createdAt: number;
   updatedAt: number;
   lastMessagePreview: string | null;
-  metadata: CamelAIThreadMetadata;
+  status: string | null;
+  lane: string | null;
+  archivedAt: number | null;
   active: boolean;
   hasMessages: boolean;
   sessionId: string | null;
@@ -49,18 +45,19 @@ export interface CamelAIThreadRecord {
 
 export interface CamelAIThreadCreateOptions {
   title?: string;
+  groupId?: string;
   provider?: DesktopProvider;
-  metadata?: {
-    status?: string | null;
-    lane?: string | null;
-    archived?: boolean | null;
-  };
-}
-
-export interface CamelAIThreadMetadataUpdate {
   status?: string | null;
   lane?: string | null;
-  archived?: boolean | null;
+  archivedAt?: number | null;
+}
+
+export interface CamelAIThreadUpdate {
+  title?: string | null;
+  groupId?: string | null;
+  status?: string | null;
+  lane?: string | null;
+  archivedAt?: number | null;
 }
 
 export type CamelAIThreadEvent =
@@ -75,7 +72,7 @@ export type CamelAIThreadEvent =
   | {
       type: "thread_updated";
       thread: CamelAIThreadRecord;
-      reason: "message" | "metadata" | "selection" | "session";
+      reason: "message" | "thread" | "selection" | "session";
     };
 
 export type CamelAIThreadEventHandler = (
@@ -147,6 +144,7 @@ export interface CamelAIActivationContext {
   harness: DesktopHarness;
   model: DesktopModel;
   activeThreadId: string | null;
+  activeGroupId: string | null;
   runtimeStatus: DesktopRuntimeStatus;
   runtimeDirectory: string | null;
   workspaceDirectory: string;
@@ -443,9 +441,9 @@ export interface CamelAIPluginApi {
   createThread(options?: CamelAIThreadCreateOptions): CamelAIThreadRecord;
   sendMessage(threadId: string, content: string): Promise<void>;
   stopThread(threadId: string): Promise<boolean>;
-  updateThreadMetadata(
+  updateThread(
     threadId: string,
-    update: CamelAIThreadMetadataUpdate,
+    update: CamelAIThreadUpdate,
   ): CamelAIThreadRecord;
   registerView(id: string, view: CamelAIViewRegistration): CamelAIDisposable;
   registerSidebarPanel(

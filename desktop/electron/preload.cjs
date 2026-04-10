@@ -25,4 +25,11 @@ contextBridge.exposeInMainWorld('desktopShell', {
       ipcRenderer.removeListener('desktop:event', handler);
     };
   },
+  onCommand: (listener) => {
+    const handler = (_event, payload) => listener(payload);
+    ipcRenderer.on('desktop:command', handler);
+    return () => {
+      ipcRenderer.removeListener('desktop:command', handler);
+    };
+  },
 });
