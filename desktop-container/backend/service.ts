@@ -37,6 +37,7 @@ import { CamelAIExtensionHost } from "./extensions/host";
 import { getHarnessAdapterForProvider } from "./extensions/harness-adapters";
 import type {
   CamelAIHostMcpMutationContext,
+  CamelAIHostPluginMutationContext,
   CamelAIThreadCreateOptions,
   CamelAIThreadEvent,
   CamelAIThreadEventHandler,
@@ -59,6 +60,11 @@ import {
   type PersistedHostMcpServerRecord,
   type PersistedHostMcpStdioInstallOptions,
 } from "./persisted-host-mcp";
+import {
+  installPluginFromDirectory,
+  readPluginManifestFromDirectory,
+  resolvePluginWorkspaceSourcePath,
+} from "./persisted-plugins";
 import { setPersistedHostSecret } from "./host-secrets";
 
 type Listener = (event: DesktopServerEvent) => void;
@@ -144,6 +150,9 @@ export class DesktopService {
         this.promptToStoreSecret(options, context),
       uninstallInstalledHostMcpServer: (serverId, context) =>
         this.uninstallInstalledHostMcpServer(serverId, context),
+      listInstalledPlugins: () => this.listInstalledPlugins(),
+      installPluginFromWorkspace: (options, context) =>
+        this.installPluginFromWorkspace(options, context),
       openThreadPreviewItem: (threadId, target) =>
         this.openThreadPreviewItem(threadId, target),
       setThreadPreviewItems: (threadId, targets, activeIndex) =>
@@ -323,6 +332,10 @@ export class DesktopService {
     });
   }
 
+  listInstalledPlugins() {
+    return this.getSnapshot().plugins;
+  }
+
   async installStdioHostMcpServer(
     server: PersistedHostMcpStdioInstallOptions,
     context:
@@ -497,6 +510,52 @@ export class DesktopService {
       this.runtimeManager.unregisterHostMcpServer(serverId);
     }
     return removed;
+  }
+
+  async installPluginFromWorkspace(
+    options: {
+      path: string;
+    },
+    context: CamelAIHostPluginMutationContext,
+  ): Promise<{
+    pluginId: string;
+    pluginName: string;
+    version: string;
+    installPath: string;
+    replaced: boolean;
+  }> {
+    const sourcePath = resolvePluginWorkspaceSourcePath(
+      this.runtimeManager.getManagedWorkspaceDirectory(),
+      options.path,
+    );
+    const manifest = readPluginManifestFromDirectory(sourcePath);
+    await this.requestPermission({
+      kind: "plugin_mutation",
+      id: randomUUID(),
+      threadId: context.threadId,
+      pluginId: context.pluginId,
+      harness: context.harness,
+      action: this.listInstalledPlugins().some((plugin) => plugin.id === manifest.id)
+        ? "update"
+        : "install",
+      targetPluginId: manifest.id,
+      targetPluginName: manifest.name,
+      sourcePath: options.path,
+      version: manifest.version,
+    });
+
+    const installed = installPluginFromDirectory({
+      dataDirectory: this.dataDirectory,
+      sourceDirectory: sourcePath,
+    });
+    await this.handleRefreshPlugins();
+    return {
+      pluginId: installed.id,
+      pluginName: installed.name,
+      version: installed.version,
+      installPath: installed.installPath,
+      replaced: installed.replaced,
+    };
   }
 
   emitSnapshot(listener?: Listener): void {
@@ -950,13 +1009,16 @@ export class DesktopService {
     }
 
     const action =
-      pending.request.kind === "host_mcp_mutation"
+      pending.request.kind === "host_mcp_mutation" ||
+      pending.request.kind === "plugin_mutation"
         ? pending.request.action
         : "store";
     pending.reject(
       new Error(
         pending.request.kind === "host_mcp_mutation"
           ? `User denied permission to ${action} host MCP server ${pending.request.serverId}.`
+          : pending.request.kind === "plugin_mutation"
+            ? `User denied permission to ${action} plugin ${pending.request.targetPluginId}.`
           : `User denied permission to store secret ${pending.request.secretRef}.`,
       ),
     );

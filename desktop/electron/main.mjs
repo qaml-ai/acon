@@ -76,6 +76,31 @@ async function showHostMcpPermissionDialog(request) {
   return response.response === 0;
 }
 
+async function showPluginPermissionDialog(request) {
+  const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? undefined;
+  const actionLabel =
+    request.action === 'update' ? 'Update plugin' : 'Install plugin';
+  const detailLines = [
+    `Plugin ID: ${request.targetPluginId}`,
+    request.targetPluginName ? `Name: ${request.targetPluginName}` : null,
+    request.version ? `Version: ${request.version}` : null,
+    `Workspace path: ${request.sourcePath}`,
+    `Requested by plugin: ${request.pluginId}`,
+    `Harness: ${request.harness}`,
+  ].filter(Boolean);
+  const response = await dialog.showMessageBox(window, {
+    type: 'warning',
+    buttons: ['Approve', 'Deny'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+    title: actionLabel,
+    message: `${actionLabel}?`,
+    detail: detailLines.join('\n'),
+  });
+  return response.response === 0;
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll('&', '&amp;')
@@ -650,6 +675,26 @@ function publishBackendEvent(event) {
       )
       .catch((error) => {
         console.error('[desktop-backend] failed to resolve secret prompt', error);
+        return sendBackendEvent({
+          type: 'respond_permission_request',
+          requestId: event.request.id,
+          decision: 'deny',
+        });
+      });
+    return;
+  }
+
+  if (event.type === 'permission_request' && event.request.kind === 'plugin_mutation') {
+    void showPluginPermissionDialog(event.request)
+      .then((approved) =>
+        sendBackendEvent({
+          type: 'respond_permission_request',
+          requestId: event.request.id,
+          decision: approved ? 'approve' : 'deny',
+        }),
+      )
+      .catch((error) => {
+        console.error('[desktop-backend] failed to resolve plugin permission request', error);
         return sendBackendEvent({
           type: 'respond_permission_request',
           requestId: event.request.id,
