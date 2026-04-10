@@ -736,7 +736,6 @@ describe("CamelAIExtensionHost", () => {
       );
     }
   });
-
   it("keeps disabled plugins discovered without activating or contributing surfaces", async () => {
     writeUserPlugin(sandboxDataDir, {
       id: "disabled-user-plugin",

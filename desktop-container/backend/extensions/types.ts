@@ -430,7 +430,6 @@ export interface CamelAIPluginAgentAssetsBundleRecord {
   mcpServers: CamelAIPluginAgentMcpServerAssetRecord[];
   installedByProvider: CamelAIPluginAgentAssetInstallState[];
 }
-
 export interface CamelAIBeforePromptEvent {
   type: "before_prompt";
   threadId: string;

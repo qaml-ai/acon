@@ -71,9 +71,18 @@ function normalizePreviewTarget(target: CamelAIPreviewTarget): CamelAIPreviewTar
     };
   }
 
+  const normalizedPath = target.path.trim();
+  const inferredSource =
+    target.source ??
+    (normalizedPath.startsWith("/mnt/user-uploads/")
+      ? "upload"
+      : normalizedPath.startsWith("/mnt/user-outputs/")
+        ? "output"
+        : "workspace");
+
   return {
     kind: "file",
-    source: target.source ?? "workspace",
+    source: inferredSource,
     workspaceId: target.workspaceId ?? null,
     path: target.path,
     filename: target.filename ?? null,

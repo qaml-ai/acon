@@ -18,6 +18,7 @@ export interface PersistedPluginManifestRecord {
   name: string;
   version: string;
   agentAssets: PluginAgentAssetsRecord | null;
+  agentAssets: PluginAgentAssetsRecord | null;
 }
 
 export interface PersistedPluginInstallResult extends PersistedPluginManifestRecord {
@@ -96,6 +97,7 @@ export function readPluginManifestFromDirectory(
       typeof packageJson.version === "string" && packageJson.version.trim().length > 0
         ? packageJson.version.trim()
         : "0.0.0",
+    agentAssets: readPluginAgentAssetsFromManifest(sourcePath, manifest),
     agentAssets: readPluginAgentAssetsFromManifest(sourcePath, manifest),
   };
 }

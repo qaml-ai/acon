@@ -418,7 +418,6 @@ export interface CamelAIPluginAgentAssetsBundleRecord {
   mcpServers: CamelAIPluginAgentMcpServerAssetRecord[];
   installedByProvider: CamelAIPluginAgentAssetInstallState[];
 }
-
 export type CamelAIEventName =
   | "runtime_ready"
   | "session_start"

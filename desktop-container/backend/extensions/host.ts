@@ -162,6 +162,9 @@ export interface CamelAIExtensionHostOptions {
   listPluginAgentAssets?: (
     pluginId?: string | null,
   ) => CamelAIPluginAgentAssetsBundleRecord[];
+  listPluginAgentAssets?: (
+    pluginId?: string | null,
+  ) => CamelAIPluginAgentAssetsBundleRecord[];
   openThreadPreviewItem?: (
     threadId: string | null,
     target: DesktopPreviewTarget,
@@ -1045,6 +1048,10 @@ export class CamelAIExtensionHost {
           threadId: activeContext.activeThreadId,
           workspaceDirectory: activeContext.workspaceDirectory,
         });
+      },
+      listPluginAgentAssets: (pluginId) => {
+        this.assertPluginPermission(record, "host-plugins");
+        return this.options.listPluginAgentAssets?.(pluginId) ?? [];
       },
       listPluginAgentAssets: (pluginId) => {
         this.assertPluginPermission(record, "host-plugins");

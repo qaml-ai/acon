@@ -19,6 +19,7 @@ import type {
 import {
   getDesktopPreviewItemId,
   getDesktopPreviewItemTitle,
+  normalizeTransferredPreviewPath,
   normalizeWorkspacePreviewPath,
 } from "../../desktop/shared/preview";
 import {
@@ -157,6 +158,7 @@ export class DesktopService {
       listInstalledPlugins: () => this.listInstalledPlugins(),
       installPluginFromWorkspace: (options, context) =>
         this.installPluginFromWorkspace(options, context),
+      listPluginAgentAssets: (pluginId) => this.listPluginAgentAssets(pluginId),
       listPluginAgentAssets: (pluginId) => this.listPluginAgentAssets(pluginId),
       openThreadPreviewItem: (threadId, target) =>
         this.openThreadPreviewItem(threadId, target),
@@ -374,7 +376,6 @@ export class DesktopService {
       ];
     });
   }
-
   async installStdioHostMcpServer(
     server: PersistedHostMcpStdioInstallOptions,
     context:
@@ -1199,6 +1200,46 @@ export class DesktopService {
       return null;
     }
 
+    const transferredPreview = normalizeTransferredPreviewPath(trimmedPath);
+    if (target.source === "upload" || target.source === "output" || transferredPreview) {
+      if (existsSync(trimmedPath) && statSync(trimmedPath).isFile()) {
+        return trimmedPath;
+      }
+
+      const source = transferredPreview?.source ?? target.source;
+      const relativePath = (transferredPreview?.path ?? trimmedPath).replace(/^\/+/, "");
+      if (!relativePath || (source !== "upload" && source !== "output")) {
+        return null;
+      }
+
+      const localPath = resolve(
+        this.dataDirectory,
+        "transfers",
+        source === "upload" ? "uploads" : "outputs",
+        relativePath,
+      );
+      if (!existsSync(localPath) || !statSync(localPath).isFile()) {
+        return null;
+      }
+      return localPath;
+    }
+
+    const providerHomeMatch = trimmedPath.match(/^\/data\/providers\/([^/]+)\/home\/(.+)$/);
+    if (providerHomeMatch) {
+      const [, providerId, relativePath] = providerHomeMatch;
+      const localPath = resolve(
+        this.runtimeManager.getRuntimeDirectory(),
+        "providers",
+        providerId,
+        "home",
+        relativePath,
+      );
+      if (!existsSync(localPath) || !statSync(localPath).isFile()) {
+        return null;
+      }
+      return localPath;
+    }
+
     if (target.source === "workspace") {
       const normalizedPath = normalizeWorkspacePreviewPath(trimmedPath);
       const workspaceRelativePath = normalizedPath.replace(/^\/+/, "");
@@ -1210,6 +1251,24 @@ export class DesktopService {
         return null;
       }
       return localPath;
+    }
+
+    const normalizedTransferPath =
+      target.source === "upload" && trimmedPath.startsWith("/mnt/user-uploads/")
+        ? trimmedPath.slice("/mnt/user-uploads/".length)
+        : target.source === "output" && trimmedPath.startsWith("/mnt/user-outputs/")
+          ? trimmedPath.slice("/mnt/user-outputs/".length)
+          : trimmedPath;
+    const transferRoot =
+      target.source === "upload"
+        ? this.runtimeManager.getUserUploadsDirectory()
+        : this.runtimeManager.getUserOutputsDirectory();
+    const candidatePath = resolve(
+      transferRoot,
+      normalizedTransferPath.replace(/^\/+/, ""),
+    );
+    if (existsSync(candidatePath) && statSync(candidatePath).isFile()) {
+      return candidatePath;
     }
 
     if (existsSync(trimmedPath) && statSync(trimmedPath).isFile()) {

@@ -5,7 +5,8 @@ import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { CodePreview } from './code-preview';
-import { getPreviewType } from './file-type-utils';
+import { getFileExtension, getPreviewType } from './file-type-utils';
+import { MermaidPreview } from './mermaid-preview';
 import { NotebookPreview } from './notebook-preview';
 import type { NotebookFile } from './notebook-preview';
 import { SpreadsheetPreview } from './spreadsheet-preview';
@@ -118,6 +119,7 @@ function FilePreviewContentComponent({
   );
 
   const [textPreview, setTextPreview] = useState('');
+  const [spreadsheetPreview, setSpreadsheetPreview] = useState<string | ArrayBuffer | null>(null);
   const [textStatus, setTextStatus] = useState<TextStatus>('idle');
   const [textErrorMessage, setTextErrorMessage] = useState('Unable to preview this file.');
   const [notebook, setNotebook] = useState<NotebookFile | null>(null);
@@ -147,7 +149,8 @@ function FilePreviewContentComponent({
       previewType === 'code' ||
       previewType === 'spreadsheet' ||
       previewType === 'notebook' ||
-      previewType === 'markdown';
+      previewType === 'markdown' ||
+      previewType === 'mermaid';
     if (!shouldFetchText) return;
 
     const controller = new AbortController();
@@ -155,6 +158,7 @@ function FilePreviewContentComponent({
 
     setTextStatus('loading');
     setTextErrorMessage(getPreviewErrorMessage(previewType));
+    setSpreadsheetPreview(null);
     setNotebook(null);
     if (previewType === 'notebook') {
       notebookStateChangeRef.current?.({ notebook: null, status: 'loading' });
@@ -167,6 +171,19 @@ function FilePreviewContentComponent({
           error.status = response.status;
           throw error;
         }
+        const isBinarySpreadsheet =
+          previewType === 'spreadsheet' &&
+          ['xlsx', 'xls'].includes(getFileExtension(filename));
+
+        if (isBinarySpreadsheet) {
+          const bodyBuffer = await response.arrayBuffer();
+          if (cancelled) return;
+          setSpreadsheetPreview(bodyBuffer);
+          setLineInfo({ truncated: false, totalLines: 0 });
+          setTextStatus('ready');
+          return;
+        }
+
         const bodyText = await response.text();
         if (previewType === 'notebook') {
           let parsed: NotebookFile | null = null;
@@ -188,6 +205,7 @@ function FilePreviewContentComponent({
             bodyText,
             MAX_SPREADSHEET_LINES
           );
+          setSpreadsheetPreview(truncatedText);
           setTextPreview(truncatedText);
           setLineInfo({ truncated, totalLines });
           setTextStatus('ready');
@@ -227,7 +245,7 @@ function FilePreviewContentComponent({
   }, [previewType, previewUrl]);
 
   return (
-    <div className={cn('overflow-hidden', layout === 'panel' && 'h-full')}>
+    <div className={cn('min-w-0 overflow-hidden', layout === 'panel' && 'h-full')}>
       {previewType === 'image' && (
         <div className={cn(layout === 'panel' && 'p-3')}>
           <ImagePreview src={previewUrl} alt={filename} layout={layout} />
@@ -366,7 +384,7 @@ function FilePreviewContentComponent({
       )}
 
       {previewType === 'spreadsheet' && (
-        <div className={cn(layout === 'panel' && 'h-full overflow-auto')}>
+        <div className={cn('min-w-0', layout === 'panel' && 'h-full overflow-hidden')}>
           {(textStatus === 'loading' || textStatus === 'idle') && (
             <p className="p-4 text-sm text-muted-foreground">Loading preview...</p>
           )}
@@ -375,7 +393,7 @@ function FilePreviewContentComponent({
           )}
           {textStatus === 'ready' && (
             <SpreadsheetPreview
-              content={textPreview}
+              content={spreadsheetPreview ?? textPreview}
               filename={filename}
               contentType={contentType}
               layout={layout}
@@ -428,6 +446,20 @@ function FilePreviewContentComponent({
             <p className="mt-2 px-3 text-xs text-muted-foreground">
               Showing first {MAX_TEXT_LINES} of {lineInfo.totalLines} lines.
             </p>
+          )}
+        </div>
+      )}
+
+      {previewType === 'mermaid' && (
+        <div className={cn(layout === 'panel' && 'h-full overflow-auto')}>
+          {(textStatus === 'loading' || textStatus === 'idle') && (
+            <p className="text-sm text-muted-foreground">Loading diagram...</p>
+          )}
+          {textStatus === 'error' && (
+            <p className="text-sm text-muted-foreground">{textErrorMessage}</p>
+          )}
+          {textStatus === 'ready' && (
+            <MermaidPreview content={textPreview} filename={filename} layout={layout} />
           )}
         </div>
       )}

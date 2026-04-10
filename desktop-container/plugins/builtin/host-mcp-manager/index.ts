@@ -193,7 +193,6 @@ const listPluginAgentAssetsInputSchema = z.object({
 const listPluginAgentAssetsOutputSchema = z.object({
   plugins: z.array(pluginAgentAssetsBundleSchema),
 });
-
 const extension: CamelAIExtensionModule = {
   activate(api) {
     api.registerMcpServer(HOST_MCP_MANAGER_ID, {
@@ -457,7 +456,6 @@ const extension: CamelAIExtensionModule = {
             };
           },
         );
-
         return server;
       },
     });
