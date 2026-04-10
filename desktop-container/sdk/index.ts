@@ -320,11 +320,11 @@ export type CamelAIPersistedHostMcpServerRecord =
   | CamelAIPersistedHostMcpStdioServerRecord
   | CamelAIPersistedHostMcpHttpServerRecord;
 
-export interface CamelAIInstallHostMcpServerResult
-  extends CamelAIPersistedHostMcpServerRecord {
+export type CamelAIInstallHostMcpServerResult =
+  CamelAIPersistedHostMcpServerRecord & {
   configPath: string;
   replaced: boolean;
-}
+};
 
 export interface CamelAIInstallStdioHostMcpServerOptions {
   id: string;

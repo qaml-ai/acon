@@ -62,6 +62,27 @@ const previewVisibilityInputSchema = z.object({
   visible: z.boolean(),
 });
 
+type ToolResult = {
+  content?: Array<{
+    type: "text";
+    text: string;
+  }>;
+  structuredContent?: unknown;
+};
+
+type UntypedMcpServer = {
+  registerTool(
+    name: string,
+    config: {
+      title?: string;
+      description?: string;
+      inputSchema?: unknown;
+      outputSchema?: unknown;
+    },
+    cb: (input: any) => ToolResult | Promise<ToolResult>,
+  ): unknown;
+};
+
 function normalizePreviewTarget(target: CamelAIPreviewTarget): CamelAIPreviewTarget {
   if (target.kind === "url") {
     return {
@@ -101,10 +122,11 @@ const extension: CamelAIExtensionModule = {
   activate(api) {
     api.registerMcpServer(PREVIEW_CONTROL_ID, {
       createServer: () => {
-        const server = new McpServer({
+        const typedServer = new McpServer({
           name: PREVIEW_CONTROL_ID,
           version: "1.0.0",
         });
+        const server = typedServer as unknown as UntypedMcpServer;
 
         server.registerTool(
           "open_preview",
@@ -140,9 +162,13 @@ const extension: CamelAIExtensionModule = {
             inputSchema: previewSetItemsInputSchema,
             outputSchema: previewStateSchema,
           },
-          async ({ threadId, items, activeIndex }) => {
+          async ({ threadId, items, activeIndex }: {
+            threadId?: string;
+            items: CamelAIPreviewTarget[];
+            activeIndex?: number | null;
+          }) => {
             const result = api.setThreadPreviewItems(
-              items.map((item) => normalizePreviewTarget(item)),
+              items.map((item: CamelAIPreviewTarget) => normalizePreviewTarget(item)),
               {
                 threadId: threadId ?? null,
                 activeIndex: activeIndex ?? null,
@@ -213,7 +239,7 @@ const extension: CamelAIExtensionModule = {
           },
         );
 
-        return server;
+        return typedServer;
       },
     });
   },
