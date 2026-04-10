@@ -1,0 +1,15 @@
+# Database / Warehouse Connectivity
+duckdb
+duckdb-cli
+psycopg[binary]
+google-cloud-bigquery
+google-cloud-bigquery-storage
+pandas-gbq
+db-dtypes
+sqlalchemy
+snowflake-connector-python[pandas]
+snowflake-sqlalchemy
+databricks-sql-connector[pyarrow]
+databricks-sqlalchemy
+pyodbc
+python-tds
