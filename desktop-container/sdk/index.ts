@@ -1,7 +1,11 @@
 export type CamelAIHarness = "opencode" | "claude-code" | "codex";
 export type CamelAIProvider = "claude" | "codex";
 export const CAMELAI_PLUGIN_API_VERSION = 1;
-export type CamelAIPermission = "host-mcp" | "serve-mcp" | "thread-preview";
+export type CamelAIPermission =
+  | "host-mcp"
+  | "host-plugins"
+  | "serve-mcp"
+  | "thread-preview";
 export type CamelAISettingFieldType =
   | "boolean"
   | "number"
@@ -359,6 +363,28 @@ export interface CamelAIStoredSecretResult {
   secretRef: string;
 }
 
+export interface CamelAIInstalledPluginRecord {
+  id: string;
+  name: string;
+  version: string;
+  source: "builtin" | "user";
+  enabled: boolean;
+  disableable: boolean;
+  path: string;
+}
+
+export interface CamelAIInstallPluginResult {
+  pluginId: string;
+  pluginName: string;
+  version: string;
+  installPath: string;
+  replaced: boolean;
+}
+
+export interface CamelAIInstallWorkspacePluginOptions {
+  path: string;
+}
+
 export type CamelAIEventName =
   | "runtime_ready"
   | "session_start"
@@ -426,6 +452,10 @@ export interface CamelAIActivationApi {
     options: CamelAIPromptToStoreSecretOptions,
   ): Promise<CamelAIStoredSecretResult>;
   uninstallInstalledHostMcpServer(serverId: string): Promise<boolean>;
+  listInstalledPlugins(): CamelAIInstalledPluginRecord[];
+  installPluginFromWorkspace(
+    options: CamelAIInstallWorkspacePluginOptions,
+  ): Promise<CamelAIInstallPluginResult>;
   openThreadPreviewItem(
     target: CamelAIPreviewTarget,
     threadId?: string | null,

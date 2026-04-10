@@ -341,6 +341,13 @@ export interface CamelAIHostMcpMutationContext {
   workspaceDirectory: string;
 }
 
+export interface CamelAIHostPluginMutationContext {
+  pluginId: string;
+  harness: DesktopHarness;
+  threadId: string | null;
+  workspaceDirectory: string;
+}
+
 export interface CamelAIThreadPreviewMutationResult {
   threadId: string;
   state: DesktopThreadPreviewState;
@@ -366,6 +373,28 @@ export interface CamelAIPromptToStoreSecretOptions {
 
 export interface CamelAIStoredSecretResult {
   secretRef: string;
+}
+
+export interface CamelAIInstalledPluginRecord {
+  id: string;
+  name: string;
+  version: string;
+  source: "builtin" | "user";
+  enabled: boolean;
+  disableable: boolean;
+  path: string;
+}
+
+export interface CamelAIInstallPluginResult {
+  pluginId: string;
+  pluginName: string;
+  version: string;
+  installPath: string;
+  replaced: boolean;
+}
+
+export interface CamelAIInstallWorkspacePluginOptions {
+  path: string;
 }
 
 export interface CamelAIBeforePromptEvent {
@@ -475,6 +504,10 @@ export interface CamelAIPluginApi {
     options: CamelAIPromptToStoreSecretOptions,
   ): Promise<CamelAIStoredSecretResult>;
   uninstallInstalledHostMcpServer(serverId: string): Promise<boolean>;
+  listInstalledPlugins(): CamelAIInstalledPluginRecord[];
+  installPluginFromWorkspace(
+    options: CamelAIInstallWorkspacePluginOptions,
+  ): Promise<CamelAIInstallPluginResult>;
   openThreadPreviewItem(
     target: DesktopPreviewTarget,
     threadId?: string | null,

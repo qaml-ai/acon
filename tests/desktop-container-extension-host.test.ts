@@ -158,7 +158,7 @@ describe("CamelAIExtensionHost", () => {
       "plugin:extension-lab:extension-lab.home",
     );
     expect(snapshot.panels).toBeUndefined();
-    expect(host.getDefaultViewId("thread")).toBe(null);
+    expect(host.getDefaultViewId("thread")).toBe("plugin:chat:chat.thread");
   });
 
   it("runs before_prompt hooks from the new runtime-first extension API", async () => {
@@ -512,6 +512,134 @@ describe("CamelAIExtensionHost", () => {
     }
   });
 
+  it("lists installed plugins and installs a workspace plugin through the builtin host MCP manager", async () => {
+    const registerMcpServer = vi.fn();
+    const listInstalledPlugins = vi.fn().mockReturnValue([
+      {
+        id: "chat",
+        name: "Chat",
+        version: "0.1.0",
+        source: "builtin",
+        enabled: true,
+        disableable: false,
+        path: "/tmp/plugins/chat",
+      },
+    ]);
+    const installPluginFromWorkspace = vi.fn().mockResolvedValue({
+      pluginId: "todo-plugin",
+      pluginName: "Todo Plugin",
+      version: "0.2.0",
+      installPath: "/tmp/plugins/todo-plugin",
+      replaced: false,
+    });
+    const host = new CamelAIExtensionHost({
+      listInstalledPlugins,
+      installPluginFromWorkspace,
+      registerMcpServer,
+    });
+    const context = createActivationContext();
+
+    await host.initialize(context);
+
+    const registration = registerMcpServer.mock.calls.find(
+      ([entry]) => entry?.id === "plugin:host-mcp-manager:host-mcp-manager",
+    )?.[0];
+    expect(registration).toBeTruthy();
+
+    const registry = new HostMcpRegistry();
+    const sessionId = randomUUID();
+    registry.registerServer(registration);
+
+    try {
+      await initializeRegistryServer(
+        registry,
+        "plugin:host-mcp-manager:host-mcp-manager",
+        sessionId,
+      );
+
+      const listResponse = await registry.dispatchRequest({
+        serverId: "plugin:host-mcp-manager:host-mcp-manager",
+        sessionId,
+        message: {
+          jsonrpc: "2.0",
+          id: 20,
+          method: "tools/call",
+          params: {
+            name: "list_installed_plugins",
+            arguments: {},
+          },
+        },
+      });
+      const listMessage = getResultMessage(
+        listResponse.messages as Array<Record<string, unknown>>,
+        20,
+      );
+
+      expect(listInstalledPlugins).toHaveBeenCalledTimes(1);
+      expect(listMessage).toEqual(
+        expect.objectContaining({
+          result: expect.objectContaining({
+            structuredContent: {
+              plugins: [
+                expect.objectContaining({
+                  id: "chat",
+                  source: "builtin",
+                }),
+              ],
+            },
+          }),
+        }),
+      );
+
+      const installResponse = await registry.dispatchRequest({
+        serverId: "plugin:host-mcp-manager:host-mcp-manager",
+        sessionId,
+        message: {
+          jsonrpc: "2.0",
+          id: 21,
+          method: "tools/call",
+          params: {
+            name: "install_workspace_plugin",
+            arguments: {
+              path: "plugins/todo-plugin",
+            },
+          },
+        },
+      });
+      const installMessage = getResultMessage(
+        installResponse.messages as Array<Record<string, unknown>>,
+        21,
+      );
+
+      expect(installPluginFromWorkspace).toHaveBeenCalledWith(
+        {
+          path: "plugins/todo-plugin",
+        },
+        expect.objectContaining({
+          pluginId: "host-mcp-manager",
+          harness: "claude-code",
+          threadId: "thread-1",
+          workspaceDirectory: "/tmp/workspace",
+        }),
+      );
+      expect(installMessage).toEqual(
+        expect.objectContaining({
+          result: expect.objectContaining({
+            structuredContent: expect.objectContaining({
+              pluginId: "todo-plugin",
+              pluginName: "Todo Plugin",
+            }),
+          }),
+        }),
+      );
+    } finally {
+      await registry.closeSession(
+        "plugin:host-mcp-manager:host-mcp-manager",
+        sessionId,
+      );
+    }
+  });
+
   it("keeps disabled plugins discovered without activating or contributing surfaces", async () => {
     writeUserPlugin(sandboxDataDir, {
       id: "disabled-user-plugin",
@@ -579,6 +707,32 @@ describe("CamelAIExtensionHost", () => {
       .plugins.find((entry) => entry.id === "missing-serve-mcp-permission");
 
     expect(plugin?.runtime.activationError).toContain("serve-mcp");
+  });
+
+  it("turns malformed view registrations into activation errors instead of crashing snapshots", async () => {
+    writeUserPlugin(sandboxDataDir, {
+      id: "invalid-view-plugin",
+      code: `
+        export default {
+          activate(api) {
+            api.registerView("invalid.view");
+          },
+        };
+      `,
+    });
+
+    const host = new CamelAIExtensionHost();
+    const context = createActivationContext();
+
+    await host.initialize(context);
+    const snapshot = host.getSnapshot(context);
+    const plugin = snapshot.plugins.find((entry) => entry.id === "invalid-view-plugin");
+
+    expect(plugin?.runtime.activated).toBe(false);
+    expect(plugin?.runtime.activationError).toContain("invalid view");
+    expect(
+      snapshot.views.some((view) => view.pluginId === "invalid-view-plugin"),
+    ).toBe(false);
   });
 
   it("cleans up host MCP registrations when plugins refresh", async () => {

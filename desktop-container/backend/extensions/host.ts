@@ -40,10 +40,14 @@ import type {
   CamelAIEventName,
   CamelAIExtensionModule,
   CamelAIHostMcpMutationContext,
+  CamelAIHostPluginMutationContext,
   CamelAIMcpServerRegistration,
+  CamelAIInstallPluginResult,
   CamelAIInstallHostMcpServerResult,
   CamelAIInstallHttpHostMcpServerOptions,
   CamelAIInstallStdioHostMcpServerOptions,
+  CamelAIInstallWorkspacePluginOptions,
+  CamelAIInstalledPluginRecord,
   CamelAIManifest,
   CamelAIPersistedHostMcpServerRecord,
   CamelAIPreviewProviderRegistration,
@@ -94,6 +98,7 @@ const BUILTIN_EXTENSION_MODULES: Record<string, CamelAIExtensionModule> = {
 };
 const VALID_PLUGIN_PERMISSIONS = new Set<DesktopPluginPermission>([
   "host-mcp",
+  "host-plugins",
   "thread-preview",
   "serve-mcp",
 ]);
@@ -148,6 +153,11 @@ export interface CamelAIExtensionHostOptions {
   ) => Promise<{
     secretRef: string;
   }>;
+  listInstalledPlugins?: () => CamelAIInstalledPluginRecord[];
+  installPluginFromWorkspace?: (
+    options: CamelAIInstallWorkspacePluginOptions,
+    context: CamelAIHostPluginMutationContext,
+  ) => Promise<CamelAIInstallPluginResult>;
   openThreadPreviewItem?: (
     threadId: string | null,
     target: DesktopPreviewTarget,
@@ -911,18 +921,21 @@ export class CamelAIExtensionHost {
         return this.options.updateThread(threadId, update);
       },
       registerView: (id, view) => {
+        assertValidViewRegistration(pluginId, id, view);
         record.views.set(id, view);
         return this.registerRecordDisposable(record, () => {
           record.views.delete(id);
         });
       },
       registerSidebarPanel: (id, panel) => {
+        assertValidSidebarPanelRegistration(pluginId, id, panel);
         record.sidebarPanels.set(id, panel);
         return this.registerRecordDisposable(record, () => {
           record.sidebarPanels.delete(id);
         });
       },
       registerCommand: (id, command) => {
+        assertValidCommandRegistration(pluginId, id, command);
         record.commands.set(id, command);
         return this.registerRecordDisposable(record, () => {
           record.commands.delete(id);
@@ -935,6 +948,7 @@ export class CamelAIExtensionHost {
         });
       },
       registerTool: (id, tool) => {
+        assertValidToolRegistration(pluginId, id, tool);
         record.tools.set(id, tool);
         return this.registerRecordDisposable(record, () => {
           record.tools.delete(id);
@@ -994,6 +1008,23 @@ export class CamelAIExtensionHost {
             threadId: activeContext.activeThreadId,
           })
         ) ?? false;
+      },
+      listInstalledPlugins: () => {
+        this.assertPluginPermission(record, "host-plugins");
+        return this.options.listInstalledPlugins?.() ?? [];
+      },
+      installPluginFromWorkspace: async (options) => {
+        this.assertPluginPermission(record, "host-plugins");
+        if (!this.options.installPluginFromWorkspace) {
+          throw new Error("Plugin installation is unavailable.");
+        }
+        const activeContext = this.resolveActivationContext(context);
+        return await this.options.installPluginFromWorkspace(options, {
+          pluginId,
+          harness: activeContext.harness,
+          threadId: activeContext.activeThreadId,
+          workspaceDirectory: activeContext.workspaceDirectory,
+        });
       },
       openThreadPreviewItem: (target, threadId = context.activeThreadId) => {
         this.assertPluginPermission(record, "thread-preview");
@@ -1230,34 +1261,62 @@ export class CamelAIExtensionHost {
         reason: record.compatibilityError,
       },
       capabilities: {
-        views: Array.from(record.views.entries()).map(([id, view]) => ({
-          id,
-          title: view.title,
-          description: view.description ?? null,
-          icon: view.icon ?? null,
-          scope: view.scope ?? "workspace",
-          default: view.default === true,
-        })),
-        sidebarPanels: Array.from(record.sidebarPanels.entries()).map(([id, panel]) => ({
-          id,
-          title: panel.title,
-          description: panel.description ?? null,
-          icon: panel.icon ?? null,
-          placement: panel.placement ?? "content",
-          order: panel.order ?? 0,
-        })),
-        commands: Array.from(record.commands.entries()).map(([id, command]) => ({
-          id,
-          title: command.title,
-          description: command.description ?? null,
-        })),
-        tools: Array.from(record.tools.entries()).map(([id, tool]) => ({
-          id,
-          title: tool.title ?? null,
-          description: tool.description ?? null,
-          schema: null,
-          availableTo: tool.availableTo ?? ["*"],
-        })),
+        views: Array.from(record.views.entries()).flatMap(([id, view]) => {
+          try {
+            assertValidViewRegistration(discovered.id, id, view);
+            return [{
+              id,
+              title: view.title,
+              description: view.description ?? null,
+              icon: view.icon ?? null,
+              scope: view.scope ?? "workspace",
+              default: view.default === true,
+            }];
+          } catch {
+            return [];
+          }
+        }),
+        sidebarPanels: Array.from(record.sidebarPanels.entries()).flatMap(([id, panel]) => {
+          try {
+            assertValidSidebarPanelRegistration(discovered.id, id, panel);
+            return [{
+              id,
+              title: panel.title,
+              description: panel.description ?? null,
+              icon: panel.icon ?? null,
+              placement: panel.placement ?? "content",
+              order: panel.order ?? 0,
+            }];
+          } catch {
+            return [];
+          }
+        }),
+        commands: Array.from(record.commands.entries()).flatMap(([id, command]) => {
+          try {
+            assertValidCommandRegistration(discovered.id, id, command);
+            return [{
+              id,
+              title: command.title,
+              description: command.description ?? null,
+            }];
+          } catch {
+            return [];
+          }
+        }),
+        tools: Array.from(record.tools.entries()).flatMap(([id, tool]) => {
+          try {
+            assertValidToolRegistration(discovered.id, id, tool);
+            return [{
+              id,
+              title: tool.title ?? null,
+              description: tool.description ?? null,
+              schema: null,
+              availableTo: tool.availableTo ?? ["*"],
+            }];
+          } catch {
+            return [];
+          }
+        }),
       },
       runtime: {
         activated: record.activated,
@@ -1285,6 +1344,11 @@ export class CamelAIExtensionHost {
       }
 
       for (const [id, view] of record.views.entries()) {
+        try {
+          assertValidViewRegistration(record.discovered.id, id, view);
+        } catch {
+          continue;
+        }
         const render =
           view.render.kind === "host"
             ? { kind: "host" as const, component: view.render.component }
@@ -1339,6 +1403,11 @@ export class CamelAIExtensionHost {
       }
 
       for (const [id, panel] of record.sidebarPanels.entries()) {
+        try {
+          assertValidSidebarPanelRegistration(record.discovered.id, id, panel);
+        } catch {
+          continue;
+        }
         const threadState = this.createThreadState(
           record.discovered.id,
           context.activeThreadId,
@@ -1397,6 +1466,11 @@ export class CamelAIExtensionHost {
 
     for (const record of this.records.values()) {
       for (const [viewId, view] of record.views.entries()) {
+        try {
+          assertValidViewRegistration(record.discovered.id, viewId, view);
+        } catch {
+          continue;
+        }
         allViews.push({
           pluginId: record.discovered.id,
           viewId,
@@ -1505,6 +1579,11 @@ export class CamelAIExtensionHost {
 
     for (const record of this.records.values()) {
       for (const [toolId, tool] of record.tools.entries()) {
+        try {
+          assertValidToolRegistration(record.discovered.id, toolId, tool);
+        } catch {
+          continue;
+        }
         registrations.push({
           pluginId: record.discovered.id,
           toolId,
@@ -1522,5 +1601,85 @@ export class CamelAIExtensionHost {
     const primary = getHarnessAdapterForProvider(context.provider);
     const all = getHarnessAdapters();
     return [primary, ...all.filter((adapter) => adapter.id !== primary.id)];
+  }
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function assertValidViewRegistration(
+  pluginId: string,
+  id: string,
+  view: unknown,
+): asserts view is CamelAIViewRegistration {
+  if (!view || typeof view !== "object") {
+    throw new Error(`Plugin ${pluginId} registered invalid view ${id}: expected an object.`);
+  }
+  const record = view as CamelAIViewRegistration;
+  if (!isNonEmptyString(record.title)) {
+    throw new Error(`Plugin ${pluginId} registered invalid view ${id}: title is required.`);
+  }
+  if (!record.render || typeof record.render !== "object") {
+    throw new Error(`Plugin ${pluginId} registered invalid view ${id}: render is required.`);
+  }
+  if (record.render.kind === "host") {
+    if (!isNonEmptyString(record.render.component)) {
+      throw new Error(`Plugin ${pluginId} registered invalid view ${id}: host render.component is required.`);
+    }
+    return;
+  }
+  if (record.render.kind === "webview") {
+    if (!isNonEmptyString(record.render.webviewId)) {
+      throw new Error(`Plugin ${pluginId} registered invalid view ${id}: webview render.webviewId is required.`);
+    }
+    return;
+  }
+  throw new Error(`Plugin ${pluginId} registered invalid view ${id}: render.kind is unsupported.`);
+}
+
+function assertValidSidebarPanelRegistration(
+  pluginId: string,
+  id: string,
+  panel: unknown,
+): asserts panel is CamelAISidebarPanelRegistration {
+  if (!panel || typeof panel !== "object") {
+    throw new Error(`Plugin ${pluginId} registered invalid sidebar panel ${id}: expected an object.`);
+  }
+  const record = panel as CamelAISidebarPanelRegistration;
+  if (!isNonEmptyString(record.title)) {
+    throw new Error(`Plugin ${pluginId} registered invalid sidebar panel ${id}: title is required.`);
+  }
+  if (
+    !record.render ||
+    typeof record.render !== "object" ||
+    record.render.kind !== "host" ||
+    !isNonEmptyString(record.render.component)
+  ) {
+    throw new Error(`Plugin ${pluginId} registered invalid sidebar panel ${id}: host render.component is required.`);
+  }
+}
+
+function assertValidCommandRegistration(
+  pluginId: string,
+  id: string,
+  command: unknown,
+): asserts command is CamelAICommandRegistration {
+  if (!command || typeof command !== "object") {
+    throw new Error(`Plugin ${pluginId} registered invalid command ${id}: expected an object.`);
+  }
+  const record = command as CamelAICommandRegistration;
+  if (!isNonEmptyString(record.title)) {
+    throw new Error(`Plugin ${pluginId} registered invalid command ${id}: title is required.`);
+  }
+}
+
+function assertValidToolRegistration(
+  pluginId: string,
+  id: string,
+  tool: unknown,
+): asserts tool is CamelAIToolRegistration {
+  if (!tool || typeof tool !== "object") {
+    throw new Error(`Plugin ${pluginId} registered invalid tool ${id}: expected an object.`);
   }
 }
