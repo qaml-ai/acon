@@ -7,7 +7,7 @@
     "name": "Host MCP Manager",
     "description": "Registers a host-side MCP server that can install additional host MCP servers for the desktop app.",
     "icon": "ServerCog",
-    "permissions": ["host-mcp", "host-plugins", "serve-mcp"],
+    "permissions": ["host-mcp", "host-agent-assets", "host-plugins", "serve-mcp"],
     "main": "./index.ts"
   }
 }

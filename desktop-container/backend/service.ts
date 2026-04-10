@@ -37,11 +37,16 @@ import { getHarnessAdapterForProvider } from "./extensions/harness-adapters";
 import type {
   CamelAIHostMcpMutationContext,
   CamelAIHostPluginMutationContext,
+  CamelAIInstallPluginAgentAssetsOptions,
+  CamelAIInstallPluginAgentAssetsResult,
   CamelAIThreadCreateOptions,
   CamelAIThreadEvent,
   CamelAIThreadEventHandler,
   CamelAIThreadRecord,
   CamelAIThreadUpdate,
+  CamelAIPluginAgentAssetsBundleRecord,
+  CamelAIUninstallPluginAgentAssetsOptions,
+  CamelAIUninstallPluginAgentAssetsResult,
 } from "./extensions/types";
 import type { HostMcpServerRegistration } from "./host-mcp";
 import {
@@ -64,6 +69,11 @@ import {
   readPluginManifestFromDirectory,
   resolvePluginWorkspaceSourcePath,
 } from "./persisted-plugins";
+import {
+  getInstalledPluginAgentAssetsStatus,
+  installPluginAgentAssets as installBundledPluginAgentAssets,
+  uninstallPluginAgentAssets as uninstallBundledPluginAgentAssets,
+} from "./plugin-agent-assets";
 import { setPersistedHostSecret } from "./host-secrets";
 
 type Listener = (event: DesktopServerEvent) => void;
@@ -152,6 +162,11 @@ export class DesktopService {
       listInstalledPlugins: () => this.listInstalledPlugins(),
       installPluginFromWorkspace: (options, context) =>
         this.installPluginFromWorkspace(options, context),
+      listPluginAgentAssets: (pluginId) => this.listPluginAgentAssets(pluginId),
+      installPluginAgentAssets: (options, context) =>
+        this.installPluginAgentAssets(options, context),
+      uninstallPluginAgentAssets: (options, context) =>
+        this.uninstallPluginAgentAssets(options, context),
       openThreadPreviewItem: (threadId, target) =>
         this.openThreadPreviewItem(threadId, target),
       setThreadPreviewItems: (threadId, targets, activeIndex) =>
@@ -333,6 +348,39 @@ export class DesktopService {
 
   listInstalledPlugins() {
     return this.getSnapshot().plugins;
+  }
+
+  listPluginAgentAssets(pluginId?: string | null): CamelAIPluginAgentAssetsBundleRecord[] {
+    const plugins = pluginId ? [this.requirePluginAgentAssetPlugin(pluginId)] : this.listInstalledPlugins();
+    return plugins.flatMap((plugin) => {
+      const manifest = readPluginManifestFromDirectory(plugin.path);
+      const agentAssets = manifest.agentAssets;
+      if (!agentAssets) {
+        return [];
+      }
+      return [
+        {
+          pluginId: plugin.id,
+          pluginName: plugin.name,
+          pluginVersion: plugin.version,
+          source: plugin.source,
+          path: plugin.path,
+          skills: agentAssets.skills.map((skill) => ({
+            id: skill.id,
+          })),
+          mcpServers: agentAssets.mcpServers.map((server) => ({
+            id: server.id,
+            transport: server.transport,
+            name: server.name,
+            version: server.version,
+          })),
+          installedByProvider: getInstalledPluginAgentAssetsStatus({
+            runtimeDirectory: this.runtimeManager.getRuntimeDirectory(),
+            pluginId: plugin.id,
+          }),
+        } satisfies CamelAIPluginAgentAssetsBundleRecord,
+      ];
+    });
   }
 
   async installStdioHostMcpServer(
@@ -557,6 +605,93 @@ export class DesktopService {
     };
   }
 
+  async installPluginAgentAssets(
+    options: CamelAIInstallPluginAgentAssetsOptions,
+    context: CamelAIHostPluginMutationContext,
+  ): Promise<CamelAIInstallPluginAgentAssetsResult> {
+    const plugin = this.requirePluginAgentAssetPlugin(options.pluginId);
+    const manifest = readPluginManifestFromDirectory(plugin.path);
+    const agentAssets = manifest.agentAssets;
+    if (!agentAssets) {
+      throw new Error(`Plugin ${plugin.id} does not declare camelai.agentAssets.`);
+    }
+
+    const installSkills = options.skills !== false;
+    const installMcpServers = options.mcpServers !== false;
+    if (!installSkills && !installMcpServers) {
+      throw new Error("At least one of skills or mcpServers must be selected.");
+    }
+
+    const existing = getInstalledPluginAgentAssetsStatus({
+      runtimeDirectory: this.runtimeManager.getRuntimeDirectory(),
+      pluginId: plugin.id,
+    }).find((entry) => entry.provider === options.provider);
+
+    await this.requestPermission({
+      kind: "agent_asset_mutation",
+      id: randomUUID(),
+      threadId: context.threadId,
+      pluginId: context.pluginId,
+      harness: context.harness,
+      action:
+        existing &&
+        (existing.installedSkillIds.length > 0 || existing.installedMcpServerIds.length > 0)
+          ? "update"
+          : "install",
+      targetPluginId: plugin.id,
+      targetPluginName: plugin.name,
+      provider: options.provider,
+      installSkills,
+      installMcpServers,
+      skillIds: installSkills ? agentAssets.skills.map((skill) => skill.id) : [],
+      mcpServerIds: installMcpServers ? agentAssets.mcpServers.map((server) => server.id) : [],
+    });
+
+    return installBundledPluginAgentAssets({
+      runtimeDirectory: this.runtimeManager.getRuntimeDirectory(),
+      pluginId: plugin.id,
+      pluginName: plugin.name,
+      pluginVersion: plugin.version,
+      provider: options.provider,
+      agentAssets,
+      installSkills,
+      installMcpServers,
+    });
+  }
+
+  async uninstallPluginAgentAssets(
+    options: CamelAIUninstallPluginAgentAssetsOptions,
+    context: CamelAIHostPluginMutationContext,
+  ): Promise<CamelAIUninstallPluginAgentAssetsResult> {
+    const plugin = this.requirePluginAgentAssetPlugin(options.pluginId);
+    const status = getInstalledPluginAgentAssetsStatus({
+      runtimeDirectory: this.runtimeManager.getRuntimeDirectory(),
+      pluginId: plugin.id,
+    }).find((entry) => entry.provider === options.provider);
+
+    await this.requestPermission({
+      kind: "agent_asset_mutation",
+      id: randomUUID(),
+      threadId: context.threadId,
+      pluginId: context.pluginId,
+      harness: context.harness,
+      action: "delete",
+      targetPluginId: plugin.id,
+      targetPluginName: plugin.name,
+      provider: options.provider,
+      installSkills: Boolean(status?.installedSkillIds.length),
+      installMcpServers: Boolean(status?.installedMcpServerIds.length),
+      skillIds: status?.installedSkillIds ?? [],
+      mcpServerIds: status?.installedMcpServerIds ?? [],
+    });
+
+    return uninstallBundledPluginAgentAssets({
+      runtimeDirectory: this.runtimeManager.getRuntimeDirectory(),
+      pluginId: plugin.id,
+      provider: options.provider,
+    });
+  }
+
   emitSnapshot(listener?: Listener): void {
     const event: DesktopServerEvent = {
       type: "snapshot",
@@ -641,6 +776,29 @@ export class DesktopService {
       throw new Error(`Thread ${threadId} does not exist.`);
     }
     return this.toPluginThreadRecord(thread);
+  }
+
+  private requirePluginAgentAssetPlugin(pluginId: string) {
+    const installedPlugin = this.listInstalledPlugins().find((plugin) => plugin.id === pluginId);
+    if (installedPlugin) {
+      return installedPlugin;
+    }
+
+    const persistedPluginPath = resolve(this.dataDirectory, "plugins", pluginId);
+    if (existsSync(persistedPluginPath) && statSync(persistedPluginPath).isDirectory()) {
+      const manifest = readPluginManifestFromDirectory(persistedPluginPath);
+      return {
+        id: manifest.id,
+        name: manifest.name,
+        version: manifest.version,
+        source: "user" as const,
+        enabled: true,
+        disableable: true,
+        path: persistedPluginPath,
+      };
+    }
+
+    throw new Error(`Plugin ${pluginId} is not installed.`);
   }
 
   private emitThreadEvent(event: CamelAIThreadEvent): void {

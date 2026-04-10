@@ -8,11 +8,16 @@ import {
   statSync,
 } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
+import {
+  readPluginAgentAssetsFromManifest,
+  type PluginAgentAssetsRecord,
+} from "./plugin-agent-assets";
 
 export interface PersistedPluginManifestRecord {
   id: string;
   name: string;
   version: string;
+  agentAssets: PluginAgentAssetsRecord | null;
 }
 
 export interface PersistedPluginInstallResult extends PersistedPluginManifestRecord {
@@ -91,6 +96,7 @@ export function readPluginManifestFromDirectory(
       typeof packageJson.version === "string" && packageJson.version.trim().length > 0
         ? packageJson.version.trim()
         : "0.0.0",
+    agentAssets: readPluginAgentAssetsFromManifest(sourcePath, manifest),
   };
 }
 
