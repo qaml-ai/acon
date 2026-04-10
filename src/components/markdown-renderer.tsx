@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
 import { cn } from '@/lib/utils';
 import { Check, Copy } from 'lucide-react';
+import { resolvePreviewableTempFilePathFromHref } from '@/lib/temp-file-links';
 import { codeToHtml, SHIKI_DEFAULT_THEMES, SUPPORTED_LANGUAGES } from '@/lib/shiki-config';
 import { FileLink } from '@/components/tool-call';
 
@@ -18,8 +19,6 @@ interface MarkdownRendererProps {
 
 const CODEX_CITATION_REGEX = /cite[^]+/g;
 const TEMP_FILE_PATH_REGEX = /(^|[\s(])((?:\/mnt\/user-(?:uploads|outputs))\/[^\s)<`]+)(?=$|[\s).,!?])/gm;
-const WORKSPACE_TEMP_URL_REGEX = /^\/api\/workspaces\/[^/]+\/(uploads|outputs)\/(.+)$/;
-const TEMP_FILE_HREF_REGEX = /^\/mnt\/user-(uploads|outputs)\/(.+)$/;
 
 export function normalizeCodexCitationMarkers(content: string): string {
   if (!content.includes('cite')) {
@@ -32,7 +31,7 @@ export function normalizeCodexCitationMarkers(content: string): string {
   return content.replace(CODEX_CITATION_REGEX, '');
 }
 
-function injectTempFileMarkdownLinks(content: string): string {
+export function injectTempFileMarkdownLinks(content: string): string {
   const segments = content.split(/(```[\s\S]*?```)/g);
   return segments
     .map((segment) => {
@@ -52,47 +51,6 @@ function injectTempFileMarkdownLinks(content: string): string {
       );
     })
     .join('');
-}
-
-function decodePathSegments(path: string): string {
-  return path
-    .split('/')
-    .map((segment) => decodeURIComponent(segment))
-    .join('/');
-}
-
-function getPathnameFromHref(href: string): string {
-  if (href.startsWith('/')) {
-    return href;
-  }
-
-  try {
-    const parsed = new URL(href);
-    return parsed.pathname;
-  } catch {
-    return href;
-  }
-}
-
-export function resolvePreviewableTempFilePathFromHref(href: string): string | null {
-  const pathname = getPathnameFromHref(href.trim());
-  const tempFileMatch = TEMP_FILE_HREF_REGEX.exec(pathname);
-  if (tempFileMatch) {
-    const [, bucket, encodedPath] = tempFileMatch;
-    const root =
-      bucket === 'uploads' ? '/mnt/user-uploads/' : '/mnt/user-outputs/';
-    return `${root}${decodePathSegments(encodedPath)}`;
-  }
-
-  const match = WORKSPACE_TEMP_URL_REGEX.exec(pathname);
-  if (!match) {
-    return null;
-  }
-
-  const [, bucket, encodedPath] = match;
-  const root =
-    bucket === 'uploads' ? '/mnt/user-uploads/' : '/mnt/user-outputs/';
-  return `${root}${decodePathSegments(encodedPath)}`;
 }
 
 // Inline code component - simple styled span

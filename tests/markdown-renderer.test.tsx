@@ -1,8 +1,12 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { MarkdownRenderer } from "@/components/markdown-renderer";
+import {
+  MarkdownRenderer,
+  injectTempFileMarkdownLinks,
+} from "@/components/markdown-renderer";
 import { ChatPreviewProvider } from "@/components/chat-preview/preview-context";
 import { CurrentWorkspaceIdProvider } from "@/hooks/use-current-workspace-id";
+import { resolvePreviewableTempFilePathFromHref } from "@/lib/temp-file-links";
 
 describe("MarkdownRenderer", () => {
   it("routes workspace output API links into the preview pane", () => {
@@ -59,5 +63,25 @@ describe("MarkdownRenderer", () => {
       path: "reports/final sheet.xlsx",
       filename: "final sheet.xlsx",
     });
+  });
+
+  it("resolves previewable temp file href formats consistently", () => {
+    expect(
+      resolvePreviewableTempFilePathFromHref(
+        "/api/workspaces/desktop/outputs/reports/final%20sheet.xlsx",
+      ),
+    ).toBe("/mnt/user-outputs/reports/final sheet.xlsx");
+
+    expect(
+      resolvePreviewableTempFilePathFromHref(
+        "/mnt/user-outputs/reports/final%20sheet.xlsx",
+      ),
+    ).toBe("/mnt/user-outputs/reports/final sheet.xlsx");
+  });
+
+  it("does not rewrite existing markdown links for temp files", () => {
+    const content = "[Download file](/mnt/user-outputs/reports/final%20sheet.xlsx)";
+
+    expect(injectTempFileMarkdownLinks(content)).toBe(content);
   });
 });

@@ -5,17 +5,16 @@ import type { ReactNode } from 'react';
 import { useState } from 'react';
 import { useCurrentWorkspaceId } from '@/hooks/use-current-workspace-id';
 import { cn } from '@/lib/utils';
+import {
+  DESKTOP_WORKSPACE_ID,
+  encodePathSegments,
+  getTempFileInfo,
+} from '@/lib/temp-file-links';
 import { FilePreviewPopover } from '@/components/chat-file-preview';
 import { useChatPreviewContext } from '@/components/chat-preview/preview-context';
 import type { PreviewTarget } from '@/types';
 
 const WORKSPACE_ROOT_PREFIXES = ['/home/claude', '/workspace', '/root'];
-const DESKTOP_WORKSPACE_ID = 'desktop';
-
-const TEMP_FILE_PREFIXES = [
-  { prefix: '/mnt/user-uploads/', type: 'upload' as const, urlSegment: 'uploads' },
-  { prefix: '/mnt/user-outputs/', type: 'output' as const, urlSegment: 'outputs' },
-];
 
 function normalizeWorkspacePath(input: string): string {
   const trimmed = input?.trim?.() ?? '';
@@ -29,27 +28,6 @@ function normalizeWorkspacePath(input: string): string {
     }
   }
   return normalized;
-}
-
-function getTempFileInfo(input: string) {
-  const trimmed = input?.trim?.() ?? '';
-  if (!trimmed) return null;
-  const normalized = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
-  for (const { prefix, type, urlSegment } of TEMP_FILE_PREFIXES) {
-    if (normalized.startsWith(prefix)) {
-      const relativePath = normalized.slice(prefix.length);
-      if (!relativePath) return null;
-      return { type, relativePath, urlSegment };
-    }
-  }
-  return null;
-}
-
-function encodePathSegments(path: string): string {
-  return path
-    .split('/')
-    .map(segment => encodeURIComponent(segment))
-    .join('/');
 }
 
 function getBasename(path: string): string {
