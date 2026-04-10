@@ -176,12 +176,17 @@ describe("ContainerRuntimeManager", () => {
       "ruby",
       "default-jdk-headless",
       "ffmpeg",
+      "freetds-bin",
       "imagemagick",
       "tesseract-ocr",
       "tesseract-ocr-eng",
       "pandoc",
       "libreoffice",
+      "postgresql-client",
       "sqlite3",
+      "tdsodbc",
+      "unixodbc",
+      "unixodbc-dev",
       "jq",
       "git",
       "curl",
@@ -206,12 +211,48 @@ describe("ContainerRuntimeManager", () => {
       ),
       "utf8",
     );
+    const connectivityRequirementsSource = readFileSync(
+      resolve(
+        process.cwd(),
+        "desktop-container/container-images/acpx-shared/python-connectivity-requirements.txt",
+      ),
+      "utf8",
+    );
 
     expect(containerfileSource).toContain("python-requirements.txt");
+    expect(containerfileSource).toContain("python-connectivity-requirements.txt");
     expect(containerfileSource).toContain("--break-system-packages");
     expect(containerfileSource).toContain("ghostscript");
     expect(containerfileSource).toContain("graphviz");
     expect(containerfileSource).toContain("poppler-utils");
+
+    for (const packageName of [
+      "duckdb",
+      "duckdb-cli",
+      "boto3",
+      "redshift-connector",
+      "psycopg[binary]",
+      "google-cloud-bigquery",
+      "google-cloud-bigquery-storage",
+      "pandas-gbq",
+      "db-dtypes",
+      "sqlalchemy",
+      "pymongo",
+      "pymongoarrow",
+      "redis[hiredis]",
+      "neo4j",
+      "opensearch-py",
+      "clickhouse-connect",
+      "trino",
+      "snowflake-connector-python[pandas]",
+      "snowflake-sqlalchemy",
+      "databricks-sql-connector[pyarrow]",
+      "databricks-sqlalchemy",
+      "pyodbc",
+      "python-tds",
+    ]) {
+      expect(connectivityRequirementsSource).toContain(packageName);
+    }
 
     for (const packageName of [
       "openpyxl",
@@ -240,6 +281,7 @@ describe("ContainerRuntimeManager", () => {
       "seaborn",
       "sympy",
       "graphviz",
+      "pyarrow",
       "beautifulsoup4",
       "lxml",
       "requests",
