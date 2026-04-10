@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, protocol, shell, net } from 'electron';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -563,12 +563,46 @@ function importLocalFile(sourcePath) {
   };
 }
 
+function importFilePayload(payload) {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('Import payload must be an object.');
+  }
+
+  const originalName =
+    typeof payload.name === 'string' && payload.name.trim()
+      ? payload.name.trim()
+      : 'file';
+  const bytes = payload.bytes;
+  if (!(bytes instanceof Uint8Array) && !(bytes instanceof ArrayBuffer)) {
+    throw new Error('Import payload bytes must be binary data.');
+  }
+
+  const uploadsDirectory = getTransferDirectory('uploads');
+  const storedName = createImportedFilename(originalName);
+  const destinationPath = resolve(uploadsDirectory, storedName);
+  const buffer = bytes instanceof Uint8Array ? Buffer.from(bytes) : Buffer.from(new Uint8Array(bytes));
+  writeFileSync(destinationPath, buffer);
+
+  return {
+    originalName,
+    relativePath: storedName,
+    absolutePath: destinationPath,
+    size: buffer.byteLength,
+  };
+}
+
 function resolveDesktopFileSource(request) {
   if (!request || typeof request !== 'object') {
     throw new Error('Download request must be an object.');
   }
 
   const { source, path: targetPath } = request;
+  const normalizedTargetPath =
+    source === 'upload' && typeof targetPath === 'string' && targetPath.startsWith('/mnt/user-uploads/')
+      ? targetPath.slice('/mnt/user-uploads/'.length)
+      : source === 'output' && typeof targetPath === 'string' && targetPath.startsWith('/mnt/user-outputs/')
+        ? targetPath.slice('/mnt/user-outputs/'.length)
+        : targetPath;
   if (source === 'workspace') {
     return resolvePathWithin(
       getManagedWorkspaceRoot(),
@@ -576,10 +610,10 @@ function resolveDesktopFileSource(request) {
     );
   }
   if (source === 'upload') {
-    return resolvePathWithin(getTransferDirectory('uploads'), targetPath);
+    return resolvePathWithin(getTransferDirectory('uploads'), normalizedTargetPath);
   }
   if (source === 'output') {
-    return resolvePathWithin(getTransferDirectory('outputs'), targetPath);
+    return resolvePathWithin(getTransferDirectory('outputs'), normalizedTargetPath);
   }
 
   throw new Error(`Unsupported file source: ${String(source)}`);
@@ -1045,6 +1079,14 @@ ipcMain.handle('desktop:import-local-files', async (_event, filePaths) => {
   }
 
   return filePaths.map((filePath) => importLocalFile(filePath));
+});
+
+ipcMain.handle('desktop:import-file-payloads', async (_event, payloads) => {
+  if (!Array.isArray(payloads)) {
+    throw new Error('Import requires an array of payloads.');
+  }
+
+  return payloads.map((payload) => importFilePayload(payload));
 });
 
 ipcMain.handle('desktop:download-file', async (_event, request) => {

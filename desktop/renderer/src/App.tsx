@@ -674,39 +674,98 @@ function Composer({
   }, []);
 
   const handleFilesSelected = useCallback(async (files: File[]) => {
-    const entries = files.flatMap((file) => {
-      const sourcePath = getDesktopFilePath(file);
-      if (!sourcePath) {
-        return [];
-      }
-      return [{ sourcePath, file }];
-    });
+    const pathEntries: Array<{ sourcePath: string; file: File }> = [];
+    const payloadFiles: File[] = [];
 
-    if (entries.length === 0) {
+    for (const file of files) {
+      const sourcePath = getDesktopFilePath(file);
+      if (sourcePath) {
+        pathEntries.push({ sourcePath, file });
+        continue;
+      }
+      payloadFiles.push(file);
+    }
+
+    if (pathEntries.length > 0) {
+      await handleStageFiles(pathEntries);
+    }
+
+    if (payloadFiles.length === 0) {
+      return;
+    }
+
+    if (!desktopShell?.importFilePayloads) {
       toast.error("These files could not be imported from the desktop environment.");
       return;
     }
 
-    await handleStageFiles(entries);
-  }, [handleStageFiles]);
+    const pendingAttachments: DraftAttachment[] = payloadFiles.map((file) => ({
+      id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      name: file.name || "file",
+      originalName: file.name || "file",
+      path: "",
+      uploadPath: "",
+      size: file.size,
+      contentType: file.type || undefined,
+      previewUrl:
+        file.type.startsWith("image/")
+          ? URL.createObjectURL(file)
+          : undefined,
+      progress: 20,
+      status: "uploading",
+    }));
 
-  const handleAddFilesClick = useCallback(async () => {
-    if (!desktopShell?.pickLocalFiles) {
-      return;
-    }
+    setAttachments((current) => [...current, ...pendingAttachments]);
 
     try {
-      const selectedPaths = await desktopShell.pickLocalFiles();
-      if (selectedPaths.length === 0) {
-        return;
-      }
-      await handleStageFiles(
-        selectedPaths.map((sourcePath) => ({
-          sourcePath,
+      const payloads = await Promise.all(
+        payloadFiles.map(async (file) => ({
+          name: file.name || "file",
+          bytes: await file.arrayBuffer(),
         })),
       );
+      const importedFiles = await desktopShell.importFilePayloads(payloads);
+      setAttachments((current) =>
+        current.map((attachment) => {
+          const index = pendingAttachments.findIndex((pending) => pending.id === attachment.id);
+          if (index === -1) {
+            return attachment;
+          }
+          const imported = importedFiles[index];
+          return imported
+            ? {
+                ...attachment,
+                name: imported.originalName,
+                originalName: imported.originalName,
+                path: imported.relativePath,
+                uploadPath: imported.relativePath,
+                size: imported.size,
+                progress: 100,
+                status: "complete",
+              }
+            : {
+                ...attachment,
+                progress: undefined,
+                status: "error",
+                error: "The desktop app did not return a staged file.",
+              };
+        }),
+      );
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      setAttachments((current) =>
+        current.map((attachment) =>
+          pendingAttachments.some((pending) => pending.id === attachment.id)
+            ? {
+                ...attachment,
+                progress: undefined,
+                status: "error",
+                error: message,
+              }
+            : attachment,
+        ),
+      );
+      toast.error(message || "Failed to upload files.");
     }
   }, [handleStageFiles]);
 
@@ -768,7 +827,6 @@ function Composer({
         attachments={attachments}
         onFilesSelected={handleFilesSelected}
         onAttachmentRemove={handleAttachmentRemove}
-        onAddFilesClick={handleAddFilesClick}
         placeholder="Type a message..."
         isAssistantRunning={isStreaming}
         textareaRef={composerTextareaRef}

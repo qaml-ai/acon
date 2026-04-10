@@ -37,7 +37,6 @@ interface PromptInputProps {
   attachments?: Attachment[];
   onFilesSelected?: (files: File[]) => void;
   onAttachmentRemove?: (id: string) => void;
-  onAddFilesClick?: () => void;
   // Voice recording props
   enableVoiceRecording?: boolean;
   // Context indicator props
@@ -106,7 +105,6 @@ export function PromptInput({
   attachments = [],
   onFilesSelected,
   onAttachmentRemove,
-  onAddFilesClick,
   enableVoiceRecording = true,
   contextUsedPercent,
   onCompact,
@@ -203,10 +201,6 @@ export function PromptInput({
   function handlePlusClick(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
-    if (onAddFilesClick) {
-      onAddFilesClick();
-      return;
-    }
     fileInputRef.current?.click();
   }
 

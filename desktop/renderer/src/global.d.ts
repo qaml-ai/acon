@@ -24,6 +24,19 @@ interface DesktopShellApi {
       size: number;
     }>
   >;
+  importFilePayloads?: (
+    payloads: Array<{
+      name: string;
+      bytes: ArrayBuffer;
+    }>,
+  ) => Promise<
+    Array<{
+      originalName: string;
+      relativePath: string;
+      absolutePath: string;
+      size: number;
+    }>
+  >;
   downloadFile?: (request: {
     source: "workspace" | "upload" | "output";
     path: string;

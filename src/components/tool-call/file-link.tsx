@@ -10,6 +10,7 @@ import { useChatPreviewContext } from '@/components/chat-preview/preview-context
 import type { PreviewTarget } from '@/types';
 
 const WORKSPACE_ROOT_PREFIXES = ['/home/claude', '/workspace', '/root'];
+const DESKTOP_WORKSPACE_ID = 'desktop';
 
 const TEMP_FILE_PREFIXES = [
   { prefix: '/mnt/user-uploads/', type: 'upload' as const, urlSegment: 'uploads' },
@@ -75,8 +76,9 @@ export function FileLink({
   const previewContext = useChatPreviewContext();
   const tempInfo = getTempFileInfo(path);
   const normalizedPath = normalizeWorkspacePath(path);
+  const effectiveWorkspaceId = workspaceId ?? DESKTOP_WORKSPACE_ID;
 
-  if (!normalizedPath || !workspaceId) {
+  if (!normalizedPath) {
     return (
       <span className={cn(mono && "font-mono", className)}>
         {children ?? path}
@@ -85,12 +87,14 @@ export function FileLink({
   }
 
   if (tempInfo) {
-    const previewUrl = `/api/workspaces/${workspaceId}/${tempInfo.urlSegment}/${encodePathSegments(tempInfo.relativePath)}`;
+    const previewUrl = workspaceId
+      ? `/api/workspaces/${workspaceId}/${tempInfo.urlSegment}/${encodePathSegments(tempInfo.relativePath)}`
+      : '';
     const displayName = tempInfo.relativePath.split('/').pop() || tempInfo.relativePath;
     const previewTarget: PreviewTarget = {
       kind: 'file',
       source: tempInfo.type,
-      workspaceId,
+      workspaceId: effectiveWorkspaceId,
       path: tempInfo.relativePath,
       filename: displayName,
     };
@@ -148,13 +152,23 @@ export function FileLink({
           {children ?? displayName}
           {showIcon ? <ExternalLink className="h-3 w-3 opacity-50" /> : null}
         </button>
-        <FilePreviewPopover
-          open={previewOpen}
-          onOpenChange={setPreviewOpen}
-          filename={displayName}
-          previewUrl={previewUrl}
-        />
+        {previewUrl ? (
+          <FilePreviewPopover
+            open={previewOpen}
+            onOpenChange={setPreviewOpen}
+            filename={displayName}
+            previewUrl={previewUrl}
+          />
+        ) : null}
       </>
+    );
+  }
+
+  if (!workspaceId && !previewContext) {
+    return (
+      <span className={cn(mono && "font-mono", className)}>
+        {children ?? path}
+      </span>
     );
   }
 
@@ -163,7 +177,7 @@ export function FileLink({
     const previewTarget: PreviewTarget = {
       kind: 'file',
       source: 'workspace',
-      workspaceId,
+      workspaceId: effectiveWorkspaceId,
       path: normalizedPath,
       filename: getBasename(normalizedPath),
     };
