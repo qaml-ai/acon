@@ -2,7 +2,13 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { CamelAIExtensionModule } from "../../../sdk";
+import type {
+  CamelAIExtensionModule,
+  CamelAIInstallHttpHostMcpServerOptions,
+  CamelAIInstallWorkspacePluginOptions,
+  CamelAIInstallStdioHostMcpServerOptions,
+  CamelAIPromptToStoreSecretOptions,
+} from "../../../sdk";
 
 const HOST_MCP_MANAGER_ID = "host-mcp-manager";
 const HOST_MCP_MANAGER_DIRECTORY = dirname(fileURLToPath(import.meta.url));
@@ -130,6 +136,40 @@ const uninstallServerOutputSchema = z.object({
   removed: z.boolean(),
 });
 
+type ToolResult = {
+  content?: Array<{
+    type: "text";
+    text: string;
+  }>;
+  structuredContent?: unknown;
+};
+
+type UntypedMcpServer = {
+  registerTool(
+    name: string,
+    config: {
+      title?: string;
+      description?: string;
+      inputSchema?: unknown;
+      outputSchema?: unknown;
+    },
+    cb: (input: any) => ToolResult | Promise<ToolResult>,
+  ): unknown;
+};
+
+type RestApiAuthInput = {
+  type: "none" | "bearer" | "header";
+  secretRef?: string | null;
+  headerName?: string | null;
+};
+
+type InstallRestApiServerInput = {
+  id: string;
+  baseUrl: string;
+  auth?: RestApiAuthInput | null;
+  name?: string | null;
+  version?: string | null;
+};
 const installedPluginSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -200,10 +240,11 @@ const extension: CamelAIExtensionModule = {
       version: "0.1.0",
       description: "Manage persisted host MCP server registrations from inside the guest.",
       createServer: () => {
-        const server = new McpServer({
+        const typedServer = new McpServer({
           name: HOST_MCP_MANAGER_ID,
           version: "1.0.0",
         });
+        const server = typedServer as unknown as UntypedMcpServer;
 
         server.registerTool(
           "list_installed_servers",
@@ -239,7 +280,7 @@ const extension: CamelAIExtensionModule = {
             inputSchema: promptToStoreSecretInputSchema,
             outputSchema: promptToStoreSecretOutputSchema,
           },
-          async (input) => {
+          async (input: CamelAIPromptToStoreSecretOptions) => {
             const stored = await api.promptToStoreSecret(input);
             return {
               content: [
@@ -261,7 +302,7 @@ const extension: CamelAIExtensionModule = {
             inputSchema: installStdioServerInputSchema,
             outputSchema: installServerOutputSchema,
           },
-          async (input) => {
+          async (input: CamelAIInstallStdioHostMcpServerOptions) => {
             const installed = await api.installStdioHostMcpServer(input);
             return {
               content: [
@@ -285,7 +326,7 @@ const extension: CamelAIExtensionModule = {
             inputSchema: installRestApiServerInputSchema,
             outputSchema: installServerOutputSchema,
           },
-          async (input) => {
+          async (input: InstallRestApiServerInput) => {
             const auth = input.auth ?? {
               type: "none" as const,
               secretRef: null,
@@ -333,7 +374,7 @@ const extension: CamelAIExtensionModule = {
             inputSchema: installHttpServerInputSchema,
             outputSchema: installServerOutputSchema,
           },
-          async (input) => {
+          async (input: CamelAIInstallHttpHostMcpServerOptions) => {
             const installed = await api.installHttpHostMcpServer(input);
             return {
               content: [
@@ -357,7 +398,7 @@ const extension: CamelAIExtensionModule = {
             inputSchema: uninstallServerInputSchema,
             outputSchema: uninstallServerOutputSchema,
           },
-          async ({ id }) => {
+          async ({ id }: { id: string }) => {
             if (id.trim() === HOST_MCP_MANAGER_ID) {
               throw new Error("The host MCP manager cannot uninstall itself.");
             }
@@ -414,7 +455,7 @@ const extension: CamelAIExtensionModule = {
             inputSchema: installWorkspacePluginInputSchema,
             outputSchema: installWorkspacePluginOutputSchema,
           },
-          async (input) => {
+          async (input: CamelAIInstallWorkspacePluginOptions) => {
             const installed = await api.installPluginFromWorkspace(input);
             return {
               content: [
@@ -438,7 +479,7 @@ const extension: CamelAIExtensionModule = {
             inputSchema: listPluginAgentAssetsInputSchema,
             outputSchema: listPluginAgentAssetsOutputSchema,
           },
-          async (input) => {
+          async (input: { pluginId?: string | null }) => {
             const plugins = api.listPluginAgentAssets(input.pluginId ?? null);
             return {
               content: [
@@ -456,7 +497,8 @@ const extension: CamelAIExtensionModule = {
             };
           },
         );
-        return server;
+
+        return typedServer;
       },
     });
   },
