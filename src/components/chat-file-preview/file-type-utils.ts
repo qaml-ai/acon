@@ -24,6 +24,7 @@ export type PreviewType =
   | 'image'
   | 'pdf'
   | 'notebook'
+  | 'mermaid'
   | 'markdown'
   | 'code'
   | 'spreadsheet'
@@ -35,6 +36,7 @@ export type PreviewType =
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
 const PDF_EXTENSIONS = new Set(['pdf']);
 const NOTEBOOK_EXTENSIONS = new Set(['ipynb']);
+const MERMAID_EXTENSIONS = new Set(['mmd', 'mermaid']);
 const SPREADSHEET_EXTENSIONS = new Set(['csv', 'tsv', 'xlsx', 'xls']);
 const DELIMITED_SPREADSHEET_EXTENSIONS = new Set(['csv', 'tsv']);
 const CODE_EXTENSIONS = new Set([
@@ -140,22 +142,24 @@ export function getShikiLanguage(filename: string): string | null {
 
 export function getPreviewType(filename: string, contentType?: string): PreviewType {
   const category = getFileCategory(filename, contentType);
-  const extension = getFileExtension(filename);
   const normalizedContentType = contentType?.toLowerCase();
-  const isDelimitedSpreadsheet =
-    DELIMITED_SPREADSHEET_EXTENSIONS.has(extension) ||
-    normalizedContentType?.includes('csv') ||
-    normalizedContentType?.includes('tab-separated-values');
+  const extension = getFileExtension(filename);
 
   if (category === 'image') return 'image';
   if (category === 'pdf') return 'pdf';
   if (category === 'notebook') return 'notebook';
   if (category === 'audio') return 'audio';
   if (category === 'video') return 'video';
+  if (
+    MERMAID_EXTENSIONS.has(extension) ||
+    normalizedContentType?.includes('mermaid') ||
+    normalizedContentType === 'application/vnd.ant.mermaid'
+  ) {
+    return 'mermaid';
+  }
   if (extension === 'md') return 'markdown';
   if (getShikiLanguage(filename) !== null) return 'code';
-  if (isDelimitedSpreadsheet) return 'spreadsheet';
-  if (category === 'spreadsheet') return 'other';
+  if (category === 'spreadsheet') return 'spreadsheet';
   if (category === 'code' || category === 'text') return 'text';
   return 'other';
 }

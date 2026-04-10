@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type ComponentType,
   type DragEvent,
 } from "react";
@@ -32,6 +33,7 @@ import type { Attachment } from "@/components/attachment-list";
 import { ContentBlockRenderer } from "@/components/message-bubble";
 import { FileCard } from "@/components/file-card";
 import { FloatingTodoList, type TodoItem } from "@/components/floating-todo";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -99,6 +101,10 @@ const desktopShell = window.desktopShell;
 const fallbackBackendUrl = "http://127.0.0.1:4315";
 const EMPTY_THREAD_DRAFT_KEY = "__no_thread__";
 const DESKTOP_WORKSPACE_ID = "desktop";
+const THREAD_PREVIEW_LAYOUT_STORAGE_KEY = "desktop-thread-preview-layout";
+const THREAD_PREVIEW_MIN_WIDTH = 320;
+const THREAD_PREVIEW_MAX_WIDTH_RATIO = 0.65;
+const THREAD_PREVIEW_DEFAULT_WIDTH = 480;
 const KANBAN_LANES = [
   {
     id: "drafts",
@@ -121,6 +127,37 @@ const KANBAN_LANES = [
     description: "Archived work you want to keep around.",
   },
 ] as const;
+
+function readStoredThreadPreviewWidth(): number {
+  try {
+    const raw = window.localStorage.getItem(THREAD_PREVIEW_LAYOUT_STORAGE_KEY);
+    if (!raw) {
+      return THREAD_PREVIEW_DEFAULT_WIDTH;
+    }
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const width = parsed.width;
+    return typeof width === "number" && Number.isFinite(width)
+      ? width
+      : THREAD_PREVIEW_DEFAULT_WIDTH;
+  } catch {
+    return THREAD_PREVIEW_DEFAULT_WIDTH;
+  }
+}
+
+function clampThreadPreviewWidth(width: number, containerWidth: number): number {
+  const maxWidth = Math.max(
+    THREAD_PREVIEW_MIN_WIDTH,
+    Math.floor(containerWidth * THREAD_PREVIEW_MAX_WIDTH_RATIO),
+  );
+  return Math.min(maxWidth, Math.max(THREAD_PREVIEW_MIN_WIDTH, Math.round(width)));
+}
+
+function persistThreadPreviewWidth(width: number) {
+  window.localStorage.setItem(
+    THREAD_PREVIEW_LAYOUT_STORAGE_KEY,
+    JSON.stringify({ width }),
+  );
+}
 
 type KanbanLaneId = (typeof KANBAN_LANES)[number]["id"];
 
@@ -2081,7 +2118,7 @@ function ThreadPreviewPane({
   }, [activeItem]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-background">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
       <div className="flex items-center justify-between gap-2 border-b border-border/70 px-3 py-3">
         <div className="min-w-0">
           <p className="truncate text-sm font-medium">Preview</p>
@@ -2124,7 +2161,7 @@ function ThreadPreviewPane({
         </div>
       </div>
 
-      <div className="border-b border-border/70 px-2 py-2">
+      <div className="min-w-0 border-b border-border/70 px-2 py-2">
         <div className="flex gap-2 overflow-x-auto">
           {previewState.items.map((item) => {
             const isActive = item.id === activeItem?.id;
@@ -2159,7 +2196,7 @@ function ThreadPreviewPane({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden bg-muted/10">
+      <div className="min-h-0 min-w-0 flex-1 overflow-hidden bg-muted/10">
         {!activeItem ? (
           <div className="flex h-full items-center justify-center p-6">
             <p className="text-sm text-muted-foreground">No preview selected.</p>
@@ -2337,6 +2374,7 @@ function WorkbenchTabStrip({
 }
 
 export function App() {
+  const isMobile = useIsMobile();
   const [snapshot, setSnapshot] = useState<DesktopSnapshot | null>(null);
   const [uiMessagesByThread, setUiMessagesByThread] = useState<
     Record<string, Message[]>
@@ -2358,6 +2396,13 @@ export function App() {
   const fallbackSocketRef = useRef<WebSocket | null>(null);
   const streamingMessageIdsRef = useRef<Record<string, string | null>>({});
   const reportedReadyRef = useRef(false);
+  const previewSplitContainerRef = useRef<HTMLDivElement | null>(null);
+  const threadPreviewResizeStateRef = useRef<{
+    startClientX: number;
+    startWidth: number;
+  } | null>(null);
+  const threadPreviewWidthRef = useRef<number>(readStoredThreadPreviewWidth());
+  const [isThreadPreviewResizing, setIsThreadPreviewResizing] = useState(false);
 
   const activeThread = useMemo(
     () => getActiveThread(snapshot, activeThreadId),
@@ -2977,6 +3022,80 @@ export function App() {
     onSetPreviewTargets: handleSetPreviewTargets,
     onClearPreviewTargets: handleClearPreviewTargets,
   } : null;
+  const hasActiveThreadPreview =
+    !!activeThreadPreviewState?.visible && activeThreadPreviewState.items.length > 0;
+
+  useEffect(() => {
+    if (!hasActiveThreadPreview || isMobile) {
+      return;
+    }
+
+    const containerNode = previewSplitContainerRef.current;
+    if (!containerNode) {
+      return;
+    }
+
+    const applyPreviewWidth = () => {
+      const nextWidth = clampThreadPreviewWidth(
+        threadPreviewWidthRef.current,
+        containerNode.clientWidth,
+      );
+      threadPreviewWidthRef.current = nextWidth;
+      containerNode.style.setProperty("--thread-preview-width", `${nextWidth}px`);
+    };
+
+    applyPreviewWidth();
+
+    const resizeObserver = new ResizeObserver(applyPreviewWidth);
+    resizeObserver.observe(containerNode);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [hasActiveThreadPreview, isMobile]);
+
+  useEffect(() => {
+    if (!isThreadPreviewResizing) {
+      return;
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const resizeState = threadPreviewResizeStateRef.current;
+      const containerNode = previewSplitContainerRef.current;
+      if (!resizeState || !containerNode) {
+        return;
+      }
+
+      const nextWidth = clampThreadPreviewWidth(
+        resizeState.startWidth - (event.clientX - resizeState.startClientX),
+        containerNode.clientWidth,
+      );
+      threadPreviewWidthRef.current = nextWidth;
+      containerNode.style.setProperty("--thread-preview-width", `${nextWidth}px`);
+    };
+
+    const stopResize = () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      threadPreviewResizeStateRef.current = null;
+      setIsThreadPreviewResizing(false);
+      persistThreadPreviewWidth(threadPreviewWidthRef.current);
+    };
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", stopResize);
+    window.addEventListener("pointercancel", stopResize);
+
+    return () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("pointercancel", stopResize);
+    };
+  }, [isThreadPreviewResizing]);
 
   const handleSubmitGroupEditor = useCallback(() => {
     const title = groupEditor.title.trim();
@@ -3141,25 +3260,81 @@ export function App() {
                 {showSettings ? (
                   <SettingsPage />
                 ) : activeSurfaceProps ? (
-                  <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+                  hasActiveThreadPreview ? (
+                    isMobile ? (
+                      <div className="flex min-h-0 flex-1 flex-col">
+                        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                          <WorkbenchSurfacePane {...activeSurfaceProps} />
+                        </div>
+
+                        <aside className="flex min-h-[320px] w-full min-w-0 border-t border-border/60 bg-muted/10">
+                          <ThreadPreviewPane
+                            threadId={activeThreadId!}
+                            previewState={activeThreadPreviewState}
+                            onClear={handleClearPreviewTargets}
+                            onCloseItem={handleClosePreviewItem}
+                            onSelectItem={handleSelectPreviewItem}
+                            onSetVisible={handleSetPreviewVisible}
+                          />
+                        </aside>
+                      </div>
+                    ) : (
+                      <div
+                        ref={previewSplitContainerRef}
+                        className="flex min-h-0 flex-1"
+                        style={
+                          {
+                            "--thread-preview-width": `${threadPreviewWidthRef.current}px`,
+                          } as CSSProperties
+                        }
+                      >
+                        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                            <WorkbenchSurfacePane {...activeSurfaceProps} />
+                          </div>
+                        </div>
+
+                        <div
+                          role="separator"
+                          aria-label="Resize preview pane"
+                          aria-orientation="vertical"
+                          className="group relative flex w-2 shrink-0 cursor-col-resize items-stretch bg-transparent transition-colors hover:bg-border/20"
+                          onPointerDown={(event) => {
+                            const containerNode = previewSplitContainerRef.current;
+                            if (!containerNode) {
+                              return;
+                            }
+                            event.preventDefault();
+                            threadPreviewResizeStateRef.current = {
+                              startClientX: event.clientX,
+                              startWidth: threadPreviewWidthRef.current,
+                            };
+                            setIsThreadPreviewResizing(true);
+                          }}
+                        >
+                          <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border/70 transition-colors group-hover:bg-border" />
+                        </div>
+
+                        <aside
+                          className="flex h-full min-h-0 min-w-0 shrink-0 border-l border-border/60 bg-muted/10"
+                          style={{ width: "var(--thread-preview-width)" }}
+                        >
+                          <ThreadPreviewPane
+                            threadId={activeThreadId!}
+                            previewState={activeThreadPreviewState}
+                            onClear={handleClearPreviewTargets}
+                            onCloseItem={handleClosePreviewItem}
+                            onSelectItem={handleSelectPreviewItem}
+                            onSetVisible={handleSetPreviewVisible}
+                          />
+                        </aside>
+                      </div>
+                    )
+                  ) : (
                     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                       <WorkbenchSurfacePane {...activeSurfaceProps} />
                     </div>
-
-                    {activeThreadPreviewState?.visible &&
-                    activeThreadPreviewState.items.length > 0 ? (
-                      <aside className="flex min-h-[320px] w-full min-w-0 border-t border-border/60 bg-muted/10 lg:min-h-0 lg:w-[420px] lg:border-l lg:border-t-0 xl:w-[480px] 2xl:w-[560px]">
-                        <ThreadPreviewPane
-                          threadId={activeThreadId!}
-                          previewState={activeThreadPreviewState}
-                          onClear={handleClearPreviewTargets}
-                          onCloseItem={handleClosePreviewItem}
-                          onSelectItem={handleSelectPreviewItem}
-                          onSetVisible={handleSetPreviewVisible}
-                        />
-                      </aside>
-                    ) : null}
-                  </div>
+                  )
                 ) : (
                   <div className="flex flex-1 items-center justify-center p-6">
                     <Alert className="max-w-xl">

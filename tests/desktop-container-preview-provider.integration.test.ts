@@ -145,4 +145,92 @@ describe("Desktop preview providers integration", () => {
       service.dispose();
     }
   });
+
+  it("resolves output preview files from the desktop transfers directory", async () => {
+    const outputsDirectory = resolve(sandboxDataDir, "transfers", "outputs");
+    const workbookPath = resolve(outputsDirectory, "sales_report.xlsx");
+    mkdirSync(outputsDirectory, { recursive: true });
+    writeFileSync(workbookPath, "fake workbook bytes", "utf8");
+
+    const runtime = createRuntimeManagerStub({
+      workspaceDirectory,
+      managedWorkspaceDirectory: workspaceDirectory,
+      runtimeDirectory,
+    });
+    const service = new DesktopService(runtime);
+
+    try {
+      const threadId = service.getSnapshot().threads[0]?.id;
+      expect(threadId).toBeTruthy();
+
+      service.openThreadPreviewItem(threadId, {
+        kind: "file",
+        source: "workspace",
+        path: "/mnt/user-outputs/sales_report.xlsx",
+      });
+
+      const previewItem = await waitFor(() => {
+        const state = service.getSnapshot().threadPreviewStateById[threadId!];
+        expect(state).toBeTruthy();
+        expect(state.items).toHaveLength(1);
+        return state.items[0]!;
+      });
+
+      expect(previewItem.target).toMatchObject({
+        kind: "file",
+        source: "output",
+        path: "sales_report.xlsx",
+      });
+      expect(previewItem.src).toBe(
+        `desktop-plugin://local${pathToFileURL(workbookPath).pathname}`,
+      );
+      expect(previewItem.renderer).toBeNull();
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("resolves container provider-home preview files from the runtime directory", async () => {
+    const providerHomeDirectory = resolve(runtimeDirectory, "providers", "claude", "home");
+    const workbookPath = resolve(providerHomeDirectory, "sales_report.xlsx");
+    mkdirSync(providerHomeDirectory, { recursive: true });
+    writeFileSync(workbookPath, "fake workbook bytes", "utf8");
+
+    const runtime = createRuntimeManagerStub({
+      workspaceDirectory,
+      managedWorkspaceDirectory: workspaceDirectory,
+      runtimeDirectory,
+    });
+    const service = new DesktopService(runtime);
+
+    try {
+      const threadId = service.getSnapshot().threads[0]?.id;
+      expect(threadId).toBeTruthy();
+
+      service.openThreadPreviewItem(threadId, {
+        kind: "file",
+        source: "workspace",
+        path: "/data/providers/claude/home/sales_report.xlsx",
+      });
+
+      const previewItem = await waitFor(() => {
+        const state = service.getSnapshot().threadPreviewStateById[threadId!];
+        expect(state).toBeTruthy();
+        expect(state.items).toHaveLength(1);
+        return state.items[0]!;
+      });
+
+      expect(previewItem.target).toMatchObject({
+        kind: "file",
+        source: "workspace",
+        path: "/data/providers/claude/home/sales_report.xlsx",
+      });
+      expect(previewItem.src).toBe(
+        `desktop-plugin://local${pathToFileURL(workbookPath).pathname}`,
+      );
+      expect(previewItem.renderer).toBeNull();
+    } finally {
+      service.dispose();
+    }
+  });
 });

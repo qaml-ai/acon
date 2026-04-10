@@ -31,6 +31,11 @@ const startupProbeEnabled = process.env.DESKTOP_STARTUP_PROBE === '1';
 const startupProbeTimeoutMs = Number(
   process.env.DESKTOP_STARTUP_PROBE_TIMEOUT_MS || '90000',
 );
+const remoteDebuggingPort = process.env.DESKTOP_REMOTE_DEBUGGING_PORT?.trim();
+if (remoteDebuggingPort) {
+  app.commandLine.appendSwitch('remote-debugging-port', remoteDebuggingPort);
+  app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
+}
 const startupEvents = [];
 let startupProbeResolved = false;
 let startupProbeTimeout = null;
