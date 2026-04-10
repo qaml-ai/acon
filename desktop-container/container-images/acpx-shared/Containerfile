@@ -9,6 +9,7 @@ RUN apt-get update \
     curl \
     default-jdk-headless \
     ffmpeg \
+    freetds-bin \
     git \
     ghostscript \
     graphviz \
@@ -19,6 +20,7 @@ RUN apt-get update \
     libreoffice \
     pandoc \
     poppler-utils \
+    postgresql-client \
     python3 \
     python3-pip \
     python3-dev \
@@ -26,8 +28,11 @@ RUN apt-get update \
     pkg-config \
     ruby \
     sqlite3 \
+    tdsodbc \
     tesseract-ocr \
     tesseract-ocr-eng \
+    unixodbc \
+    unixodbc-dev \
     wget \
   && rm -rf /var/lib/apt/lists/*
 
