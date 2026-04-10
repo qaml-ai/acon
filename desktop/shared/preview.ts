@@ -1,5 +1,16 @@
 import type { DesktopPreviewTarget } from "./protocol";
 
+const TRANSFER_PREVIEW_PREFIXES = [
+  {
+    prefix: "/mnt/user-uploads/",
+    source: "upload" as const,
+  },
+  {
+    prefix: "/mnt/user-outputs/",
+    source: "output" as const,
+  },
+];
+
 function getBasename(path: string): string {
   return path.split("/").filter(Boolean).pop() || path;
 }
@@ -56,4 +67,31 @@ export function normalizeWorkspacePreviewPath(path: string): string {
   }
 
   return normalized;
+}
+
+export function normalizeTransferredPreviewPath(path: string): {
+  source: "upload" | "output";
+  path: string;
+} | null {
+  const trimmed = path.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const normalized = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  for (const candidate of TRANSFER_PREVIEW_PREFIXES) {
+    if (!normalized.startsWith(candidate.prefix)) {
+      continue;
+    }
+    const relativePath = normalized.slice(candidate.prefix.length).replace(/^\/+/, "");
+    if (!relativePath) {
+      return null;
+    }
+    return {
+      source: candidate.source,
+      path: relativePath,
+    };
+  }
+
+  return null;
 }

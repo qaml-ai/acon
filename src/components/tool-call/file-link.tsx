@@ -5,16 +5,16 @@ import type { ReactNode } from 'react';
 import { useState } from 'react';
 import { useCurrentWorkspaceId } from '@/hooks/use-current-workspace-id';
 import { cn } from '@/lib/utils';
+import {
+  DESKTOP_WORKSPACE_ID,
+  encodePathSegments,
+  getTempFileInfo,
+} from '@/lib/temp-file-links';
 import { FilePreviewPopover } from '@/components/chat-file-preview';
 import { useChatPreviewContext } from '@/components/chat-preview/preview-context';
 import type { PreviewTarget } from '@/types';
 
 const WORKSPACE_ROOT_PREFIXES = ['/home/claude', '/workspace', '/root'];
-
-const TEMP_FILE_PREFIXES = [
-  { prefix: '/mnt/user-uploads/', type: 'upload' as const, urlSegment: 'uploads' },
-  { prefix: '/mnt/user-outputs/', type: 'output' as const, urlSegment: 'outputs' },
-];
 
 function normalizeWorkspacePath(input: string): string {
   const trimmed = input?.trim?.() ?? '';
@@ -28,27 +28,6 @@ function normalizeWorkspacePath(input: string): string {
     }
   }
   return normalized;
-}
-
-function getTempFileInfo(input: string) {
-  const trimmed = input?.trim?.() ?? '';
-  if (!trimmed) return null;
-  const normalized = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
-  for (const { prefix, type, urlSegment } of TEMP_FILE_PREFIXES) {
-    if (normalized.startsWith(prefix)) {
-      const relativePath = normalized.slice(prefix.length);
-      if (!relativePath) return null;
-      return { type, relativePath, urlSegment };
-    }
-  }
-  return null;
-}
-
-function encodePathSegments(path: string): string {
-  return path
-    .split('/')
-    .map(segment => encodeURIComponent(segment))
-    .join('/');
 }
 
 function getBasename(path: string): string {
@@ -75,8 +54,9 @@ export function FileLink({
   const previewContext = useChatPreviewContext();
   const tempInfo = getTempFileInfo(path);
   const normalizedPath = normalizeWorkspacePath(path);
+  const effectiveWorkspaceId = workspaceId ?? DESKTOP_WORKSPACE_ID;
 
-  if (!normalizedPath || !workspaceId) {
+  if (!normalizedPath) {
     return (
       <span className={cn(mono && "font-mono", className)}>
         {children ?? path}
@@ -85,12 +65,12 @@ export function FileLink({
   }
 
   if (tempInfo) {
-    const previewUrl = `/api/workspaces/${workspaceId}/${tempInfo.urlSegment}/${encodePathSegments(tempInfo.relativePath)}`;
+    const previewUrl = `/api/workspaces/${effectiveWorkspaceId}/${tempInfo.urlSegment}/${encodePathSegments(tempInfo.relativePath)}`;
     const displayName = tempInfo.relativePath.split('/').pop() || tempInfo.relativePath;
     const previewTarget: PreviewTarget = {
       kind: 'file',
       source: tempInfo.type,
-      workspaceId,
+      workspaceId: effectiveWorkspaceId,
       path: tempInfo.relativePath,
       filename: displayName,
     };
@@ -148,13 +128,23 @@ export function FileLink({
           {children ?? displayName}
           {showIcon ? <ExternalLink className="h-3 w-3 opacity-50" /> : null}
         </button>
-        <FilePreviewPopover
-          open={previewOpen}
-          onOpenChange={setPreviewOpen}
-          filename={displayName}
-          previewUrl={previewUrl}
-        />
+        {previewUrl ? (
+          <FilePreviewPopover
+            open={previewOpen}
+            onOpenChange={setPreviewOpen}
+            filename={displayName}
+            previewUrl={previewUrl}
+          />
+        ) : null}
       </>
+    );
+  }
+
+  if (!workspaceId && !previewContext) {
+    return (
+      <span className={cn(mono && "font-mono", className)}>
+        {children ?? path}
+      </span>
     );
   }
 
@@ -163,7 +153,7 @@ export function FileLink({
     const previewTarget: PreviewTarget = {
       kind: 'file',
       source: 'workspace',
-      workspaceId,
+      workspaceId: effectiveWorkspaceId,
       path: normalizedPath,
       filename: getBasename(normalizedPath),
     };
