@@ -19,6 +19,7 @@ interface MarkdownRendererProps {
 const CODEX_CITATION_REGEX = /cite[^]+/g;
 const TEMP_FILE_PATH_REGEX = /(^|[\s(])((?:\/mnt\/user-(?:uploads|outputs))\/[^\s)<`]+)(?=$|[\s).,!?])/gm;
 const WORKSPACE_TEMP_URL_REGEX = /^\/api\/workspaces\/[^/]+\/(uploads|outputs)\/(.+)$/;
+const TEMP_FILE_HREF_REGEX = /^\/mnt\/user-(uploads|outputs)\/(.+)$/;
 
 export function normalizeCodexCitationMarkers(content: string): string {
   if (!content.includes('cite')) {
@@ -40,8 +41,14 @@ function injectTempFileMarkdownLinks(content: string): string {
       }
       return segment.replace(
         TEMP_FILE_PATH_REGEX,
-        (_match, prefix: string, path: string) =>
-          `${prefix}[${path}](file-path:${encodeURIComponent(path)})`
+        (match, prefix: string, path: string, offset: number, source: string) => {
+          // Skip existing markdown links like [label](/mnt/user-outputs/file.png).
+          if (prefix === '(' && offset > 0 && source[offset - 1] === ']') {
+            return match;
+          }
+
+          return `${prefix}[${path}](file-path:${encodeURIComponent(path)})`;
+        }
       );
     })
     .join('');
@@ -69,6 +76,14 @@ function getPathnameFromHref(href: string): string {
 
 export function resolvePreviewableTempFilePathFromHref(href: string): string | null {
   const pathname = getPathnameFromHref(href.trim());
+  const tempFileMatch = TEMP_FILE_HREF_REGEX.exec(pathname);
+  if (tempFileMatch) {
+    const [, bucket, encodedPath] = tempFileMatch;
+    const root =
+      bucket === 'uploads' ? '/mnt/user-uploads/' : '/mnt/user-outputs/';
+    return `${root}${decodePathSegments(encodedPath)}`;
+  }
+
   const match = WORKSPACE_TEMP_URL_REGEX.exec(pathname);
   if (!match) {
     return null;

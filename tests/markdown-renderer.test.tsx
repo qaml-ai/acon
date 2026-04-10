@@ -32,4 +32,32 @@ describe("MarkdownRenderer", () => {
       filename: "quarterly report.xlsx",
     });
   });
+
+  it("routes direct /mnt output markdown links into the preview pane", () => {
+    const openPreviewTarget = vi.fn();
+
+    render(
+      <CurrentWorkspaceIdProvider workspaceId={null}>
+        <ChatPreviewProvider
+          value={{
+            openPreviewTarget,
+            setPreviewTargets: vi.fn(),
+            clearPreviewTarget: vi.fn(),
+          }}
+        >
+          <MarkdownRenderer content="[Download file](/mnt/user-outputs/reports/final%20sheet.xlsx)" />
+        </ChatPreviewProvider>
+      </CurrentWorkspaceIdProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Download file" }));
+
+    expect(openPreviewTarget).toHaveBeenCalledWith({
+      kind: "file",
+      source: "output",
+      workspaceId: "desktop",
+      path: "reports/final sheet.xlsx",
+      filename: "final sheet.xlsx",
+    });
+  });
 });
