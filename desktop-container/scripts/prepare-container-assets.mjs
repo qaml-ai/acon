@@ -36,6 +36,9 @@ const vendorContainerLibexecPath = resolve(
 const defaultCliVersions = {
   codex: "0.118.0",
   claude: "2.1.45",
+  pi: "0.66.1",
+  piAcp: "0.0.25",
+  opencode: "1.4.3",
 };
 const stateFilePath = resolve(
   repoRoot,
@@ -47,6 +50,15 @@ const cliPackageSpecs = {
   }`,
   claude: `@anthropic-ai/claude-code@${
     process.env.DESKTOP_CLAUDE_IMAGE_VERSION?.trim() || defaultCliVersions.claude
+  }`,
+  pi: `@mariozechner/pi-coding-agent@${
+    process.env.DESKTOP_PI_IMAGE_VERSION?.trim() || defaultCliVersions.pi
+  }`,
+  piAcp: `pi-acp@${
+    process.env.DESKTOP_PI_ACP_IMAGE_VERSION?.trim() || defaultCliVersions.piAcp
+  }`,
+  opencode: `opencode-ai@${
+    process.env.DESKTOP_OPENCODE_IMAGE_VERSION?.trim() || defaultCliVersions.opencode
   }`,
 };
 const bundledNodePackagePaths = {

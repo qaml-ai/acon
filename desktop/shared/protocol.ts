@@ -1,9 +1,9 @@
 import type { ContentBlock } from "../../src/types";
 
-export type DesktopProvider = "claude" | "codex";
+export type DesktopProvider = "claude" | "codex" | "pi" | "opencode";
 export type DesktopModel = string;
 export type DesktopAuthSource = "provider-account" | "api-key" | "missing";
-export type DesktopHarness = "opencode" | "claude-code" | "codex";
+export type DesktopHarness = "opencode" | "claude-code" | "codex" | "pi";
 
 export interface DesktopPluginSurfaceRender {
   kind: "host" | "webview";

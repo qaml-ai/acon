@@ -1,5 +1,5 @@
-export type CamelAIHarness = "opencode" | "claude-code" | "codex";
-export type CamelAIProvider = "claude" | "codex";
+export type CamelAIHarness = "opencode" | "claude-code" | "codex" | "pi";
+export type CamelAIProvider = "claude" | "codex" | "pi" | "opencode";
 export const CAMELAI_PLUGIN_API_VERSION = 1;
 export type CamelAIPermission = "host-mcp" | "serve-mcp" | "thread-preview";
 export type CamelAISettingFieldType =

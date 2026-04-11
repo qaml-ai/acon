@@ -2,10 +2,14 @@ import type { DesktopProvider } from "../../desktop/shared/protocol";
 import type { DesktopProviderDefinition } from "./provider-types";
 import { claudeProvider } from "./claude";
 import { codexProvider } from "./codex";
+import { opencodeProvider } from "./opencode";
+import { piProvider } from "./pi";
 
 const PROVIDERS: Record<string, DesktopProviderDefinition> = {
   [claudeProvider.id]: claudeProvider,
   [codexProvider.id]: codexProvider,
+  [piProvider.id]: piProvider,
+  [opencodeProvider.id]: opencodeProvider,
 };
 
 export function getSupportedDesktopProviders(): DesktopProviderDefinition[] {
@@ -15,6 +19,18 @@ export function getSupportedDesktopProviders(): DesktopProviderDefinition[] {
 export function getDefaultDesktopProvider(): DesktopProviderDefinition {
   if (codexProvider.getAuthState().available && !claudeProvider.getAuthState().available) {
     return codexProvider;
+  }
+  if (claudeProvider.getAuthState().available) {
+    return claudeProvider;
+  }
+  if (codexProvider.getAuthState().available) {
+    return codexProvider;
+  }
+  if (piProvider.getAuthState().available) {
+    return piProvider;
+  }
+  if (opencodeProvider.getAuthState().available) {
+    return opencodeProvider;
   }
   return claudeProvider;
 }

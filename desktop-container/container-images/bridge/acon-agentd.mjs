@@ -47,7 +47,7 @@ This environment is for \`acon\`, the standalone camelAI desktop app.
 - MCP tools are external integrations.
 `;
 
-/** @typedef {"codex" | "claude"} ProviderId */
+/** @typedef {"codex" | "claude" | "pi" | "opencode"} ProviderId */
 
 /**
  * @typedef {{
@@ -142,7 +142,53 @@ This environment is for \`acon\`, the standalone camelAI desktop app.
  * }} CodexPromptState
  */
 
-/** @type {Map<string, ClaudeSessionState | CodexSessionState>} */
+/**
+ * @typedef {{
+ *   provider: "pi" | "opencode";
+ *   sessionName: string;
+ *   model: string;
+ *   sessionId: string | null;
+ *   loadedSessionId: string | null;
+ *   process: AcpProcessState | null;
+ *   modelState: AcpModelState | null;
+ *   activePrompt: AcpPromptState | null;
+ * }} AcpSessionState
+ */
+
+/**
+ * @typedef {{
+ *   child: import("node:child_process").ChildProcessWithoutNullStreams;
+ *   stdoutBuffer: string;
+ *   stderr: string;
+ *   nextRequestId: number;
+ *   pendingRequests: Map<string, {
+ *     resolve: (value: unknown) => void;
+ *     reject: (error: Error) => void;
+ *     timer: NodeJS.Timeout | null;
+ *   }>;
+ * }} AcpProcessState
+ */
+
+/**
+ * @typedef {{
+ *   availableModelIds: string[];
+ *   currentModelId: string | null;
+ * }} AcpModelState
+ */
+
+/**
+ * @typedef {{
+ *   finalText: string;
+ *   stopReason: string | null;
+ *   cancelled: boolean;
+ *   waiters: Array<{
+ *     resolve: (value: { sessionId: string; finalText: string; stopReason: string | null }) => void;
+ *     reject: (error: Error) => void;
+ *   }>;
+ * }} AcpPromptState
+ */
+
+/** @type {Map<string, ClaudeSessionState | CodexSessionState | AcpSessionState>} */
 const sessions = new Map();
 /** @type {Map<string, import("node:net").Socket>} */
 const pendingSockets = new Map();
@@ -210,7 +256,12 @@ function ensureString(value, fieldName) {
 }
 
 function ensureProviderId(value) {
-  if (value === "codex" || value === "claude") {
+  if (
+    value === "codex" ||
+    value === "claude" ||
+    value === "pi" ||
+    value === "opencode"
+  ) {
     return value;
   }
   throw new Error(`Unsupported provider: ${String(value)}.`);
@@ -236,6 +287,22 @@ function getClaudeConfigDir() {
   return `${getProviderHome("claude")}/.claude`;
 }
 
+function getPiHome() {
+  return `${getProviderHome("pi")}/.pi`;
+}
+
+function getPiAgentDir() {
+  return `${getPiHome()}/agent`;
+}
+
+function getOpenCodeDataDir(provider) {
+  return `${getProviderHome(provider)}/.local/share/opencode`;
+}
+
+function getOpenCodeConfigDir(provider) {
+  return `${getProviderHome(provider)}/.config/opencode`;
+}
+
 function getProviderEnv(provider, model) {
   const home = getProviderHome(provider);
   if (provider === "codex") {
@@ -251,13 +318,37 @@ function getProviderEnv(provider, model) {
     };
   }
 
+  if (provider === "claude") {
+    return {
+      ...process.env,
+      HOME: home,
+      CLAUDE_CONFIG_DIR: getClaudeConfigDir(),
+      DESKTOP_PROVIDER: provider,
+      DESKTOP_MODEL: model,
+      DESKTOP_ANTHROPIC_MODEL: model,
+      ACON_HOST_RPC_SOCKET: socketPath,
+      ACON_WORKSPACE_DIR: workspaceRoot,
+    };
+  }
+
+  if (provider === "pi") {
+    return {
+      ...process.env,
+      HOME: home,
+      DESKTOP_PROVIDER: provider,
+      DESKTOP_MODEL: model,
+      ACON_HOST_RPC_SOCKET: socketPath,
+      ACON_WORKSPACE_DIR: workspaceRoot,
+    };
+  }
+
   return {
     ...process.env,
     HOME: home,
-    CLAUDE_CONFIG_DIR: getClaudeConfigDir(),
+    XDG_DATA_HOME: `${home}/.local/share`,
+    XDG_CONFIG_HOME: `${home}/.config`,
     DESKTOP_PROVIDER: provider,
     DESKTOP_MODEL: model,
-    DESKTOP_ANTHROPIC_MODEL: model,
     ACON_HOST_RPC_SOCKET: socketPath,
     ACON_WORKSPACE_DIR: workspaceRoot,
   };
@@ -281,23 +372,54 @@ function ensureProviderHomes(provider) {
     return;
   }
 
-  const claudeConfigDir = getClaudeConfigDir();
-  mkdirSync(claudeConfigDir, { recursive: true });
-  const claudeCredentialsSeed = "/seed-claude/.credentials.json";
-  const claudeCredentialsTarget = resolve(claudeConfigDir, ".credentials.json");
-  if (existsSync(claudeCredentialsSeed) && !existsSync(claudeCredentialsTarget)) {
-    copyFileSync(claudeCredentialsSeed, claudeCredentialsTarget);
+  if (provider === "claude") {
+    const claudeConfigDir = getClaudeConfigDir();
+    mkdirSync(claudeConfigDir, { recursive: true });
+    const claudeCredentialsSeed = "/seed-claude/.credentials.json";
+    const claudeCredentialsTarget = resolve(claudeConfigDir, ".credentials.json");
+    if (existsSync(claudeCredentialsSeed) && !existsSync(claudeCredentialsTarget)) {
+      copyFileSync(claudeCredentialsSeed, claudeCredentialsTarget);
+    }
+    const claudeJsonSeed = "/seed-claude-json/.claude.json";
+    const claudeJsonTarget = resolve(home, ".claude.json");
+    if (existsSync(claudeJsonSeed) && !existsSync(claudeJsonTarget)) {
+      copyFileSync(claudeJsonSeed, claudeJsonTarget);
+    }
+    const claudeCredentialsJsonSeed = "/seed-claude-json/.credentials.json";
+    if (existsSync(claudeCredentialsJsonSeed) && !existsSync(claudeCredentialsTarget)) {
+      copyFileSync(claudeCredentialsJsonSeed, claudeCredentialsTarget);
+    }
+    writeFileSync(resolve(claudeConfigDir, "CLAUDE.md"), GLOBAL_INSTRUCTIONS, "utf8");
+    return;
   }
-  const claudeJsonSeed = "/seed-claude-json/.claude.json";
-  const claudeJsonTarget = resolve(home, ".claude.json");
-  if (existsSync(claudeJsonSeed) && !existsSync(claudeJsonTarget)) {
-    copyFileSync(claudeJsonSeed, claudeJsonTarget);
+
+  ensureAcpProviderHome(provider);
+}
+
+function maybeSeedFile(seedPath, targetPath) {
+  if (existsSync(seedPath) && !existsSync(targetPath)) {
+    copyFileSync(seedPath, targetPath);
   }
-  const claudeCredentialsJsonSeed = "/seed-claude-json/.credentials.json";
-  if (existsSync(claudeCredentialsJsonSeed) && !existsSync(claudeCredentialsTarget)) {
-    copyFileSync(claudeCredentialsJsonSeed, claudeCredentialsTarget);
+}
+
+function ensureAcpProviderHome(provider) {
+  const home = getProviderHome(provider);
+  mkdirSync(home, { recursive: true });
+
+  if (provider === "pi") {
+    const piAgentDir = getPiAgentDir();
+    mkdirSync(piAgentDir, { recursive: true });
+    maybeSeedFile("/seed-pi/agent/auth.json", resolve(piAgentDir, "auth.json"));
+    maybeSeedFile("/seed-pi/agent/models.json", resolve(piAgentDir, "models.json"));
+    return;
   }
-  writeFileSync(resolve(claudeConfigDir, "CLAUDE.md"), GLOBAL_INSTRUCTIONS, "utf8");
+
+  const dataDir = getOpenCodeDataDir(provider);
+  const configDir = getOpenCodeConfigDir(provider);
+  mkdirSync(dataDir, { recursive: true });
+  mkdirSync(configDir, { recursive: true });
+  maybeSeedFile("/seed-opencode-data/auth.json", resolve(dataDir, "auth.json"));
+  maybeSeedFile("/seed-opencode-config/opencode.json", resolve(configDir, "opencode.json"));
 }
 
 function ensureBundledGuestNodePackages() {
@@ -1116,6 +1238,509 @@ function createCodexSession(sessionName, model, threadId = null) {
   };
 }
 
+function createAcpSession(provider, sessionName, model, sessionId = null) {
+  return {
+    provider,
+    sessionName,
+    model,
+    sessionId,
+    loadedSessionId: null,
+    process: null,
+    modelState: null,
+    activePrompt: null,
+  };
+}
+
+function getAcpCommand(provider) {
+  if (provider === "pi") {
+    return {
+      command: "pi-acp",
+      args: [],
+    };
+  }
+
+  return {
+    command: "opencode",
+    args: ["acp"],
+  };
+}
+
+function extractAcpTextContent(content) {
+  if (!content) {
+    return "";
+  }
+  if (Array.isArray(content)) {
+    return content.map((item) => extractAcpTextContent(item)).join("");
+  }
+  if (typeof content === "string") {
+    return content;
+  }
+  if (typeof content !== "object") {
+    return "";
+  }
+  if (content.type === "text" && typeof content.text === "string") {
+    return content.text;
+  }
+  if (Array.isArray(content.content)) {
+    return content.content.map((item) => extractAcpTextContent(item)).join("");
+  }
+  return "";
+}
+
+function extractAcpStopReason(result) {
+  const record = asRecord(result);
+  if (!record) {
+    return null;
+  }
+  return maybeString(record.stopReason) ?? maybeString(record.stop_reason);
+}
+
+function extractAcpSessionId(result) {
+  const record = asRecord(result);
+  if (!record) {
+    return null;
+  }
+  return maybeString(record.sessionId);
+}
+
+function extractAcpModelState(provider, result) {
+  const record = asRecord(result);
+  if (!record) {
+    return null;
+  }
+
+  if (provider === "pi") {
+    const models = asRecord(record.models);
+    const availableModels = Array.isArray(models?.availableModels)
+      ? models.availableModels
+      : [];
+    return {
+      availableModelIds: availableModels
+        .map((item) => maybeString(item?.modelId))
+        .filter(Boolean),
+      currentModelId: maybeString(models?.currentModelId),
+    };
+  }
+
+  const configOptions = Array.isArray(record.configOptions) ? record.configOptions : [];
+  const modelOption = configOptions.find(
+    (item) =>
+      item &&
+      typeof item === "object" &&
+      item.id === "model",
+  );
+  if (!modelOption || typeof modelOption !== "object") {
+    return null;
+  }
+
+  return {
+    currentModelId: maybeString(modelOption.currentValue),
+    availableModelIds: Array.isArray(modelOption.options)
+      ? modelOption.options
+          .map((item) => maybeString(item?.value))
+          .filter(Boolean)
+      : [],
+  };
+}
+
+function matchesAcpModelPreference(actualModelId, preferredModelId) {
+  const normalizedActual = maybeString(actualModelId);
+  const normalizedPreferred = maybeString(preferredModelId);
+  if (!normalizedActual || !normalizedPreferred || normalizedPreferred === "default") {
+    return false;
+  }
+  if (normalizedPreferred.endsWith("/default")) {
+    const prefix = normalizedPreferred.slice(0, -"/default".length);
+    return normalizedActual === prefix || normalizedActual.startsWith(`${prefix}/`);
+  }
+  return normalizedActual === normalizedPreferred;
+}
+
+function describeAcpModelPreference(model) {
+  if (!model || model === "default") {
+    return "the current default";
+  }
+  if (model === "openrouter/default") {
+    return "OpenRouter";
+  }
+  if (model === "opencode/default") {
+    return "OpenCode Zen";
+  }
+  if (model === "opencode-go/default") {
+    return "OpenCode Go";
+  }
+  return model;
+}
+
+function resolvePreferredAcpModel(modelState, preferredModelId) {
+  if (!modelState || !preferredModelId || preferredModelId === "default") {
+    return null;
+  }
+  if (matchesAcpModelPreference(modelState.currentModelId, preferredModelId)) {
+    return modelState.currentModelId;
+  }
+  if (modelState.availableModelIds.includes(preferredModelId)) {
+    return preferredModelId;
+  }
+  if (preferredModelId.endsWith("/default")) {
+    const prefix = preferredModelId.slice(0, -"/default".length);
+    return (
+      modelState.availableModelIds.find(
+        (item) => item === prefix || item.startsWith(`${prefix}/`),
+      ) ?? null
+    );
+  }
+  return null;
+}
+
+function rejectAcpPrompt(promptState, error) {
+  for (const waiter of promptState.waiters) {
+    waiter.reject(error);
+  }
+}
+
+function resolveAcpPrompt(session, promptState, stopReason) {
+  for (const waiter of promptState.waiters) {
+    waiter.resolve({
+      sessionId: session.sessionId ?? "",
+      finalText: promptState.finalText,
+      stopReason,
+    });
+  }
+}
+
+function resetAcpProcess(session) {
+  const processState = session.process;
+  session.process = null;
+  session.loadedSessionId = null;
+  if (!processState) {
+    return;
+  }
+  for (const [requestId, pending] of processState.pendingRequests.entries()) {
+    if (pending.timer) {
+      clearTimeout(pending.timer);
+    }
+    pending.reject(new Error(`${session.provider} ACP process stopped before request completion.`));
+    processState.pendingRequests.delete(requestId);
+  }
+  if (processState.child.exitCode === null) {
+    processState.child.kill("SIGTERM");
+  }
+}
+
+function handleAcpNotification(session, message) {
+  emitSessionRuntimeEvent(session.sessionName, message);
+  if (message.method !== "session/update") {
+    return;
+  }
+
+  const params = asRecord(message.params);
+  const update = asRecord(params?.update);
+  const sessionId = maybeString(params?.sessionId);
+  if (!update || (session.sessionId && sessionId && session.sessionId !== sessionId)) {
+    return;
+  }
+
+  const sessionUpdate = maybeString(update.sessionUpdate);
+  if (sessionUpdate === "agent_message_chunk" && session.activePrompt) {
+    const text = extractAcpTextContent(update.content);
+    if (text) {
+      session.activePrompt.finalText += text;
+    }
+    return;
+  }
+
+  if (sessionUpdate === "agent_message" && session.activePrompt && !session.activePrompt.finalText) {
+    const text = extractAcpTextContent(update.content);
+    if (text) {
+      session.activePrompt.finalText = text;
+    }
+  }
+}
+
+async function sendAcpRequest(session, method, params, timeoutMs = 30_000) {
+  const processState = session.process;
+  if (!processState || processState.child.stdin.destroyed) {
+    throw new Error(`${session.provider} ACP process is not ready.`);
+  }
+
+  return await new Promise((resolve, reject) => {
+    const id = String(processState.nextRequestId++);
+    const timer = timeoutMs
+      ? setTimeout(() => {
+          processState.pendingRequests.delete(id);
+          reject(new Error(`Timed out waiting for ${session.provider} ACP ${method}.`));
+        }, timeoutMs)
+      : null;
+    processState.pendingRequests.set(id, {
+      resolve,
+      reject,
+      timer,
+    });
+    processState.child.stdin.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method,
+        params,
+      })}\n`,
+      (error) => {
+        if (!error) {
+          return;
+        }
+        const pending = processState.pendingRequests.get(id);
+        if (!pending) {
+          return;
+        }
+        processState.pendingRequests.delete(id);
+        if (pending.timer) {
+          clearTimeout(pending.timer);
+        }
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
+
+async function ensureAcpProcess(session) {
+  ensureProviderHomes(session.provider);
+  const processState = session.process;
+  if (processState && processState.child.exitCode === null) {
+    return processState;
+  }
+  if (session.activePrompt) {
+    throw new Error(`${session.provider} session ${session.sessionName} cannot restart while prompting.`);
+  }
+
+  const { command, args } = getAcpCommand(session.provider);
+  const child = spawn(command, args, {
+    cwd: workspaceRoot,
+    env: getProviderEnv(session.provider, session.model),
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+
+  const nextProcessState = {
+    child,
+    stdoutBuffer: "",
+    stderr: "",
+    nextRequestId: 1,
+    pendingRequests: new Map(),
+  };
+  session.process = nextProcessState;
+  session.loadedSessionId = null;
+
+  child.stdout.on("data", (chunk) => {
+    if (session.process !== nextProcessState) {
+      return;
+    }
+    nextProcessState.stdoutBuffer += chunk.toString("utf8");
+    while (true) {
+      const newlineIndex = nextProcessState.stdoutBuffer.indexOf("\n");
+      if (newlineIndex === -1) {
+        break;
+      }
+      const line = nextProcessState.stdoutBuffer.slice(0, newlineIndex).trim();
+      nextProcessState.stdoutBuffer = nextProcessState.stdoutBuffer.slice(newlineIndex + 1);
+      if (!line) {
+        continue;
+      }
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch (error) {
+        const parseError = error instanceof Error
+          ? error
+          : new Error(`${session.provider} ACP emitted invalid JSON.`);
+        const activePrompt = session.activePrompt;
+        session.activePrompt = null;
+        resetAcpProcess(session);
+        if (activePrompt) {
+          rejectAcpPrompt(activePrompt, parseError);
+        }
+        return;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(message, "id")) {
+        const requestId = String(message.id);
+        const pending = nextProcessState.pendingRequests.get(requestId);
+        if (!pending) {
+          continue;
+        }
+        nextProcessState.pendingRequests.delete(requestId);
+        if (pending.timer) {
+          clearTimeout(pending.timer);
+        }
+        if (message.error) {
+          pending.reject(
+            new Error(
+              typeof message.error.message === "string"
+                ? message.error.message
+                : JSON.stringify(message.error),
+            ),
+          );
+        } else {
+          pending.resolve(message.result ?? null);
+        }
+        continue;
+      }
+
+      if (typeof message.method === "string") {
+        handleAcpNotification(session, message);
+      }
+    }
+  });
+
+  child.stderr.on("data", (chunk) => {
+    if (session.process !== nextProcessState) {
+      return;
+    }
+    nextProcessState.stderr += chunk.toString("utf8");
+    logStderr(`${session.provider} acp stderr: ${chunk.toString("utf8").trim()}`);
+  });
+
+  child.on("error", (error) => {
+    if (session.process !== nextProcessState) {
+      return;
+    }
+    for (const [requestId, pending] of nextProcessState.pendingRequests.entries()) {
+      if (pending.timer) {
+        clearTimeout(pending.timer);
+      }
+      pending.reject(error instanceof Error ? error : new Error(String(error)));
+      nextProcessState.pendingRequests.delete(requestId);
+    }
+    session.process = null;
+    session.loadedSessionId = null;
+    const activePrompt = session.activePrompt;
+    session.activePrompt = null;
+    if (activePrompt) {
+      rejectAcpPrompt(activePrompt, error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+
+  child.on("exit", (code, signal) => {
+    if (session.process !== nextProcessState) {
+      return;
+    }
+    for (const [requestId, pending] of nextProcessState.pendingRequests.entries()) {
+      if (pending.timer) {
+        clearTimeout(pending.timer);
+      }
+      pending.reject(
+        new Error(
+          nextProcessState.stderr.trim() ||
+            `${session.provider} ACP exited before request completion (code=${code}, signal=${signal}).`,
+        ),
+      );
+      nextProcessState.pendingRequests.delete(requestId);
+    }
+    session.process = null;
+    session.loadedSessionId = null;
+    const activePrompt = session.activePrompt;
+    session.activePrompt = null;
+    if (!activePrompt) {
+      return;
+    }
+    if (activePrompt.cancelled) {
+      resolveAcpPrompt(session, activePrompt, "cancelled");
+      return;
+    }
+    rejectAcpPrompt(
+      activePrompt,
+      new Error(
+        nextProcessState.stderr.trim() ||
+          `${session.provider} ACP exited before prompt completion (code=${code}, signal=${signal}).`,
+      ),
+    );
+  });
+
+  await sendAcpRequest(session, "initialize", {
+    protocolVersion: 1,
+    clientCapabilities: {},
+  });
+  return nextProcessState;
+}
+
+async function selectAcpModel(session) {
+  const preferredModelId = maybeString(session.model);
+  if (!preferredModelId || preferredModelId === "default") {
+    return;
+  }
+  const nextModelId = resolvePreferredAcpModel(session.modelState, preferredModelId);
+  if (!nextModelId) {
+    throw new Error(
+      `${session.provider} does not have a configured model for ${describeAcpModelPreference(preferredModelId)}.`,
+    );
+  }
+  if (nextModelId === session.modelState?.currentModelId) {
+    return;
+  }
+
+  if (session.provider === "pi") {
+    await sendAcpRequest(session, "session/unstable_set_model", {
+      sessionId: session.sessionId,
+      modelId: nextModelId,
+    });
+    if (session.modelState) {
+      session.modelState.currentModelId = nextModelId;
+    }
+    return;
+  }
+
+  const result = await sendAcpRequest(session, "session/set_config_option", {
+    sessionId: session.sessionId,
+    configId: "model",
+    value: nextModelId,
+  });
+  session.modelState =
+    extractAcpModelState(session.provider, result) ?? {
+      availableModelIds: session.modelState?.availableModelIds ?? [nextModelId],
+      currentModelId: nextModelId,
+    };
+}
+
+async function ensureAcpSession(session) {
+  await ensureAcpProcess(session);
+  if (!session.sessionId) {
+    const result = await sendAcpRequest(session, "session/new", {
+      cwd: workspaceRoot,
+    });
+    session.sessionId = extractAcpSessionId(result);
+    session.loadedSessionId = session.sessionId;
+    session.modelState = extractAcpModelState(session.provider, result);
+  } else if (session.loadedSessionId !== session.sessionId) {
+    try {
+      const result = await sendAcpRequest(session, "session/load", {
+        sessionId: session.sessionId,
+        cwd: workspaceRoot,
+      });
+      session.loadedSessionId = session.sessionId;
+      session.modelState = extractAcpModelState(session.provider, result);
+    } catch (error) {
+      logStderr(
+        `${session.provider} ACP failed to load ${session.sessionId}; starting a new session instead: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      const result = await sendAcpRequest(session, "session/new", {
+        cwd: workspaceRoot,
+      });
+      session.sessionId = extractAcpSessionId(result);
+      session.loadedSessionId = session.sessionId;
+      session.modelState = extractAcpModelState(session.provider, result);
+    }
+  }
+
+  if (!session.sessionId) {
+    throw new Error(`${session.provider} ACP did not return a session id.`);
+  }
+
+  await selectAcpModel(session);
+  return session;
+}
+
 async function ensureCodexSession(session) {
   ensureProviderHomes("codex");
   await codexAppServer.ensureStarted();
@@ -1174,9 +1799,12 @@ async function ensureSession(params) {
   const key = getSessionKey(provider, sessionName);
   let session = sessions.get(key) ?? null;
   if (!session) {
-    session = provider === "codex"
-      ? createCodexSession(sessionName, model, sessionId)
-      : createClaudeSession(sessionName, model, sessionId, Boolean(sessionId));
+    session =
+      provider === "codex"
+        ? createCodexSession(sessionName, model, sessionId)
+        : provider === "claude"
+          ? createClaudeSession(sessionName, model, sessionId, Boolean(sessionId))
+          : createAcpSession(provider, sessionName, model, sessionId);
     sessions.set(key, session);
   }
   const previousModel = session.model;
@@ -1197,24 +1825,42 @@ async function ensureSession(params) {
     };
   }
 
-  ensureProviderHomes("claude");
-  const claudeSession = /** @type {ClaudeSessionState} */ (session);
-  if (claudeSession.process && previousModel !== model) {
-    if (claudeSession.activePrompt) {
-      throw new Error(`Claude session ${sessionName} cannot switch models while prompting.`);
+  if (provider === "claude") {
+    ensureProviderHomes("claude");
+    const claudeSession = /** @type {ClaudeSessionState} */ (session);
+    if (claudeSession.process && previousModel !== model) {
+      if (claudeSession.activePrompt) {
+        throw new Error(`Claude session ${sessionName} cannot switch models while prompting.`);
+      }
+      resetClaudeProcess(claudeSession);
     }
-    resetClaudeProcess(claudeSession);
-  }
-  if (sessionId && claudeSession.sessionId !== sessionId) {
-    if (claudeSession.activePrompt) {
-      throw new Error(`Claude session ${sessionName} cannot switch session ids while prompting.`);
+    if (sessionId && claudeSession.sessionId !== sessionId) {
+      if (claudeSession.activePrompt) {
+        throw new Error(`Claude session ${sessionName} cannot switch session ids while prompting.`);
+      }
+      resetClaudeProcess(claudeSession);
+      claudeSession.sessionId = sessionId;
+      claudeSession.hasStarted = true;
     }
-    resetClaudeProcess(claudeSession);
-    claudeSession.sessionId = sessionId;
-    claudeSession.hasStarted = true;
+    return {
+      sessionId: claudeSession.sessionId,
+    };
   }
+
+  const acpSession = /** @type {AcpSessionState} */ (session);
+  if (sessionId && acpSession.sessionId !== sessionId) {
+    if (acpSession.activePrompt) {
+      throw new Error(`${provider} session ${sessionName} cannot switch session ids while prompting.`);
+    }
+    acpSession.sessionId = sessionId;
+    acpSession.loadedSessionId = null;
+  }
+  if (previousModel !== model && acpSession.activePrompt) {
+    throw new Error(`${provider} session ${sessionName} cannot switch models while prompting.`);
+  }
+  await ensureAcpSession(acpSession);
   return {
-    sessionId: claudeSession.sessionId,
+    sessionId: acpSession.sessionId,
   };
 }
 
@@ -1745,6 +2391,55 @@ async function promptCodexSession(session, content) {
   });
 }
 
+async function promptAcpSession(session, content) {
+  await ensureAcpSession(session);
+  if (session.activePrompt) {
+    throw new Error(`${session.provider} session ${session.sessionName} is already prompting.`);
+  }
+
+  return await new Promise(async (resolve, reject) => {
+    const promptState = {
+      finalText: "",
+      stopReason: null,
+      cancelled: false,
+      waiters: [{ resolve, reject }],
+    };
+    session.activePrompt = promptState;
+    try {
+      const result = await sendAcpRequest(
+        session,
+        "session/prompt",
+        {
+          sessionId: session.sessionId,
+          prompt: [
+            {
+              type: "text",
+              text: content,
+            },
+          ],
+        },
+        0,
+      );
+      if (session.activePrompt !== promptState) {
+        return;
+      }
+      const resultText = extractAcpTextContent(asRecord(result)?.content);
+      if (resultText && !promptState.finalText) {
+        promptState.finalText = resultText;
+      }
+      promptState.stopReason =
+        extractAcpStopReason(result) ?? (promptState.cancelled ? "cancelled" : null);
+      session.activePrompt = null;
+      resolveAcpPrompt(session, promptState, promptState.stopReason);
+    } catch (error) {
+      if (session.activePrompt === promptState) {
+        session.activePrompt = null;
+        rejectAcpPrompt(promptState, error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+  });
+}
+
 async function promptSession(params) {
   if (!params || typeof params !== "object") {
     throw new Error("session.prompt params must be an object.");
@@ -1762,7 +2457,10 @@ async function promptSession(params) {
   if (provider === "claude") {
     return await promptClaudeSession(/** @type {ClaudeSessionState} */ (session), content);
   }
-  return await promptCodexSession(/** @type {CodexSessionState} */ (session), content);
+  if (provider === "codex") {
+    return await promptCodexSession(/** @type {CodexSessionState} */ (session), content);
+  }
+  return await promptAcpSession(/** @type {AcpSessionState} */ (session), content);
 }
 
 async function cancelSession(params) {
@@ -1783,6 +2481,20 @@ async function cancelSession(params) {
       claudeSession.activePrompt.cancelled = true;
       await sendClaudeControlRequest(claudeSession, "interrupt");
     }
+    return { ok: true };
+  }
+
+  if (provider === "pi" || provider === "opencode") {
+    const acpSession = /** @type {AcpSessionState} */ (session);
+    if (!acpSession.sessionId) {
+      return { ok: true };
+    }
+    if (acpSession.activePrompt) {
+      acpSession.activePrompt.cancelled = true;
+    }
+    await sendAcpRequest(acpSession, "session/cancel", {
+      sessionId: acpSession.sessionId,
+    });
     return { ok: true };
   }
 
@@ -2012,6 +2724,13 @@ function shutdown() {
   cleanupSocketFile();
   for (const session of sessions.values()) {
     if (session.provider === "claude" && session.process?.child.exitCode === null) {
+      session.process.child.kill("SIGTERM");
+      continue;
+    }
+    if (
+      (session.provider === "pi" || session.provider === "opencode") &&
+      session.process?.child.exitCode === null
+    ) {
       session.process.child.kill("SIGTERM");
     }
   }

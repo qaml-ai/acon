@@ -45,6 +45,15 @@ const HOST_CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR?.trim()
   ? resolve(process.env.CLAUDE_CONFIG_DIR)
   : resolve(homedir(), ".claude");
 const HOST_CLAUDE_JSON_PATH = resolve(homedir(), ".claude.json");
+const HOST_PI_HOME = resolve(homedir(), ".pi");
+const HOST_OPENCODE_DATA_DIR = resolve(homedir(), ".local", "share", "opencode");
+const HOST_OPENCODE_CONFIG_DIR = resolve(homedir(), ".config", "opencode");
+const FORWARDED_PROVIDER_ENV_VARS = [
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENROUTER_API_KEY",
+  "OPENCODE_API_KEY",
+] as const;
 
 export interface RuntimeManager {
   getWorkspaceDirectory(): string;
@@ -697,6 +706,35 @@ export class ContainerRuntimeManager implements RuntimeManager {
         "--mount",
         `type=bind,source=${seedDirectory},target=/seed-claude-json,readonly`,
       );
+    }
+
+    if (existsSync(HOST_PI_HOME)) {
+      args.push(
+        "--mount",
+        `type=bind,source=${HOST_PI_HOME},target=/seed-pi,readonly`,
+      );
+    }
+
+    if (existsSync(HOST_OPENCODE_DATA_DIR)) {
+      args.push(
+        "--mount",
+        `type=bind,source=${HOST_OPENCODE_DATA_DIR},target=/seed-opencode-data,readonly`,
+      );
+    }
+
+    if (existsSync(HOST_OPENCODE_CONFIG_DIR)) {
+      args.push(
+        "--mount",
+        `type=bind,source=${HOST_OPENCODE_CONFIG_DIR},target=/seed-opencode-config,readonly`,
+      );
+    }
+
+    for (const envName of FORWARDED_PROVIDER_ENV_VARS) {
+      const value = process.env[envName]?.trim();
+      if (!value) {
+        continue;
+      }
+      args.push("--env", `${envName}=${value}`);
     }
 
     args.push(
