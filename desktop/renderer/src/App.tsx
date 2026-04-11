@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type ComponentType,
   type DragEvent,
 } from "react";
@@ -12,6 +13,7 @@ import {
   Archive,
   ArrowLeft,
   ArrowRight,
+  Download,
   ExternalLink,
   Loader2,
   Pencil,
@@ -19,10 +21,19 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { ChatPreviewProvider } from "@/components/chat-preview/preview-context";
-import { FilePreviewContent } from "@/components/chat-file-preview";
+import {
+  ChatPreviewProvider,
+  useChatPreviewContext,
+} from "@/components/chat-preview/preview-context";
+import {
+  FilePreviewContent,
+  parseUploadRefs,
+} from "@/components/chat-file-preview";
+import type { Attachment } from "@/components/attachment-list";
 import { ContentBlockRenderer } from "@/components/message-bubble";
+import { FileCard } from "@/components/file-card";
 import { FloatingTodoList, type TodoItem } from "@/components/floating-todo";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -60,6 +71,7 @@ import {
   mergeTeammateMessages,
   normalizeToolResultMessages,
 } from "@/lib/streaming";
+import { toast } from "sonner";
 import type { ContentBlock, Message, PreviewTarget } from "@/types";
 import type {
   DesktopClientEvent,
@@ -88,6 +100,11 @@ import { ThreadRuntimeIndicator } from "./thread-runtime-indicator";
 const desktopShell = window.desktopShell;
 const fallbackBackendUrl = "http://127.0.0.1:4315";
 const EMPTY_THREAD_DRAFT_KEY = "__no_thread__";
+const DESKTOP_WORKSPACE_ID = "desktop";
+const THREAD_PREVIEW_LAYOUT_STORAGE_KEY = "desktop-thread-preview-layout";
+const THREAD_PREVIEW_MIN_WIDTH = 320;
+const THREAD_PREVIEW_MAX_WIDTH_RATIO = 0.65;
+const THREAD_PREVIEW_DEFAULT_WIDTH = 480;
 const KANBAN_LANES = [
   {
     id: "drafts",
@@ -110,6 +127,37 @@ const KANBAN_LANES = [
     description: "Archived work you want to keep around.",
   },
 ] as const;
+
+function readStoredThreadPreviewWidth(): number {
+  try {
+    const raw = window.localStorage.getItem(THREAD_PREVIEW_LAYOUT_STORAGE_KEY);
+    if (!raw) {
+      return THREAD_PREVIEW_DEFAULT_WIDTH;
+    }
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const width = parsed.width;
+    return typeof width === "number" && Number.isFinite(width)
+      ? width
+      : THREAD_PREVIEW_DEFAULT_WIDTH;
+  } catch {
+    return THREAD_PREVIEW_DEFAULT_WIDTH;
+  }
+}
+
+function clampThreadPreviewWidth(width: number, containerWidth: number): number {
+  const maxWidth = Math.max(
+    THREAD_PREVIEW_MIN_WIDTH,
+    Math.floor(containerWidth * THREAD_PREVIEW_MAX_WIDTH_RATIO),
+  );
+  return Math.min(maxWidth, Math.max(THREAD_PREVIEW_MIN_WIDTH, Math.round(width)));
+}
+
+function persistThreadPreviewWidth(width: number) {
+  window.localStorage.setItem(
+    THREAD_PREVIEW_LAYOUT_STORAGE_KEY,
+    JSON.stringify({ width }),
+  );
+}
 
 type KanbanLaneId = (typeof KANBAN_LANES)[number]["id"];
 
@@ -389,24 +437,86 @@ function appendAssistantDeltaContent(
   return nextContent;
 }
 
+type DraftAttachment = Attachment & {
+  originalName: string;
+  uploadPath: string;
+};
+
+type ElectronFile = File & {
+  path?: string;
+};
+
+function getDesktopFilePath(file: File): string | null {
+  const candidate = (file as ElectronFile).path;
+  return typeof candidate === "string" && candidate.trim() ? candidate : null;
+}
+
+function buildUploadReference(attachment: DraftAttachment): string {
+  return `(user uploaded file named ${JSON.stringify(attachment.originalName)} to /mnt/user-uploads/${attachment.uploadPath})`;
+}
+
+function revokeAttachmentPreviewUrls(attachments: DraftAttachment[]) {
+  for (const attachment of attachments) {
+    if (attachment.previewUrl?.startsWith("blob:")) {
+      URL.revokeObjectURL(attachment.previewUrl);
+    }
+  }
+}
+
+function UploadedFileChips({
+  refs,
+}: {
+  refs: ReturnType<typeof parseUploadRefs>["refs"];
+}) {
+  const previewContext = useChatPreviewContext();
+  if (!previewContext || refs.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      {refs.map((ref) => (
+        <FileCard
+          key={ref.mountPath}
+          filename={ref.originalName}
+          onClick={() => {
+            previewContext.openPreviewTarget({
+              kind: "file",
+              source: "upload",
+              workspaceId: DESKTOP_WORKSPACE_ID,
+              path: ref.filename,
+              filename: ref.originalName,
+            });
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
 function MessageRow({ message }: { message: Message }) {
   if (message.isMeta || message.sourceToolUseID) {
     return null;
   }
 
   if (message.role === "user") {
-    const content = coerceTextContent(message.content);
-    if (!content) {
+    const rawContent = coerceTextContent(message.content);
+    if (!rawContent) {
       return null;
     }
+    const uploadInfo = parseUploadRefs(rawContent);
+    const visibleContent = uploadInfo.cleanContent;
 
     return (
       <div className="group flex flex-col items-end gap-2 py-3">
-        <div className="max-w-[85%] rounded-3xl border border-border bg-muted/30 px-4 py-3 text-foreground">
-          <div className="max-w-none">
-            <MarkdownRenderer content={content} variant="user" />
+        <UploadedFileChips refs={uploadInfo.refs} />
+        {visibleContent ? (
+          <div className="max-w-[85%] rounded-3xl border border-border bg-muted/30 px-4 py-3 text-foreground">
+            <div className="max-w-none">
+              <MarkdownRenderer content={visibleContent} variant="user" />
+            </div>
           </div>
-        </div>
+        ) : null}
         <div className="flex items-center gap-0.5 text-xs text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
           <span>{formatTime(message.created_at)}</span>
         </div>
@@ -532,11 +642,27 @@ function Composer({
   onSubmitMessage: (threadId: string, content: string) => void;
 }) {
   const [draft, setDraft] = useState(initialDraft);
+  const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const attachmentsRef = useRef<DraftAttachment[]>([]);
+
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
 
   useEffect(() => {
     setDraft(initialDraft);
+    setAttachments((previousAttachments) => {
+      revokeAttachmentPreviewUrls(previousAttachments);
+      return [];
+    });
   }, [activeThreadId, initialDraft]);
+
+  useEffect(() => {
+    return () => {
+      revokeAttachmentPreviewUrls(attachmentsRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (!activeThreadId) {
@@ -566,11 +692,205 @@ function Composer({
   }, [activeThreadId, onDraftChange]);
 
   const handleSubmit = useCallback(() => {
-    if (!activeThreadId || !draft.trim()) return;
-    onSubmitMessage(activeThreadId, draft);
+    if (!activeThreadId) return;
+    const uploadRefs = attachments
+      .filter((attachment) => attachment.status === "complete")
+      .map((attachment) => buildUploadReference(attachment));
+    const trimmedDraft = draft.trim();
+    const content = [trimmedDraft, uploadRefs.join("\n")]
+      .filter((value) => value.length > 0)
+      .join(trimmedDraft ? "\n\n" : "\n");
+    if (!content) return;
+
+    onSubmitMessage(activeThreadId, content);
     setDraft("");
+    revokeAttachmentPreviewUrls(attachments);
+    setAttachments([]);
     onDraftChange(activeThreadId, "");
-  }, [activeThreadId, draft, onDraftChange, onSubmitMessage]);
+  }, [activeThreadId, attachments, draft, onDraftChange, onSubmitMessage]);
+
+  const handleStageFiles = useCallback(async (
+    entries: Array<{
+      sourcePath: string;
+      file?: File;
+    }>,
+  ) => {
+    if (!desktopShell?.importLocalFiles) {
+      toast.error("Desktop file staging is unavailable.");
+      return;
+    }
+
+    const pendingAttachments: DraftAttachment[] = entries.map(({ file, sourcePath }) => ({
+      id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      name: file?.name ?? sourcePath.split(/[\\/]/).pop() ?? "file",
+      originalName: file?.name ?? sourcePath.split(/[\\/]/).pop() ?? "file",
+      path: "",
+      uploadPath: "",
+      size: file?.size ?? 0,
+      contentType: file?.type || undefined,
+      previewUrl:
+        file && file.type.startsWith("image/")
+          ? URL.createObjectURL(file)
+          : undefined,
+      progress: 20,
+      status: "uploading",
+    }));
+
+    setAttachments((current) => [...current, ...pendingAttachments]);
+
+    try {
+      const importedFiles = await desktopShell.importLocalFiles(
+        entries.map((entry) => entry.sourcePath),
+      );
+      setAttachments((current) =>
+        current.map((attachment) => {
+          const index = pendingAttachments.findIndex((pending) => pending.id === attachment.id);
+          if (index === -1) {
+            return attachment;
+          }
+          const imported = importedFiles[index];
+          return imported
+            ? {
+                ...attachment,
+                name: imported.originalName,
+                originalName: imported.originalName,
+                path: imported.relativePath,
+                uploadPath: imported.relativePath,
+                size: imported.size,
+                progress: 100,
+                status: "complete",
+              }
+            : {
+                ...attachment,
+                progress: undefined,
+                status: "error",
+                error: "The desktop app did not return a staged file.",
+              };
+        }),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setAttachments((current) =>
+        current.map((attachment) =>
+          pendingAttachments.some((pending) => pending.id === attachment.id)
+            ? {
+                ...attachment,
+                progress: undefined,
+                status: "error",
+                error: message,
+              }
+            : attachment,
+        ),
+      );
+      toast.error(message || "Failed to upload files.");
+    }
+  }, []);
+
+  const handleFilesSelected = useCallback(async (files: File[]) => {
+    const pathEntries: Array<{ sourcePath: string; file: File }> = [];
+    const payloadFiles: File[] = [];
+
+    for (const file of files) {
+      const sourcePath = getDesktopFilePath(file);
+      if (sourcePath) {
+        pathEntries.push({ sourcePath, file });
+        continue;
+      }
+      payloadFiles.push(file);
+    }
+
+    if (pathEntries.length > 0) {
+      await handleStageFiles(pathEntries);
+    }
+
+    if (payloadFiles.length === 0) {
+      return;
+    }
+
+    if (!desktopShell?.importFilePayloads) {
+      toast.error("These files could not be imported from the desktop environment.");
+      return;
+    }
+
+    const pendingAttachments: DraftAttachment[] = payloadFiles.map((file) => ({
+      id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      name: file.name || "file",
+      originalName: file.name || "file",
+      path: "",
+      uploadPath: "",
+      size: file.size,
+      contentType: file.type || undefined,
+      previewUrl:
+        file.type.startsWith("image/")
+          ? URL.createObjectURL(file)
+          : undefined,
+      progress: 20,
+      status: "uploading",
+    }));
+
+    setAttachments((current) => [...current, ...pendingAttachments]);
+
+    try {
+      const payloads = await Promise.all(
+        payloadFiles.map(async (file) => ({
+          name: file.name || "file",
+          bytes: await file.arrayBuffer(),
+        })),
+      );
+      const importedFiles = await desktopShell.importFilePayloads(payloads);
+      setAttachments((current) =>
+        current.map((attachment) => {
+          const index = pendingAttachments.findIndex((pending) => pending.id === attachment.id);
+          if (index === -1) {
+            return attachment;
+          }
+          const imported = importedFiles[index];
+          return imported
+            ? {
+                ...attachment,
+                name: imported.originalName,
+                originalName: imported.originalName,
+                path: imported.relativePath,
+                uploadPath: imported.relativePath,
+                size: imported.size,
+                progress: 100,
+                status: "complete",
+              }
+            : {
+                ...attachment,
+                progress: undefined,
+                status: "error",
+                error: "The desktop app did not return a staged file.",
+              };
+        }),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setAttachments((current) =>
+        current.map((attachment) =>
+          pendingAttachments.some((pending) => pending.id === attachment.id)
+            ? {
+                ...attachment,
+                progress: undefined,
+                status: "error",
+                error: message,
+              }
+            : attachment,
+        ),
+      );
+      toast.error(message || "Failed to upload files.");
+    }
+  }, [handleStageFiles]);
+
+  const handleAttachmentRemove = useCallback((attachmentId: string) => {
+    setAttachments((current) => {
+      const removed = current.find((attachment) => attachment.id === attachmentId);
+      if (removed?.previewUrl?.startsWith("blob:")) {
+        URL.revokeObjectURL(removed.previewUrl);
+      }
+      return current.filter((attachment) => attachment.id !== attachmentId);
+    });
+  }, []);
 
   return (
     <div className="flex flex-col gap-2">
@@ -617,6 +937,9 @@ function Composer({
         onChange={handleChange}
         onSubmit={handleSubmit}
         onStop={activeThreadId ? () => onStopThread(activeThreadId) : undefined}
+        attachments={attachments}
+        onFilesSelected={handleFilesSelected}
+        onAttachmentRemove={handleAttachmentRemove}
         placeholder="Type a message..."
         isAssistantRunning={isStreaming}
         textareaRef={composerTextareaRef}
@@ -1775,9 +2098,27 @@ function ThreadPreviewPane({
     previewState.items[0] ??
     null;
   const activePreviewUrl = activeItem?.src ?? null;
+  const handleDownload = useCallback(async () => {
+    if (activeItem?.target.kind !== "file" || !desktopShell?.downloadFile) {
+      return;
+    }
+
+    try {
+      const result = await desktopShell.downloadFile({
+        source: activeItem.target.source,
+        path: activeItem.target.path,
+        filename: activeItem.target.filename ?? activeItem.title,
+      });
+      if (!result.canceled) {
+        toast.success("File saved.");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    }
+  }, [activeItem]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-background">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
       <div className="flex items-center justify-between gap-2 border-b border-border/70 px-3 py-3">
         <div className="min-w-0">
           <p className="truncate text-sm font-medium">Preview</p>
@@ -1788,6 +2129,19 @@ function ThreadPreviewPane({
           </p>
         </div>
         <div className="flex items-center gap-1">
+          {activeItem?.target.kind === "file" && desktopShell?.downloadFile ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label={`Download ${activeItem.title}`}
+              onClick={() => {
+                void handleDownload();
+              }}
+            >
+              <Download className="size-4" />
+              Save As
+            </Button>
+          ) : null}
           <Button
             variant="ghost"
             size="icon-sm"
@@ -1807,7 +2161,7 @@ function ThreadPreviewPane({
         </div>
       </div>
 
-      <div className="border-b border-border/70 px-2 py-2">
+      <div className="min-w-0 border-b border-border/70 px-2 py-2">
         <div className="flex gap-2 overflow-x-auto">
           {previewState.items.map((item) => {
             const isActive = item.id === activeItem?.id;
@@ -1842,7 +2196,7 @@ function ThreadPreviewPane({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden bg-muted/10">
+      <div className="min-h-0 min-w-0 flex-1 overflow-hidden bg-muted/10">
         {!activeItem ? (
           <div className="flex h-full items-center justify-center p-6">
             <p className="text-sm text-muted-foreground">No preview selected.</p>
@@ -2020,6 +2374,7 @@ function WorkbenchTabStrip({
 }
 
 export function App() {
+  const isMobile = useIsMobile();
   const [snapshot, setSnapshot] = useState<DesktopSnapshot | null>(null);
   const [uiMessagesByThread, setUiMessagesByThread] = useState<
     Record<string, Message[]>
@@ -2041,6 +2396,13 @@ export function App() {
   const fallbackSocketRef = useRef<WebSocket | null>(null);
   const streamingMessageIdsRef = useRef<Record<string, string | null>>({});
   const reportedReadyRef = useRef(false);
+  const previewSplitContainerRef = useRef<HTMLDivElement | null>(null);
+  const threadPreviewResizeStateRef = useRef<{
+    startClientX: number;
+    startWidth: number;
+  } | null>(null);
+  const threadPreviewWidthRef = useRef<number>(readStoredThreadPreviewWidth());
+  const [isThreadPreviewResizing, setIsThreadPreviewResizing] = useState(false);
 
   const activeThread = useMemo(
     () => getActiveThread(snapshot, activeThreadId),
@@ -2660,6 +3022,80 @@ export function App() {
     onSetPreviewTargets: handleSetPreviewTargets,
     onClearPreviewTargets: handleClearPreviewTargets,
   } : null;
+  const hasActiveThreadPreview =
+    !!activeThreadPreviewState?.visible && activeThreadPreviewState.items.length > 0;
+
+  useEffect(() => {
+    if (!hasActiveThreadPreview || isMobile) {
+      return;
+    }
+
+    const containerNode = previewSplitContainerRef.current;
+    if (!containerNode) {
+      return;
+    }
+
+    const applyPreviewWidth = () => {
+      const nextWidth = clampThreadPreviewWidth(
+        threadPreviewWidthRef.current,
+        containerNode.clientWidth,
+      );
+      threadPreviewWidthRef.current = nextWidth;
+      containerNode.style.setProperty("--thread-preview-width", `${nextWidth}px`);
+    };
+
+    applyPreviewWidth();
+
+    const resizeObserver = new ResizeObserver(applyPreviewWidth);
+    resizeObserver.observe(containerNode);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [hasActiveThreadPreview, isMobile]);
+
+  useEffect(() => {
+    if (!isThreadPreviewResizing) {
+      return;
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const resizeState = threadPreviewResizeStateRef.current;
+      const containerNode = previewSplitContainerRef.current;
+      if (!resizeState || !containerNode) {
+        return;
+      }
+
+      const nextWidth = clampThreadPreviewWidth(
+        resizeState.startWidth - (event.clientX - resizeState.startClientX),
+        containerNode.clientWidth,
+      );
+      threadPreviewWidthRef.current = nextWidth;
+      containerNode.style.setProperty("--thread-preview-width", `${nextWidth}px`);
+    };
+
+    const stopResize = () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      threadPreviewResizeStateRef.current = null;
+      setIsThreadPreviewResizing(false);
+      persistThreadPreviewWidth(threadPreviewWidthRef.current);
+    };
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", stopResize);
+    window.addEventListener("pointercancel", stopResize);
+
+    return () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("pointercancel", stopResize);
+    };
+  }, [isThreadPreviewResizing]);
 
   const handleSubmitGroupEditor = useCallback(() => {
     const title = groupEditor.title.trim();
@@ -2824,25 +3260,81 @@ export function App() {
                 {showSettings ? (
                   <SettingsPage />
                 ) : activeSurfaceProps ? (
-                  <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+                  hasActiveThreadPreview ? (
+                    isMobile ? (
+                      <div className="flex min-h-0 flex-1 flex-col">
+                        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                          <WorkbenchSurfacePane {...activeSurfaceProps} />
+                        </div>
+
+                        <aside className="flex min-h-[320px] w-full min-w-0 border-t border-border/60 bg-muted/10">
+                          <ThreadPreviewPane
+                            threadId={activeThreadId!}
+                            previewState={activeThreadPreviewState}
+                            onClear={handleClearPreviewTargets}
+                            onCloseItem={handleClosePreviewItem}
+                            onSelectItem={handleSelectPreviewItem}
+                            onSetVisible={handleSetPreviewVisible}
+                          />
+                        </aside>
+                      </div>
+                    ) : (
+                      <div
+                        ref={previewSplitContainerRef}
+                        className="flex min-h-0 flex-1"
+                        style={
+                          {
+                            "--thread-preview-width": `${threadPreviewWidthRef.current}px`,
+                          } as CSSProperties
+                        }
+                      >
+                        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                            <WorkbenchSurfacePane {...activeSurfaceProps} />
+                          </div>
+                        </div>
+
+                        <div
+                          role="separator"
+                          aria-label="Resize preview pane"
+                          aria-orientation="vertical"
+                          className="group relative flex w-2 shrink-0 cursor-col-resize items-stretch bg-transparent transition-colors hover:bg-border/20"
+                          onPointerDown={(event) => {
+                            const containerNode = previewSplitContainerRef.current;
+                            if (!containerNode) {
+                              return;
+                            }
+                            event.preventDefault();
+                            threadPreviewResizeStateRef.current = {
+                              startClientX: event.clientX,
+                              startWidth: threadPreviewWidthRef.current,
+                            };
+                            setIsThreadPreviewResizing(true);
+                          }}
+                        >
+                          <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border/70 transition-colors group-hover:bg-border" />
+                        </div>
+
+                        <aside
+                          className="flex h-full min-h-0 min-w-0 shrink-0 border-l border-border/60 bg-muted/10"
+                          style={{ width: "var(--thread-preview-width)" }}
+                        >
+                          <ThreadPreviewPane
+                            threadId={activeThreadId!}
+                            previewState={activeThreadPreviewState}
+                            onClear={handleClearPreviewTargets}
+                            onCloseItem={handleClosePreviewItem}
+                            onSelectItem={handleSelectPreviewItem}
+                            onSetVisible={handleSetPreviewVisible}
+                          />
+                        </aside>
+                      </div>
+                    )
+                  ) : (
                     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                       <WorkbenchSurfacePane {...activeSurfaceProps} />
                     </div>
-
-                    {activeThreadPreviewState?.visible &&
-                    activeThreadPreviewState.items.length > 0 ? (
-                      <aside className="flex min-h-[320px] w-full min-w-0 border-t border-border/60 bg-muted/10 lg:min-h-0 lg:w-[420px] lg:border-l lg:border-t-0 xl:w-[480px] 2xl:w-[560px]">
-                        <ThreadPreviewPane
-                          threadId={activeThreadId!}
-                          previewState={activeThreadPreviewState}
-                          onClear={handleClearPreviewTargets}
-                          onCloseItem={handleClosePreviewItem}
-                          onSelectItem={handleSelectPreviewItem}
-                          onSetVisible={handleSetPreviewVisible}
-                        />
-                      </aside>
-                    ) : null}
-                  </div>
+                  )
                 ) : (
                   <div className="flex flex-1 items-center justify-center p-6">
                     <Alert className="max-w-xl">

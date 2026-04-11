@@ -23,6 +23,7 @@ import type {
 import {
   getDesktopPreviewItemId,
   getDesktopPreviewItemTitle,
+  normalizeTransferredPreviewPath,
 } from '../../desktop/shared/preview';
 import type { ContentBlock } from '../../src/types';
 import { extractTextContent } from '../../desktop/shared/message-state';
@@ -276,6 +277,19 @@ function normalizePreviewTarget(value: unknown): DesktopPreviewTarget | null {
     const path = target.path.trim();
     if (!path) {
       return null;
+    }
+
+    const transferPreview = normalizeTransferredPreviewPath(path);
+    if (transferPreview) {
+      return {
+        kind: 'file',
+        source: transferPreview.source,
+        workspaceId: typeof target.workspaceId === 'string' ? target.workspaceId : null,
+        path: transferPreview.path,
+        filename: typeof target.filename === 'string' ? target.filename : null,
+        title: typeof target.title === 'string' ? target.title : null,
+        contentType: typeof target.contentType === 'string' ? target.contentType : null,
+      };
     }
 
     return {

@@ -33,18 +33,6 @@ sympy
 graphviz
 pyarrow
 
-# Database / Warehouse Connectivity
-duckdb
-psycopg[binary]
-google-cloud-bigquery
-google-cloud-bigquery-storage
-pandas-gbq
-db-dtypes
-snowflake-connector-python[pandas]
-databricks-sql-connector[pyarrow]
-pyodbc
-python-tds
-
 # Web / Parsing
 beautifulsoup4
 lxml

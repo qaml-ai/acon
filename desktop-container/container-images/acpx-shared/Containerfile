@@ -40,12 +40,15 @@ RUN mkdir -p /opt/acon/npm-global /usr/local/lib/acon
 
 COPY vendor/npm-global/ /opt/acon/npm-global/
 COPY acpx-shared/python-requirements.txt /tmp/python-requirements.txt
+COPY acpx-shared/python-connectivity-requirements.txt /tmp/python-connectivity-requirements.txt
 
 COPY acpx-shared/entrypoint.sh /usr/local/bin/desktop-entrypoint.sh
 COPY bridge/acon-agentd.mjs /usr/local/lib/acon/acon-agentd.mjs
 COPY bridge/acon-mcp.mjs /usr/local/lib/acon/acon-mcp.mjs
 RUN python3 -m pip install --no-cache-dir --break-system-packages -r /tmp/python-requirements.txt \
   && rm -f /tmp/python-requirements.txt
+RUN python3 -m pip install --no-cache-dir --break-system-packages -r /tmp/python-connectivity-requirements.txt \
+  && rm -f /tmp/python-connectivity-requirements.txt
 RUN chmod +x \
     /usr/local/bin/desktop-entrypoint.sh \
     /usr/local/lib/acon/acon-agentd.mjs \

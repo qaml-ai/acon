@@ -49,6 +49,8 @@ const HOST_CLAUDE_JSON_PATH = resolve(homedir(), ".claude.json");
 export interface RuntimeManager {
   getWorkspaceDirectory(): string;
   getManagedWorkspaceDirectory(): string;
+  getUserUploadsDirectory(): string;
+  getUserOutputsDirectory(): string;
   getRuntimeDirectory(): string;
   getThreadStateDirectory(threadId: string): string;
   getCachedStatus(): DesktopRuntimeStatus;
@@ -250,6 +252,14 @@ export class ContainerRuntimeManager implements RuntimeManager {
 
   getManagedWorkspaceDirectory(): string {
     return this.ensureManagedWorkspaceInitialized().rootPath;
+  }
+
+  getUserUploadsDirectory(): string {
+    return this.ensureTransferDirectory("uploads");
+  }
+
+  getUserOutputsDirectory(): string {
+    return this.ensureTransferDirectory("outputs");
   }
 
   getRuntimeDirectory(): string {
@@ -654,12 +664,21 @@ export class ContainerRuntimeManager implements RuntimeManager {
     });
   }
 
+  private ensureTransferDirectory(kind: "uploads" | "outputs"): string {
+    const directory = resolve(this.dataDirectory, "transfers", kind);
+    mkdirSync(directory, { recursive: true });
+    chmodSync(directory, 0o777);
+    return directory;
+  }
+
   private buildProviderContainerRunArgs(
     provider: DesktopProviderDefinition,
     state: ProviderContainerState,
     managedWorkspace: ManagedWorkspaceState,
     providersDataDirectory: string,
   ): string[] {
+    const userUploadsDirectory = this.ensureTransferDirectory("uploads");
+    const userOutputsDirectory = this.ensureTransferDirectory("outputs");
     const args = [
       "run",
       "--interactive",
@@ -672,6 +691,10 @@ export class ContainerRuntimeManager implements RuntimeManager {
       `${providersDataDirectory}:/data/providers`,
       "--volume",
       `${managedWorkspace.rootPath}:/workspace`,
+      "--volume",
+      `${userUploadsDirectory}:/mnt/user-uploads`,
+      "--volume",
+      `${userOutputsDirectory}:/mnt/user-outputs`,
       "--env",
       `ACON_HOST_RPC_SOCKET=${CONTAINER_HOST_RPC_SOCKET_PATH}`,
     ];
