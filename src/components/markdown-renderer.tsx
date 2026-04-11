@@ -6,7 +6,9 @@ import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
 import { cn } from '@/lib/utils';
 import { Check, Copy } from 'lucide-react';
+import { resolvePreviewableTempFilePathFromHref } from '@/lib/temp-file-links';
 import { codeToHtml, SHIKI_DEFAULT_THEMES, SUPPORTED_LANGUAGES } from '@/lib/shiki-config';
+import { FileLink } from '@/components/tool-call';
 
 interface MarkdownRendererProps {
   content: string;
@@ -16,6 +18,7 @@ interface MarkdownRendererProps {
 }
 
 const CODEX_CITATION_REGEX = /cite[^]+/g;
+const TEMP_FILE_PATH_REGEX = /(^|[\s(])((?:\/mnt\/user-(?:uploads|outputs))\/[^\s)<`]+)(?=$|[\s).,!?])/gm;
 
 export function normalizeCodexCitationMarkers(content: string): string {
   if (!content.includes('cite')) {
@@ -26,6 +29,28 @@ export function normalizeCodexCitationMarkers(content: string): string {
   // text without the structured metadata needed to render real links. Strip the
   // markers so users do not see broken token artifacts like citeturn1search0.
   return content.replace(CODEX_CITATION_REGEX, '');
+}
+
+export function injectTempFileMarkdownLinks(content: string): string {
+  const segments = content.split(/(```[\s\S]*?```)/g);
+  return segments
+    .map((segment) => {
+      if (segment.startsWith('```')) {
+        return segment;
+      }
+      return segment.replace(
+        TEMP_FILE_PATH_REGEX,
+        (match, prefix: string, path: string, offset: number, source: string) => {
+          // Skip existing markdown links like [label](/mnt/user-outputs/file.png).
+          if (prefix === '(' && offset > 0 && source[offset - 1] === ']') {
+            return match;
+          }
+
+          return `${prefix}[${path}](file-path:${encodeURIComponent(path)})`;
+        }
+      );
+    })
+    .join('');
 }
 
 // Inline code component - simple styled span
@@ -154,6 +179,38 @@ const createComponents = (variant: 'default' | 'user'): Components => ({
 
   // Links
   a: ({ href, children }) => {
+    if (href?.startsWith('file-path:')) {
+      const path = decodeURIComponent(href.slice('file-path:'.length));
+      return (
+        <FileLink
+          path={path}
+          className={cn(
+            'underline underline-offset-2 hover:no-underline',
+            variant === 'user' ? 'text-primary-foreground/90' : 'text-primary'
+          )}
+        >
+          {typeof children === 'string' ? children : path}
+        </FileLink>
+      );
+    }
+
+    if (href) {
+      const tempFilePath = resolvePreviewableTempFilePathFromHref(href);
+      if (tempFilePath) {
+        return (
+          <FileLink
+            path={tempFilePath}
+            className={cn(
+              'underline underline-offset-2 hover:no-underline',
+              variant === 'user' ? 'text-primary-foreground/90' : 'text-primary'
+            )}
+          >
+            {typeof children === 'string' ? children : tempFilePath}
+          </FileLink>
+        );
+      }
+    }
+
     // Internal API links (workspace outputs) should not open in new tab
     const isInternal = href?.startsWith('/api/');
 
@@ -250,7 +307,9 @@ function MarkdownRendererBase({
 }: MarkdownRendererProps) {
   // Process content for streaming - auto-close unclosed code fences
   const processedContent = useMemo(() => {
-    const normalizedContent = normalizeCodexCitationMarkers(content);
+    const normalizedContent = injectTempFileMarkdownLinks(
+      normalizeCodexCitationMarkers(content),
+    );
     if (!isStreaming) return normalizedContent;
 
     // Count code fences to check if one is unclosed

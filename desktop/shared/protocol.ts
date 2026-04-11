@@ -64,7 +64,11 @@ export interface DesktopPluginWebviewContribution {
   entrypoint: string;
 }
 
-export type DesktopPluginPermission = "host-mcp" | "serve-mcp" | "thread-preview";
+export type DesktopPluginPermission =
+  | "host-mcp"
+  | "host-plugins"
+  | "serve-mcp"
+  | "thread-preview";
 
 export type DesktopPluginSettingFieldType =
   | "boolean"
@@ -310,9 +314,23 @@ export interface DesktopPermissionRequestSecretPrompt {
   fieldLabel: string | null;
 }
 
+export interface DesktopPermissionRequestPluginMutation {
+  kind: "plugin_mutation";
+  id: string;
+  threadId: string | null;
+  pluginId: string;
+  harness: DesktopHarness;
+  action: "install" | "update";
+  targetPluginId: string;
+  targetPluginName: string | null;
+  sourcePath: string;
+  version: string | null;
+}
+
 export type DesktopPermissionRequest =
   | DesktopPermissionRequestHostMcpMutation
-  | DesktopPermissionRequestSecretPrompt;
+  | DesktopPermissionRequestSecretPrompt
+  | DesktopPermissionRequestPluginMutation;
 
 export interface DesktopSnapshot {
   threadGroups: DesktopThreadGroup[];

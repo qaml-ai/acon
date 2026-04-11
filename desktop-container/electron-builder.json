@@ -1,7 +1,8 @@
 {
   "appId": "ai.camel.acon",
-  "productName": "acon",
+  "productName": "Super Camel",
   "asar": true,
+  "afterSign": "desktop-container/scripts/notarize.mjs",
   "directories": {
     "output": "dist/bundle"
   },
@@ -21,6 +22,11 @@
   ],
   "mac": {
     "category": "public.app-category.developer-tools",
+    "gatekeeperAssess": false,
+    "hardenedRuntime": true,
+    "icon": "desktop-container/assets/super-camel.icns",
+    "entitlements": "desktop-container/entitlements.mac.plist",
+    "entitlementsInherit": "desktop-container/entitlements.mac.inherit.plist",
     "target": [
       {
         "target": "dir",

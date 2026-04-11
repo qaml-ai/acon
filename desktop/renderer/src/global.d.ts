@@ -5,6 +5,7 @@ import type {
   DesktopServerEvent,
   DesktopSnapshot,
 } from '../../shared/protocol';
+import type { PreviewTarget } from '../../../src/types';
 
 interface DesktopShellApi {
   platform: string;
@@ -14,6 +15,39 @@ interface DesktopShellApi {
     node: string;
   };
   getSnapshot: () => Promise<DesktopSnapshot | null>;
+  pickLocalFiles?: () => Promise<string[]>;
+  importLocalFiles?: (
+    paths: string[],
+  ) => Promise<
+    Array<{
+      originalName: string;
+      relativePath: string;
+      absolutePath: string;
+      size: number;
+    }>
+  >;
+  importFilePayloads?: (
+    payloads: Array<{
+      name: string;
+      bytes: ArrayBuffer;
+    }>,
+  ) => Promise<
+    Array<{
+      originalName: string;
+      relativePath: string;
+      absolutePath: string;
+      size: number;
+    }>
+  >;
+  downloadFile?: (request: {
+    source: "workspace" | "upload" | "output";
+    path: string;
+    filename?: string | null;
+  }) => Promise<{
+    canceled: boolean;
+    destinationPath: string | null;
+  }>;
+  resolvePreviewSrc?: (target: PreviewTarget) => Promise<string | null>;
   installPlugin?: () => Promise<DesktopPluginInstallResult>;
   openPluginDirectory?: () => Promise<string>;
   resolveWebviewSrc?: (entrypoint: string) => Promise<string>;

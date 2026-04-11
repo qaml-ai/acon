@@ -15,7 +15,12 @@ import type {
 } from "../desktop-container/backend/container-runtime";
 import type { DesktopServerEvent } from "../desktop/shared/protocol";
 
-function createRuntimeManagerStub() {
+function createRuntimeManagerStub(
+  options: {
+    managedWorkspaceDirectory?: string;
+    runtimeDirectory?: string;
+  } = {},
+) {
   const pendingPrompts: Array<{
     options: StreamContainerPromptOptions;
     resolve: (value: StreamContainerPromptResult) => void;
@@ -24,10 +29,18 @@ function createRuntimeManagerStub() {
 
   const registerHostMcpServer = vi.fn();
   const unregisterHostMcpServer = vi.fn();
+  const managedWorkspaceDirectory =
+    options.managedWorkspaceDirectory ?? "/managed-workspace";
+  const runtimeDirectory = options.runtimeDirectory ?? "/runtime";
   const runtime: RuntimeManager = {
     getWorkspaceDirectory: () => "/workspace",
-    getRuntimeDirectory: () => "/runtime",
-    getThreadStateDirectory: (threadId: string) => `/runtime/thread-state/${threadId}`,
+    getManagedWorkspaceDirectory: () => managedWorkspaceDirectory,
+    getUserUploadsDirectory: () =>
+      resolve(process.env.DESKTOP_DATA_DIR ?? tmpdir(), "transfers", "uploads"),
+    getUserOutputsDirectory: () =>
+      resolve(process.env.DESKTOP_DATA_DIR ?? tmpdir(), "transfers", "outputs"),
+    getRuntimeDirectory: () => runtimeDirectory,
+    getThreadStateDirectory: (threadId: string) => `${runtimeDirectory}/thread-state/${threadId}`,
     getCachedStatus: () => ({
       state: "running",
       detail: "Runtime ready",
@@ -74,6 +87,53 @@ async function waitFor<T>(assertion: () => T, timeoutMs = 5_000): Promise<T> {
   throw lastError instanceof Error
     ? lastError
     : new Error("Timed out waiting for test condition.");
+}
+
+function createPluginSnapshotRecord(options: {
+  id: string;
+  name: string;
+  version: string;
+  path: string;
+  source?: "builtin" | "user";
+  enabled?: boolean;
+  disableable?: boolean;
+}) {
+  return {
+    id: options.id,
+    name: options.name,
+    version: options.version,
+    description: null,
+    source: options.source ?? "user",
+    enabled: options.enabled ?? true,
+    disableable: options.disableable ?? true,
+    path: options.path,
+    main: resolve(options.path, "index.mjs"),
+    webviews: [],
+    permissions: [],
+    settings: null,
+    compatibility: {
+      currentApiVersion: 1,
+      declaredApiVersion: 1,
+      minApiVersion: 1,
+      compatible: true,
+      reason: null,
+    },
+    capabilities: {
+      views: [],
+      panels: [],
+      commands: [],
+      tools: [],
+    },
+    runtime: {
+      activated: true,
+      activationError: null,
+      subscribedEvents: [],
+      registeredViewIds: [],
+      registeredPanelIds: [],
+      registeredCommandIds: [],
+      registeredToolIds: [],
+    },
+  };
 }
 
 describe("DesktopService", () => {
@@ -534,6 +594,397 @@ describe("DesktopService", () => {
     );
   });
 
+  it("requires approval before installing a workspace plugin bundle", async () => {
+    const managedWorkspaceDirectory = resolve(
+      sandboxDataDir,
+      "workspaces",
+      "default",
+      "root",
+    );
+    const pluginDirectory = resolve(managedWorkspaceDirectory, "plugins", "todo-plugin");
+    mkdirSync(pluginDirectory, { recursive: true });
+    writeFileSync(
+      resolve(pluginDirectory, "package.json"),
+      JSON.stringify(
+        {
+          name: "@test/todo-plugin",
+          version: "0.2.0",
+          type: "module",
+          camelai: {
+            id: "todo-plugin",
+            name: "Todo Plugin",
+            main: "./index.mjs",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      resolve(pluginDirectory, "index.mjs"),
+      "export default { activate() {} };",
+      "utf8",
+    );
+
+    const { runtime } = createRuntimeManagerStub({
+      managedWorkspaceDirectory,
+    });
+    const service = new DesktopService(runtime);
+
+    const installPromise = service.installPluginFromWorkspace(
+      {
+        path: "plugins/todo-plugin",
+      },
+      {
+        pluginId: "host-mcp-manager",
+        harness: "codex",
+        threadId: "thread-1",
+        workspaceDirectory: "/workspace",
+      },
+    );
+
+    const installRequest = await waitFor(() => {
+      const request = service.getSnapshot().pendingPermissionRequest;
+      expect(request).toEqual(
+        expect.objectContaining({
+          kind: "plugin_mutation",
+          action: "install",
+          targetPluginId: "todo-plugin",
+          sourcePath: "plugins/todo-plugin",
+        }),
+      );
+      return request!;
+    });
+
+    const installedPluginPath = resolve(sandboxDataDir, "plugins", "todo-plugin");
+    expect(existsSync(installedPluginPath)).toBe(false);
+
+    service.handleClientEvent({
+      type: "respond_permission_request",
+      requestId: installRequest.id,
+      decision: "approve",
+    });
+
+    await expect(installPromise).resolves.toEqual({
+      pluginId: "todo-plugin",
+      pluginName: "Todo Plugin",
+      version: "0.2.0",
+      installPath: installedPluginPath,
+      replaced: false,
+    });
+    expect(existsSync(resolve(installedPluginPath, "package.json"))).toBe(true);
+    expect(CamelAIExtensionHost.prototype.refresh).toHaveBeenCalled();
+  });
+
+  it("reconciles declarative plugin agent assets for both providers on startup", async () => {
+    const pluginDirectory = resolve(sandboxDataDir, "plugins", "declarative-assets-plugin");
+    mkdirSync(resolve(pluginDirectory, "agent-assets", "skills", "authoring"), {
+      recursive: true,
+    });
+    writeFileSync(
+      resolve(pluginDirectory, "package.json"),
+      JSON.stringify(
+        {
+          name: "@test/declarative-assets-plugin",
+          version: "0.5.0",
+          type: "module",
+          camelai: {
+            id: "declarative-assets-plugin",
+            name: "Declarative Assets Plugin",
+            main: "./index.mjs",
+            agentAssets: {
+              skills: "./agent-assets/skills",
+              mcpServers: "./agent-assets/mcp.json",
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(resolve(pluginDirectory, "index.mjs"), "export default { activate() {} };");
+    writeFileSync(
+      resolve(pluginDirectory, "agent-assets", "skills", "authoring", "SKILL.md"),
+      "# Authoring\n",
+      "utf8",
+    );
+    writeFileSync(
+      resolve(pluginDirectory, "agent-assets", "mcp.json"),
+      JSON.stringify(
+        {
+          mcpServers: {
+            docs: {
+              command: "npx",
+              args: ["-y", "@test/docs-mcp"],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    vi.spyOn(CamelAIExtensionHost.prototype, "getSnapshot").mockImplementation(() => ({
+      views: [],
+      panels: [],
+      plugins: [
+        createPluginSnapshotRecord({
+          id: "declarative-assets-plugin",
+          name: "Declarative Assets Plugin",
+          version: "0.5.0",
+          path: pluginDirectory,
+        }),
+      ],
+    }));
+
+    const runtimeDirectory = resolve(sandboxDataDir, "runtime");
+    const { runtime } = createRuntimeManagerStub({
+      runtimeDirectory,
+    });
+    new DesktopService(runtime);
+
+    await waitFor(() => {
+      const codexConfigPath = resolve(
+        runtimeDirectory,
+        "providers",
+        "codex",
+        "home",
+        ".codex",
+        "config.toml",
+      );
+      const claudeStatePath = resolve(
+        runtimeDirectory,
+        "providers",
+        "claude",
+        "home",
+        ".claude.json",
+      );
+      expect(
+        existsSync(
+          resolve(
+            runtimeDirectory,
+            "providers",
+            "codex",
+            "home",
+            ".codex",
+            "skills",
+            "declarative-assets-plugin--authoring",
+            "SKILL.md",
+          ),
+        ),
+      ).toBe(true);
+      expect(
+        existsSync(
+          resolve(
+            runtimeDirectory,
+            "providers",
+            "claude",
+            "home",
+            ".claude",
+            "skills",
+            "declarative-assets-plugin--authoring",
+            "SKILL.md",
+          ),
+        ),
+      ).toBe(true);
+      expect(
+        readFileSync(
+          resolve(runtimeDirectory, "providers", "codex", "home", ".codex", "config.toml"),
+          "utf8",
+        ),
+      ).toContain('[mcp_servers."plugin.declarative-assets-plugin.docs"]');
+      expect(
+        JSON.parse(
+          readFileSync(
+            resolve(runtimeDirectory, "providers", "claude", "home", ".claude.json"),
+            "utf8",
+          ),
+        ).projects["/workspace"].mcpServers,
+      ).toEqual(
+        expect.objectContaining({
+          "plugin.declarative-assets-plugin.docs": expect.objectContaining({
+            command: "npx",
+            args: ["-y", "@test/docs-mcp"],
+          }),
+        }),
+      );
+    });
+  });
+
+  it("removes declarative plugin agent assets when the plugin is disabled", async () => {
+    const pluginDirectory = resolve(sandboxDataDir, "plugins", "toggle-assets-plugin");
+    mkdirSync(resolve(pluginDirectory, "agent-assets", "skills", "research"), {
+      recursive: true,
+    });
+    writeFileSync(
+      resolve(pluginDirectory, "package.json"),
+      JSON.stringify(
+        {
+          name: "@test/toggle-assets-plugin",
+          version: "0.6.0",
+          type: "module",
+          camelai: {
+            id: "toggle-assets-plugin",
+            name: "Toggle Assets Plugin",
+            main: "./index.mjs",
+            disableable: true,
+            agentAssets: {
+              skills: "./agent-assets/skills",
+              mcpServers: "./agent-assets/mcp.json",
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(resolve(pluginDirectory, "index.mjs"), "export default { activate() {} };");
+    writeFileSync(
+      resolve(pluginDirectory, "agent-assets", "skills", "research", "SKILL.md"),
+      "# Research\n",
+      "utf8",
+    );
+    writeFileSync(
+      resolve(pluginDirectory, "agent-assets", "mcp.json"),
+      JSON.stringify(
+        {
+          mcpServers: {
+            remote: {
+              transport: "streamable-http",
+              url: "https://example.com/mcp",
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    let pluginEnabled = true;
+    vi.spyOn(CamelAIExtensionHost.prototype, "getSnapshot").mockImplementation(() => ({
+      views: [],
+      panels: [],
+      plugins: [
+        createPluginSnapshotRecord({
+          id: "toggle-assets-plugin",
+          name: "Toggle Assets Plugin",
+          version: "0.6.0",
+          path: pluginDirectory,
+          enabled: pluginEnabled,
+        }),
+      ],
+    }));
+
+    const runtimeDirectory = resolve(sandboxDataDir, "runtime");
+    const { runtime } = createRuntimeManagerStub({
+      runtimeDirectory,
+    });
+    const service = new DesktopService(runtime);
+
+    await waitFor(() => {
+      expect(
+        existsSync(
+          resolve(
+            runtimeDirectory,
+            "providers",
+            "codex",
+            "home",
+            ".codex",
+            "skills",
+            "toggle-assets-plugin--research",
+            "SKILL.md",
+          ),
+        ),
+      ).toBe(true);
+      expect(
+        existsSync(
+          resolve(
+            runtimeDirectory,
+            "providers",
+            "claude",
+            "home",
+            ".claude",
+            "skills",
+            "toggle-assets-plugin--research",
+            "SKILL.md",
+          ),
+        ),
+      ).toBe(true);
+    });
+
+    pluginEnabled = false;
+    service.handleClientEvent({
+      type: "set_plugin_enabled",
+      pluginId: "toggle-assets-plugin",
+      enabled: false,
+    });
+
+    await waitFor(() => {
+      expect(CamelAIExtensionHost.prototype.refresh).toHaveBeenCalled();
+      const persisted = JSON.parse(
+        readFileSync(resolve(sandboxDataDir, "state.json"), "utf8"),
+      ) as {
+        pluginEnabledById?: Record<string, boolean>;
+      };
+      expect(persisted.pluginEnabledById?.["toggle-assets-plugin"]).toBe(false);
+    });
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+
+    const codexConfigPath = resolve(
+      runtimeDirectory,
+      "providers",
+      "codex",
+      "home",
+      ".codex",
+      "config.toml",
+    );
+    const claudeStatePath = resolve(
+      runtimeDirectory,
+      "providers",
+      "claude",
+      "home",
+      ".claude.json",
+    );
+    expect(
+      existsSync(
+        resolve(
+          runtimeDirectory,
+          "providers",
+          "codex",
+          "home",
+          ".codex",
+          "skills",
+          "toggle-assets-plugin--research",
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      existsSync(
+        resolve(
+          runtimeDirectory,
+          "providers",
+          "claude",
+          "home",
+          ".claude",
+          "skills",
+          "toggle-assets-plugin--research",
+        ),
+      ),
+    ).toBe(false);
+    if (existsSync(codexConfigPath)) {
+      expect(readFileSync(codexConfigPath, "utf8")).not.toContain(
+        '[mcp_servers."plugin.toggle-assets-plugin.remote"]',
+      );
+    }
+    expect(
+      JSON.parse(readFileSync(claudeStatePath, "utf8")).projects["/workspace"].mcpServers,
+    ).toEqual({});
+  });
   it("loads, installs, and removes persisted host MCP servers", async () => {
     const serverDirectory = resolve(sandboxDataDir, "host-mcp", "servers");
     mkdirSync(serverDirectory, { recursive: true });
@@ -849,5 +1300,43 @@ describe("DesktopService", () => {
       existsSync(resolve(serverDirectory, "workspace-server.json")),
     ).toBe(true);
     expect(service.getSnapshot().pendingPermissionRequest).toBe(null);
+  });
+
+  it("resolves upload and output preview items against mounted transfer directories", () => {
+    const { runtime } = createRuntimeManagerStub();
+    const service = new DesktopService(runtime);
+    const threadId = service.getSnapshot().threads[0]?.id ?? "";
+    const uploadsDirectory = runtime.getUserUploadsDirectory();
+    const outputsDirectory = runtime.getUserOutputsDirectory();
+
+    mkdirSync(uploadsDirectory, { recursive: true });
+    mkdirSync(outputsDirectory, { recursive: true });
+    writeFileSync(resolve(uploadsDirectory, "input.csv"), "name\nacon\n", "utf8");
+    writeFileSync(resolve(outputsDirectory, "report.xlsx"), "fake workbook", "utf8");
+
+    service.handleClientEvent({
+      type: "preview_set_items",
+      threadId,
+      items: [
+        {
+          kind: "file",
+          source: "upload",
+          path: "input.csv",
+          filename: "input.csv",
+        },
+        {
+          kind: "file",
+          source: "output",
+          path: "report.xlsx",
+          filename: "report.xlsx",
+        },
+      ],
+    });
+
+    const previewItems =
+      service.getSnapshot().threadPreviewStateById[threadId]?.items ?? [];
+    expect(previewItems).toHaveLength(2);
+    expect(previewItems[0]?.src).toContain("transfers/uploads/input.csv");
+    expect(previewItems[1]?.src).toContain("transfers/outputs/report.xlsx");
   });
 });

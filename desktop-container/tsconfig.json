@@ -1,12 +1,25 @@
 {
-  "extends": "../desktop/tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2024",
+    "lib": ["ESNext"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "types": ["node", "bun-types"],
+    "paths": {
+      "@/*": ["../src/*"],
+      "@desktop/*": ["../desktop/renderer/src/*"]
+    }
+  },
   "include": [
     "./**/*.ts",
     "./**/*.tsx",
-    "../desktop/shared/**/*.ts",
-    "../src/components/theme-provider.tsx",
-    "../src/components/ui/**/*.tsx",
-    "../src/lib/utils.ts"
+    "../desktop/shared/**/*.ts"
   ],
   "exclude": [
     "./.local-dev/**/*",

@@ -5,10 +5,13 @@ import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { CodePreview } from './code-preview';
-import { getPreviewType } from './file-type-utils';
+import { getFileExtension, getPreviewType } from './file-type-utils';
+import { MermaidPreview } from './mermaid-preview';
 import { NotebookPreview } from './notebook-preview';
 import type { NotebookFile } from './notebook-preview';
 import { SpreadsheetPreview } from './spreadsheet-preview';
+import type { PreviewTarget } from '@/types';
+import { useResolvedPreviewUrl } from './use-resolved-preview-url';
 
 const MAX_TEXT_LINES = 500;
 const MAX_SPREADSHEET_LINES = 500;
@@ -92,6 +95,7 @@ export interface FilePreviewContentProps {
   filename: string;
   previewUrl: string;
   contentType?: string;
+  previewTarget?: PreviewTarget;
   layout?: PreviewLayout;
   notebookViewMode?: 'report' | 'notebook';
   markdownViewMode?: 'rendered' | 'source';
@@ -107,17 +111,20 @@ function FilePreviewContentComponent({
   filename,
   previewUrl,
   contentType,
+  previewTarget,
   layout = 'dialog',
   notebookViewMode,
   markdownViewMode,
   onNotebookStateChange,
 }: FilePreviewContentProps) {
+  const resolvedPreviewUrl = useResolvedPreviewUrl(previewUrl, previewTarget);
   const previewType = useMemo(
     () => getPreviewType(filename, contentType),
     [filename, contentType]
   );
 
   const [textPreview, setTextPreview] = useState('');
+  const [spreadsheetPreview, setSpreadsheetPreview] = useState<string | ArrayBuffer | null>(null);
   const [textStatus, setTextStatus] = useState<TextStatus>('idle');
   const [textErrorMessage, setTextErrorMessage] = useState('Unable to preview this file.');
   const [notebook, setNotebook] = useState<NotebookFile | null>(null);
@@ -147,26 +154,41 @@ function FilePreviewContentComponent({
       previewType === 'code' ||
       previewType === 'spreadsheet' ||
       previewType === 'notebook' ||
-      previewType === 'markdown';
-    if (!shouldFetchText) return;
+      previewType === 'markdown' ||
+      previewType === 'mermaid';
+    if (!shouldFetchText || !resolvedPreviewUrl) return;
 
     const controller = new AbortController();
     let cancelled = false;
 
     setTextStatus('loading');
     setTextErrorMessage(getPreviewErrorMessage(previewType));
+    setSpreadsheetPreview(null);
     setNotebook(null);
     if (previewType === 'notebook') {
       notebookStateChangeRef.current?.({ notebook: null, status: 'loading' });
     }
 
-    fetch(previewUrl, { signal: controller.signal })
+    fetch(resolvedPreviewUrl, { signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) {
           const error = new Error('Failed to load preview') as Error & { status?: number };
           error.status = response.status;
           throw error;
         }
+        const isBinarySpreadsheet =
+          previewType === 'spreadsheet' &&
+          ['xlsx', 'xls'].includes(getFileExtension(filename));
+
+        if (isBinarySpreadsheet) {
+          const bodyBuffer = await response.arrayBuffer();
+          if (cancelled) return;
+          setSpreadsheetPreview(bodyBuffer);
+          setLineInfo({ truncated: false, totalLines: 0 });
+          setTextStatus('ready');
+          return;
+        }
+
         const bodyText = await response.text();
         if (previewType === 'notebook') {
           let parsed: NotebookFile | null = null;
@@ -188,6 +210,7 @@ function FilePreviewContentComponent({
             bodyText,
             MAX_SPREADSHEET_LINES
           );
+          setSpreadsheetPreview(truncatedText);
           setTextPreview(truncatedText);
           setLineInfo({ truncated, totalLines });
           setTextStatus('ready');
@@ -214,7 +237,7 @@ function FilePreviewContentComponent({
       cancelled = true;
       controller.abort();
     };
-  }, [previewType, previewUrl]);
+  }, [previewType, resolvedPreviewUrl, filename]);
 
   useEffect(() => {
     if (previewType === 'pdf' || previewType === 'audio' || previewType === 'video') {
@@ -224,13 +247,17 @@ function FilePreviewContentComponent({
       setMediaLoading(false);
       setMediaError(false);
     }
-  }, [previewType, previewUrl]);
+  }, [previewType, resolvedPreviewUrl]);
 
   return (
-    <div className={cn('overflow-hidden', layout === 'panel' && 'h-full')}>
+    <div className={cn('min-w-0 overflow-hidden', layout === 'panel' && 'h-full')}>
       {previewType === 'image' && (
         <div className={cn(layout === 'panel' && 'p-3')}>
-          <ImagePreview src={previewUrl} alt={filename} layout={layout} />
+          {resolvedPreviewUrl ? (
+            <ImagePreview src={resolvedPreviewUrl} alt={filename} layout={layout} />
+          ) : (
+            <p className="text-sm text-muted-foreground">Failed to load image.</p>
+          )}
         </div>
       )}
 
@@ -247,7 +274,7 @@ function FilePreviewContentComponent({
             </div>
           )}
           <iframe
-            src={previewUrl}
+            src={resolvedPreviewUrl ?? undefined}
             title={filename}
             className={cn(
               'w-full rounded-md border',
@@ -280,7 +307,7 @@ function FilePreviewContentComponent({
               setMediaError(true);
             }}
           >
-            <source src={previewUrl} />
+            <source src={resolvedPreviewUrl ?? undefined} />
             Your browser does not support the audio element.
           </audio>
         </div>
@@ -307,7 +334,7 @@ function FilePreviewContentComponent({
               setMediaError(true);
             }}
           >
-            <source src={previewUrl} />
+            <source src={resolvedPreviewUrl ?? undefined} />
             Your browser does not support the video tag.
           </video>
         </div>
@@ -366,7 +393,7 @@ function FilePreviewContentComponent({
       )}
 
       {previewType === 'spreadsheet' && (
-        <div className={cn(layout === 'panel' && 'h-full overflow-auto')}>
+        <div className={cn('min-w-0', layout === 'panel' && 'h-full overflow-hidden')}>
           {(textStatus === 'loading' || textStatus === 'idle') && (
             <p className="p-4 text-sm text-muted-foreground">Loading preview...</p>
           )}
@@ -375,7 +402,7 @@ function FilePreviewContentComponent({
           )}
           {textStatus === 'ready' && (
             <SpreadsheetPreview
-              content={textPreview}
+              content={spreadsheetPreview ?? textPreview}
               filename={filename}
               contentType={contentType}
               layout={layout}
@@ -428,6 +455,20 @@ function FilePreviewContentComponent({
             <p className="mt-2 px-3 text-xs text-muted-foreground">
               Showing first {MAX_TEXT_LINES} of {lineInfo.totalLines} lines.
             </p>
+          )}
+        </div>
+      )}
+
+      {previewType === 'mermaid' && (
+        <div className={cn(layout === 'panel' && 'h-full overflow-auto')}>
+          {(textStatus === 'loading' || textStatus === 'idle') && (
+            <p className="text-sm text-muted-foreground">Loading diagram...</p>
+          )}
+          {textStatus === 'error' && (
+            <p className="text-sm text-muted-foreground">{textErrorMessage}</p>
+          )}
+          {textStatus === 'ready' && (
+            <MermaidPreview content={textPreview} filename={filename} layout={layout} />
           )}
         </div>
       )}

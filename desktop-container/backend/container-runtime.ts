@@ -9,6 +9,7 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -36,6 +37,7 @@ const CONTAINER_HOST_RPC_SOCKET_PATH = "/data/host-rpc/bridge.sock";
 const DEFAULT_HOST_RPC_FETCH_TIMEOUT_MS = 15_000;
 const DEFAULT_HOST_RPC_FETCH_MAX_BODY_BYTES = 256 * 1024;
 const DEFAULT_CONTAINER_COMMAND_TIMEOUT_MS = 60_000;
+const DEFAULT_CONTAINER_IMAGE_LOAD_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_CONTAINER_DAEMON_READY_TIMEOUT_MS = 30_000;
 const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 30_000;
 const HOST_CODEX_HOME = process.env.CODEX_HOME?.trim()
@@ -58,6 +60,8 @@ const FORWARDED_PROVIDER_ENV_VARS = [
 export interface RuntimeManager {
   getWorkspaceDirectory(): string;
   getManagedWorkspaceDirectory(): string;
+  getUserUploadsDirectory(): string;
+  getUserOutputsDirectory(): string;
   getRuntimeDirectory(): string;
   getThreadStateDirectory(threadId: string): string;
   getCachedStatus(): DesktopRuntimeStatus;
@@ -225,6 +229,14 @@ interface DaemonEnvelope {
   };
 }
 
+interface BundledImageManifest {
+  images?: Array<{
+    archive?: unknown;
+    id?: unknown;
+    imageName?: unknown;
+  }>;
+}
+
 function isRecoverableRuntimeError(error: unknown): boolean {
   const message = formatError(error);
   return /failed to create process in container|xpc connection error|connection interrupted|container system start|container daemon exited|daemon is not ready|broken pipe|not running/i.test(
@@ -259,6 +271,14 @@ export class ContainerRuntimeManager implements RuntimeManager {
 
   getManagedWorkspaceDirectory(): string {
     return this.ensureManagedWorkspaceInitialized().rootPath;
+  }
+
+  getUserUploadsDirectory(): string {
+    return this.ensureTransferDirectory("uploads");
+  }
+
+  getUserOutputsDirectory(): string {
+    return this.ensureTransferDirectory("outputs");
   }
 
   getRuntimeDirectory(): string {
@@ -434,6 +454,41 @@ export class ContainerRuntimeManager implements RuntimeManager {
       this.checkedImages.add(imageName);
       return;
     }
+    const bundledImageArchivePath = this.resolveBundledImageArchivePath(imageName);
+    if (bundledImageArchivePath) {
+      const loadingStatus: DesktopRuntimeStatus = {
+        state: "starting",
+        detail: `Loading bundled Apple container image ${imageName}.`,
+        helperPath: this.containerCommand,
+        runtimeDirectory: this.runtimeDirectory,
+        imageReference: imageName,
+      };
+      this.lastRuntimeStatus = loadingStatus;
+      onStatus?.(loadingStatus);
+
+      const loadResult = await this.runCapturedCommand(
+        ["image", "load", "--input", bundledImageArchivePath],
+        {
+          commandLabel: `container image load ${imageName}`,
+          timeoutMs: parseTimeoutMs(
+            process.env.DESKTOP_CONTAINER_IMAGE_LOAD_TIMEOUT_MS,
+            DEFAULT_CONTAINER_IMAGE_LOAD_TIMEOUT_MS,
+          ),
+        },
+      );
+      if (loadResult.code === 0) {
+        const loadedInspect = await this.runCapturedCommand(
+          ["image", "inspect", imageName],
+          {
+            commandLabel: `container image inspect ${imageName}`,
+          },
+        );
+        if (loadedInspect.code === 0) {
+          this.checkedImages.add(imageName);
+          return;
+        }
+      }
+    }
     const inspectOutput = inspect.stderr?.trim() || inspect.stdout?.trim();
     const missingImageError = new Error(
       `Missing Apple container image ${imageName}. Run \`bun run prepare:container\` before starting the desktop runtime.${
@@ -450,6 +505,37 @@ export class ContainerRuntimeManager implements RuntimeManager {
     this.lastRuntimeStatus = failedStatus;
     onStatus?.(failedStatus);
     throw missingImageError;
+  }
+
+  private resolveBundledImageArchivePath(imageName: string): string | null {
+    const manifestPath = resolve(
+      this.containerImageRoot,
+      "bundled-image-manifest.json",
+    );
+    if (!existsSync(manifestPath)) {
+      return null;
+    }
+
+    try {
+      const manifest = JSON.parse(
+        readFileSync(manifestPath, "utf8"),
+      ) as BundledImageManifest;
+      const record = manifest.images?.find(
+        (candidate) =>
+          typeof candidate?.imageName === "string" &&
+          candidate.imageName === imageName &&
+          typeof candidate.archive === "string" &&
+          candidate.archive.trim().length > 0,
+      );
+      if (!record || typeof record.archive !== "string") {
+        return null;
+      }
+
+      const archivePath = resolve(this.containerImageRoot, record.archive);
+      return existsSync(archivePath) ? archivePath : null;
+    } catch {
+      return null;
+    }
   }
 
   private getSharedContainerState(): ProviderContainerState {
@@ -663,12 +749,21 @@ export class ContainerRuntimeManager implements RuntimeManager {
     });
   }
 
+  private ensureTransferDirectory(kind: "uploads" | "outputs"): string {
+    const directory = resolve(this.dataDirectory, "transfers", kind);
+    mkdirSync(directory, { recursive: true });
+    chmodSync(directory, 0o777);
+    return directory;
+  }
+
   private buildProviderContainerRunArgs(
     provider: DesktopProviderDefinition,
     state: ProviderContainerState,
     managedWorkspace: ManagedWorkspaceState,
     providersDataDirectory: string,
   ): string[] {
+    const userUploadsDirectory = this.ensureTransferDirectory("uploads");
+    const userOutputsDirectory = this.ensureTransferDirectory("outputs");
     const args = [
       "run",
       "--interactive",
@@ -681,6 +776,10 @@ export class ContainerRuntimeManager implements RuntimeManager {
       `${providersDataDirectory}:/data/providers`,
       "--volume",
       `${managedWorkspace.rootPath}:/workspace`,
+      "--volume",
+      `${userUploadsDirectory}:/mnt/user-uploads`,
+      "--volume",
+      `${userOutputsDirectory}:/mnt/user-outputs`,
       "--env",
       `ACON_HOST_RPC_SOCKET=${CONTAINER_HOST_RPC_SOCKET_PATH}`,
     ];

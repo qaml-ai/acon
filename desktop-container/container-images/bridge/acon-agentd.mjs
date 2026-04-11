@@ -45,6 +45,9 @@ This environment is for \`acon\`, the standalone camelAI desktop app.
   const tools = await client.listMcpTools("server-id");
   \`\`\`
 - MCP tools are external integrations.
+- User-provided files are mounted at \`/mnt/user-uploads\`; read inputs from there when the prompt references them.
+- User-deliverable artifacts should be written to \`/mnt/user-outputs\` so the desktop app can offer them back as downloads.
+- When you create a user-deliverable file in \`/mnt/user-outputs\`, mention the full output path in your reply.
 `;
 
 /** @typedef {"codex" | "claude" | "pi" | "opencode"} ProviderId */

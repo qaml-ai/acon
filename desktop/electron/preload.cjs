@@ -8,6 +8,11 @@ contextBridge.exposeInMainWorld('desktopShell', {
     node: process.versions.node,
   },
   getSnapshot: () => ipcRenderer.invoke('desktop:get-snapshot'),
+  pickLocalFiles: () => ipcRenderer.invoke('desktop:pick-local-files'),
+  importLocalFiles: (paths) => ipcRenderer.invoke('desktop:import-local-files', paths),
+  importFilePayloads: (payloads) => ipcRenderer.invoke('desktop:import-file-payloads', payloads),
+  downloadFile: (request) => ipcRenderer.invoke('desktop:download-file', request),
+  resolvePreviewSrc: (target) => ipcRenderer.invoke('desktop:resolve-preview-src', target),
   installPlugin: () => ipcRenderer.invoke('desktop:install-plugin'),
   openPluginDirectory: () => ipcRenderer.invoke('desktop:open-plugin-directory'),
   resolveWebviewSrc: (entrypoint) =>

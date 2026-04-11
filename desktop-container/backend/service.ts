@@ -19,6 +19,7 @@ import type {
 import {
   getDesktopPreviewItemId,
   getDesktopPreviewItemTitle,
+  normalizeTransferredPreviewPath,
   normalizeWorkspacePreviewPath,
 } from "../../desktop/shared/preview";
 import {
@@ -36,11 +37,13 @@ import { CamelAIExtensionHost } from "./extensions/host";
 import { getHarnessAdapterForProvider } from "./extensions/harness-adapters";
 import type {
   CamelAIHostMcpMutationContext,
+  CamelAIHostPluginMutationContext,
   CamelAIThreadCreateOptions,
   CamelAIThreadEvent,
   CamelAIThreadEventHandler,
   CamelAIThreadRecord,
   CamelAIThreadUpdate,
+  CamelAIPluginAgentAssetsBundleRecord,
 } from "./extensions/types";
 import type { HostMcpServerRegistration } from "./host-mcp";
 import {
@@ -58,6 +61,15 @@ import {
   type PersistedHostMcpServerRecord,
   type PersistedHostMcpStdioInstallOptions,
 } from "./persisted-host-mcp";
+import {
+  installPluginFromDirectory,
+  readPluginManifestFromDirectory,
+  resolvePluginWorkspaceSourcePath,
+} from "./persisted-plugins";
+import {
+  getInstalledPluginAgentAssetsStatus,
+  reconcilePluginAgentAssets,
+} from "./plugin-agent-assets";
 import { setPersistedHostSecret } from "./host-secrets";
 
 type Listener = (event: DesktopServerEvent) => void;
@@ -143,6 +155,11 @@ export class DesktopService {
         this.promptToStoreSecret(options, context),
       uninstallInstalledHostMcpServer: (serverId, context) =>
         this.uninstallInstalledHostMcpServer(serverId, context),
+      listInstalledPlugins: () => this.listInstalledPlugins(),
+      installPluginFromWorkspace: (options, context) =>
+        this.installPluginFromWorkspace(options, context),
+      listPluginAgentAssets: (pluginId) => this.listPluginAgentAssets(pluginId),
+      listPluginAgentAssets: (pluginId) => this.listPluginAgentAssets(pluginId),
       openThreadPreviewItem: (threadId, target) =>
         this.openThreadPreviewItem(threadId, target),
       setThreadPreviewItems: (threadId, targets, activeIndex) =>
@@ -172,8 +189,8 @@ export class DesktopService {
     void this.extensionHost
       .initialize(this.getExtensionActivationContext())
       .then(() => {
+        this.reconcileDeclaredPluginAgentAssets();
         this.ensureDefaultTab();
-        this.ensureDefaultThreadPanels();
         this.emitSnapshot();
       })
       .catch((error) => {
@@ -322,6 +339,42 @@ export class DesktopService {
     });
   }
 
+  listInstalledPlugins() {
+    return this.getSnapshot().plugins;
+  }
+
+  listPluginAgentAssets(pluginId?: string | null): CamelAIPluginAgentAssetsBundleRecord[] {
+    const plugins = pluginId ? [this.requirePluginAgentAssetPlugin(pluginId)] : this.listInstalledPlugins();
+    return plugins.flatMap((plugin) => {
+      const manifest = readPluginManifestFromDirectory(plugin.path);
+      const agentAssets = manifest.agentAssets;
+      if (!agentAssets) {
+        return [];
+      }
+      return [
+        {
+          pluginId: plugin.id,
+          pluginName: plugin.name,
+          pluginVersion: plugin.version,
+          source: plugin.source,
+          path: plugin.path,
+          skills: agentAssets.skills.map((skill) => ({
+            id: skill.id,
+          })),
+          mcpServers: agentAssets.mcpServers.map((server) => ({
+            id: server.id,
+            transport: server.transport,
+            name: server.name,
+            version: server.version,
+          })),
+          installedByProvider: getInstalledPluginAgentAssetsStatus({
+            runtimeDirectory: this.runtimeManager.getRuntimeDirectory(),
+            pluginId: plugin.id,
+          }),
+        } satisfies CamelAIPluginAgentAssetsBundleRecord,
+      ];
+    });
+  }
   async installStdioHostMcpServer(
     server: PersistedHostMcpStdioInstallOptions,
     context:
@@ -498,6 +551,52 @@ export class DesktopService {
     return removed;
   }
 
+  async installPluginFromWorkspace(
+    options: {
+      path: string;
+    },
+    context: CamelAIHostPluginMutationContext,
+  ): Promise<{
+    pluginId: string;
+    pluginName: string;
+    version: string;
+    installPath: string;
+    replaced: boolean;
+  }> {
+    const sourcePath = resolvePluginWorkspaceSourcePath(
+      this.runtimeManager.getManagedWorkspaceDirectory(),
+      options.path,
+    );
+    const manifest = readPluginManifestFromDirectory(sourcePath);
+    await this.requestPermission({
+      kind: "plugin_mutation",
+      id: randomUUID(),
+      threadId: context.threadId,
+      pluginId: context.pluginId,
+      harness: context.harness,
+      action: this.listInstalledPlugins().some((plugin) => plugin.id === manifest.id)
+        ? "update"
+        : "install",
+      targetPluginId: manifest.id,
+      targetPluginName: manifest.name,
+      sourcePath: options.path,
+      version: manifest.version,
+    });
+
+    const installed = installPluginFromDirectory({
+      dataDirectory: this.dataDirectory,
+      sourceDirectory: sourcePath,
+    });
+    await this.handleRefreshPlugins();
+    return {
+      pluginId: installed.id,
+      pluginName: installed.name,
+      version: installed.version,
+      installPath: installed.installPath,
+      replaced: installed.replaced,
+    };
+  }
+
   emitSnapshot(listener?: Listener): void {
     const event: DesktopServerEvent = {
       type: "snapshot",
@@ -534,6 +633,10 @@ export class DesktopService {
     snapshot.pendingPermissionRequest =
       this.pendingPermissionRequests[0]?.request ?? null;
     return snapshot;
+  }
+
+  resolvePreviewTargetSource(target: DesktopPreviewTarget): string | null {
+    return this.resolvePreviewSource(target);
   }
 
   private resolveThreadRuntimeStates(
@@ -582,6 +685,29 @@ export class DesktopService {
       throw new Error(`Thread ${threadId} does not exist.`);
     }
     return this.toPluginThreadRecord(thread);
+  }
+
+  private requirePluginAgentAssetPlugin(pluginId: string) {
+    const installedPlugin = this.listInstalledPlugins().find((plugin) => plugin.id === pluginId);
+    if (installedPlugin) {
+      return installedPlugin;
+    }
+
+    const persistedPluginPath = resolve(this.dataDirectory, "plugins", pluginId);
+    if (existsSync(persistedPluginPath) && statSync(persistedPluginPath).isDirectory()) {
+      const manifest = readPluginManifestFromDirectory(persistedPluginPath);
+      return {
+        id: manifest.id,
+        name: manifest.name,
+        version: manifest.version,
+        source: "user" as const,
+        enabled: true,
+        disableable: true,
+        path: persistedPluginPath,
+      };
+    }
+
+    throw new Error(`Plugin ${pluginId} is not installed.`);
   }
 
   private emitThreadEvent(event: CamelAIThreadEvent): void {
@@ -949,13 +1075,16 @@ export class DesktopService {
     }
 
     const action =
-      pending.request.kind === "host_mcp_mutation"
+      pending.request.kind === "host_mcp_mutation" ||
+      pending.request.kind === "plugin_mutation"
         ? pending.request.action
         : "store";
     pending.reject(
       new Error(
         pending.request.kind === "host_mcp_mutation"
           ? `User denied permission to ${action} host MCP server ${pending.request.serverId}.`
+          : pending.request.kind === "plugin_mutation"
+            ? `User denied permission to ${action} plugin ${pending.request.targetPluginId}.`
           : `User denied permission to store secret ${pending.request.secretRef}.`,
       ),
     );
@@ -998,6 +1127,7 @@ export class DesktopService {
   private async handleRefreshPlugins(): Promise<void> {
     try {
       await this.extensionHost.refresh(this.getExtensionActivationContext());
+      this.reconcileDeclaredPluginAgentAssets();
       this.reconcileWorkbenchState();
       this.ensureDefaultTab();
       this.emitSnapshot();
@@ -1010,6 +1140,28 @@ export class DesktopService {
       });
       this.emitSnapshot();
     }
+  }
+
+  private reconcileDeclaredPluginAgentAssets(): void {
+    const plugins = this.listInstalledPlugins().flatMap((plugin) => {
+      try {
+        const manifest = readPluginManifestFromDirectory(plugin.path);
+        return [{
+          pluginId: plugin.id,
+          pluginName: plugin.name,
+          pluginVersion: plugin.version,
+          enabled: plugin.enabled && plugin.compatibility.compatible,
+          agentAssets: manifest.agentAssets,
+        }];
+      } catch {
+        return [];
+      }
+    });
+
+    reconcilePluginAgentAssets({
+      runtimeDirectory: this.runtimeManager.getRuntimeDirectory(),
+      plugins,
+    });
   }
 
   private async handleSetPluginEnabled(
@@ -1051,6 +1203,46 @@ export class DesktopService {
       return null;
     }
 
+    const transferredPreview = normalizeTransferredPreviewPath(trimmedPath);
+    if (target.source === "upload" || target.source === "output" || transferredPreview) {
+      if (existsSync(trimmedPath) && statSync(trimmedPath).isFile()) {
+        return trimmedPath;
+      }
+
+      const source = transferredPreview?.source ?? target.source;
+      const relativePath = (transferredPreview?.path ?? trimmedPath).replace(/^\/+/, "");
+      if (!relativePath || (source !== "upload" && source !== "output")) {
+        return null;
+      }
+
+      const localPath = resolve(
+        this.dataDirectory,
+        "transfers",
+        source === "upload" ? "uploads" : "outputs",
+        relativePath,
+      );
+      if (!existsSync(localPath) || !statSync(localPath).isFile()) {
+        return null;
+      }
+      return localPath;
+    }
+
+    const providerHomeMatch = trimmedPath.match(/^\/data\/providers\/([^/]+)\/home\/(.+)$/);
+    if (providerHomeMatch) {
+      const [, providerId, relativePath] = providerHomeMatch;
+      const localPath = resolve(
+        this.runtimeManager.getRuntimeDirectory(),
+        "providers",
+        providerId,
+        "home",
+        relativePath,
+      );
+      if (!existsSync(localPath) || !statSync(localPath).isFile()) {
+        return null;
+      }
+      return localPath;
+    }
+
     if (target.source === "workspace") {
       const normalizedPath = normalizeWorkspacePreviewPath(trimmedPath);
       const workspaceRelativePath = normalizedPath.replace(/^\/+/, "");
@@ -1062,6 +1254,24 @@ export class DesktopService {
         return null;
       }
       return localPath;
+    }
+
+    const normalizedTransferPath =
+      target.source === "upload" && trimmedPath.startsWith("/mnt/user-uploads/")
+        ? trimmedPath.slice("/mnt/user-uploads/".length)
+        : target.source === "output" && trimmedPath.startsWith("/mnt/user-outputs/")
+          ? trimmedPath.slice("/mnt/user-outputs/".length)
+          : trimmedPath;
+    const transferRoot =
+      target.source === "upload"
+        ? this.runtimeManager.getUserUploadsDirectory()
+        : this.runtimeManager.getUserOutputsDirectory();
+    const candidatePath = resolve(
+      transferRoot,
+      normalizedTransferPath.replace(/^\/+/, ""),
+    );
+    if (existsSync(candidatePath) && statSync(candidatePath).isFile()) {
+      return candidatePath;
     }
 
     if (existsSync(trimmedPath) && statSync(trimmedPath).isFile()) {
