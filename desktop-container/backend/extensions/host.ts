@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
+  DesktopProvider,
   DesktopPreviewRenderer,
   DesktopPreviewTarget,
   DesktopPluginPermission,
@@ -48,13 +49,23 @@ import type {
   CamelAIInstallStdioHostMcpServerOptions,
   CamelAIInstallWorkspacePluginOptions,
   CamelAIInstalledPluginRecord,
+  CamelAICommandRegistration,
+  CamelAIHttpDispatchResult,
+  CamelAIHttpProxyRegistration,
+  CamelAIProcessEnvRegistration,
+  CamelAIResolvedProcessEnvMap,
+  CamelAIHttpRequest,
+  CamelAIHttpResponse,
+  CamelAIHttpRouteRegistration,
   CamelAIManifest,
   CamelAIPluginAgentAssetsBundleRecord,
   CamelAIPersistedHostMcpServerRecord,
   CamelAIPreviewProviderRegistration,
   CamelAIPluginApi,
   CamelAIRuntimeRecord,
+  CamelAISidebarPanelRegistration,
   CamelAIToolRegistration,
+  CamelAIViewRegistration,
   DiscoveredCamelAIExtension,
 } from "./types";
 
@@ -98,10 +109,12 @@ const BUILTIN_EXTENSION_MODULES: Record<string, CamelAIExtensionModule> = {
   "thread-journal": builtinThreadJournal as unknown as CamelAIExtensionModule,
 };
 const VALID_PLUGIN_PERMISSIONS = new Set<DesktopPluginPermission>([
+  "container-env",
   "host-mcp",
   "host-plugins",
   "thread-preview",
   "serve-mcp",
+  "serve-http",
 ]);
 
 interface ThreadPreviewMutationResult {
@@ -159,9 +172,6 @@ export interface CamelAIExtensionHostOptions {
     options: CamelAIInstallWorkspacePluginOptions,
     context: CamelAIHostPluginMutationContext,
   ) => Promise<CamelAIInstallPluginResult>;
-  listPluginAgentAssets?: (
-    pluginId?: string | null,
-  ) => CamelAIPluginAgentAssetsBundleRecord[];
   listPluginAgentAssets?: (
     pluginId?: string | null,
   ) => CamelAIPluginAgentAssetsBundleRecord[];
@@ -272,7 +282,7 @@ function parseSettingsSchema(value: unknown): CamelAIManifest["settings"] | unde
                 [
                   fieldId,
                   {
-                    type: field.type,
+                    type: field.type as "boolean" | "number" | "secret" | "select" | "string",
                     label: field.label,
                     description:
                       typeof field.description === "string"
@@ -428,6 +438,94 @@ function discoverExtensions(): DiscoveredCamelAIExtension[] {
 
 function getContributionId(pluginId: string, contributionId: string): string {
   return `plugin:${pluginId}:${contributionId}`;
+}
+
+function getPluginHttpMountPath(
+  pluginId: string,
+  kind: "routes" | "proxies",
+  contributionId: string,
+): string {
+  return `/plugins/${encodeURIComponent(pluginId)}/${kind}/${encodeURIComponent(
+    contributionId,
+  )}`;
+}
+
+function matchHttpRequestPath(pathname: string, mountPath: string): string | null {
+  if (pathname === mountPath) {
+    return "/";
+  }
+  if (!pathname.startsWith(`${mountPath}/`)) {
+    return null;
+  }
+  return pathname.slice(mountPath.length) || "/";
+}
+
+function normalizeHttpMethodList(methods: string[] | undefined): string[] | null {
+  if (!Array.isArray(methods) || methods.length === 0) {
+    return null;
+  }
+
+  const normalized = methods.flatMap((method) => {
+    if (!isNonEmptyString(method)) {
+      return [];
+    }
+    return [method.trim().toUpperCase()];
+  });
+  return normalized.length > 0 ? Array.from(new Set(normalized)) : null;
+}
+
+function buildMethodNotAllowedResponse(
+  method: string,
+  allowedMethods: string[] | undefined,
+): CamelAIHttpResponse | null {
+  const normalizedAllowed = normalizeHttpMethodList(allowedMethods);
+  if (!normalizedAllowed || normalizedAllowed.includes(method.toUpperCase())) {
+    return null;
+  }
+  return {
+    status: 405,
+    headers: {
+      allow: normalizedAllowed.join(", "),
+      "content-type": "text/plain; charset=utf-8",
+    },
+    body: `Method ${method.toUpperCase()} is not allowed for this endpoint.`,
+  };
+}
+
+function normalizeHttpResponse(
+  response: CamelAIHttpResponse | null | undefined,
+): CamelAIHttpResponse {
+  if (!response) {
+    return {
+      status: 204,
+      headers: {},
+      body: null,
+    };
+  }
+  return {
+    status:
+      typeof response.status === "number" && Number.isInteger(response.status)
+        ? response.status
+        : 200,
+    headers: response.headers ?? {},
+    body: response.body ?? null,
+  };
+}
+
+function normalizeProcessEnvHttpPath(path: string | undefined): string {
+  if (!path?.trim()) {
+    return "/";
+  }
+  const trimmed = path.trim();
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
+
+function resolveHttpThreadId(
+  request: CamelAIHttpRequest,
+  activeThreadId: string | null,
+): string | null {
+  const headerThreadId = request.headers["x-acon-thread-id"]?.trim();
+  return headerThreadId || activeThreadId || null;
 }
 
 function resolveWebviewEntrypoint(
@@ -667,6 +765,9 @@ export class CamelAIExtensionHost {
       commands: new Map(),
       previewProviders: new Map(),
       tools: new Map(),
+      httpRoutes: new Map(),
+      httpProxies: new Map(),
+      processEnvs: new Map(),
       handlers: new Map(),
       disposables: [],
       deactivate: null,
@@ -726,6 +827,9 @@ export class CamelAIExtensionHost {
       record.commands.clear();
       record.previewProviders.clear();
       record.tools.clear();
+      record.httpRoutes.clear();
+      record.httpProxies.clear();
+      record.processEnvs.clear();
       record.handlers.clear();
       record.registeredHostMcpServerIds.clear();
       record.activated = false;
@@ -977,6 +1081,30 @@ export class CamelAIExtensionHost {
           record.tools.delete(id);
         });
       },
+      registerHttpRoute: (id, route) => {
+        this.assertPluginPermission(record, "serve-http");
+        assertValidHttpRouteRegistration(pluginId, id, route);
+        record.httpRoutes.set(id, route);
+        return this.registerRecordDisposable(record, () => {
+          record.httpRoutes.delete(id);
+        });
+      },
+      registerHttpProxy: (id, proxy) => {
+        this.assertPluginPermission(record, "serve-http");
+        assertValidHttpProxyRegistration(pluginId, id, proxy);
+        record.httpProxies.set(id, proxy);
+        return this.registerRecordDisposable(record, () => {
+          record.httpProxies.delete(id);
+        });
+      },
+      registerProcessEnv: (id, registration) => {
+        this.assertPluginPermission(record, "container-env");
+        assertValidProcessEnvRegistration(pluginId, id, registration);
+        record.processEnvs.set(id, registration);
+        return this.registerRecordDisposable(record, () => {
+          record.processEnvs.delete(id);
+        });
+      },
       registerMcpServer,
       unregisterMcpServer,
       listInstalledHostMcpServers: () => {
@@ -1048,10 +1176,6 @@ export class CamelAIExtensionHost {
           threadId: activeContext.activeThreadId,
           workspaceDirectory: activeContext.workspaceDirectory,
         });
-      },
-      listPluginAgentAssets: (pluginId) => {
-        this.assertPluginPermission(record, "host-plugins");
-        return this.options.listPluginAgentAssets?.(pluginId) ?? [];
       },
       listPluginAgentAssets: (pluginId) => {
         this.assertPluginPermission(record, "host-plugins");
@@ -1626,12 +1750,160 @@ export class CamelAIExtensionHost {
     return registrations;
   }
 
+  async dispatchHttpRequest(
+    request: CamelAIHttpRequest,
+    context: CamelAIActivationContext,
+  ): Promise<CamelAIHttpDispatchResult> {
+    for (const record of this.records.values()) {
+      if (
+        !record.enabled ||
+        !record.activated ||
+        record.activationError ||
+        record.compatibilityError
+      ) {
+        continue;
+      }
+
+      for (const [routeId, route] of record.httpRoutes.entries()) {
+        try {
+          assertValidHttpRouteRegistration(record.discovered.id, routeId, route);
+        } catch {
+          continue;
+        }
+
+        const mountPath = getPluginHttpMountPath(
+          record.discovered.id,
+          "routes",
+          routeId,
+        );
+        const matchedPath = matchHttpRequestPath(request.pathname, mountPath);
+        if (!matchedPath) {
+          continue;
+        }
+        const methodResult = buildMethodNotAllowedResponse(request.method, route.methods);
+        if (methodResult) {
+          return {
+            type: "response",
+            response: methodResult,
+          };
+        }
+
+        const activeContext = this.resolveActivationContext(context);
+        const threadId = resolveHttpThreadId(request, activeContext.activeThreadId);
+        const routeRequest = {
+          ...request,
+          path: matchedPath,
+        };
+        const response = await route.handle?.(routeRequest, {
+          harness: activeContext.harness,
+          pluginId: record.discovered.id,
+          routeId,
+          threadId,
+          workspacePath: activeContext.workspaceDirectory,
+          mountPath,
+          threadState: this.createThreadState(
+            record.discovered.id,
+            threadId,
+            activeContext,
+          ),
+        });
+        return {
+          type: "response",
+          response: normalizeHttpResponse(response),
+        };
+      }
+
+      for (const [proxyId, proxy] of record.httpProxies.entries()) {
+        try {
+          assertValidHttpProxyRegistration(record.discovered.id, proxyId, proxy);
+        } catch {
+          continue;
+        }
+
+        const mountPath = getPluginHttpMountPath(
+          record.discovered.id,
+          "proxies",
+          proxyId,
+        );
+        const matchedPath = matchHttpRequestPath(request.pathname, mountPath);
+        if (!matchedPath) {
+          continue;
+        }
+        const methodResult = buildMethodNotAllowedResponse(request.method, proxy.methods);
+        if (methodResult) {
+          return {
+            type: "response",
+            response: methodResult,
+          };
+        }
+        return {
+          type: "proxy",
+          proxy: {
+            pluginId: record.discovered.id,
+            proxyId,
+            mountPath,
+            path: matchedPath,
+            request: {
+              ...request,
+              path: matchedPath,
+            },
+            proxy,
+          },
+        };
+      }
+    }
+
+    return null;
+  }
+
   getHarnessAdaptersForContext(
     context: CamelAIActivationContext,
   ): CamelAIHarnessAdapterInfo[] {
     const primary = getHarnessAdapterForProvider(context.provider);
     const all = getHarnessAdapters();
     return [primary, ...all.filter((adapter) => adapter.id !== primary.id)];
+  }
+
+  getResolvedProcessEnv(provider: DesktopProvider): CamelAIResolvedProcessEnvMap {
+    const resolved: CamelAIResolvedProcessEnvMap = {};
+
+    for (const record of this.records.values()) {
+      if (
+        !record.enabled ||
+        !record.activated ||
+        record.activationError ||
+        record.compatibilityError
+      ) {
+        continue;
+      }
+
+      for (const registration of record.processEnvs.values()) {
+        const providers = registration.providers ?? ["*"];
+        if (!providers.includes("*") && !providers.includes(provider)) {
+          continue;
+        }
+
+        for (const [name, rawValue] of Object.entries(registration.vars)) {
+          if (typeof rawValue === "string") {
+            resolved[name] = {
+              kind: "literal",
+              value: rawValue,
+            };
+            continue;
+          }
+
+          resolved[name] = {
+            kind: "httpUrl",
+            pluginId: record.discovered.id,
+            target: rawValue.target,
+            id: rawValue.id,
+            path: normalizeProcessEnvHttpPath(rawValue.path),
+          };
+        }
+      }
+    }
+
+    return resolved;
   }
 }
 
@@ -1712,5 +1984,87 @@ function assertValidToolRegistration(
 ): asserts tool is CamelAIToolRegistration {
   if (!tool || typeof tool !== "object") {
     throw new Error(`Plugin ${pluginId} registered invalid tool ${id}: expected an object.`);
+  }
+}
+
+function assertValidHttpRouteRegistration(
+  pluginId: string,
+  id: string,
+  route: unknown,
+): asserts route is CamelAIHttpRouteRegistration {
+  if (!route || typeof route !== "object") {
+    throw new Error(`Plugin ${pluginId} registered invalid HTTP route ${id}: expected an object.`);
+  }
+  if (typeof (route as CamelAIHttpRouteRegistration).handle !== "function") {
+    throw new Error(`Plugin ${pluginId} registered invalid HTTP route ${id}: handle is required.`);
+  }
+}
+
+function assertValidHttpProxyRegistration(
+  pluginId: string,
+  id: string,
+  proxy: unknown,
+): asserts proxy is CamelAIHttpProxyRegistration {
+  if (!proxy || typeof proxy !== "object") {
+    throw new Error(`Plugin ${pluginId} registered invalid HTTP proxy ${id}: expected an object.`);
+  }
+  const record = proxy as CamelAIHttpProxyRegistration;
+  if (!isNonEmptyString(record.baseUrl)) {
+    throw new Error(`Plugin ${pluginId} registered invalid HTTP proxy ${id}: baseUrl is required.`);
+  }
+  const baseUrl = new URL(record.baseUrl);
+  if (baseUrl.protocol !== "http:" && baseUrl.protocol !== "https:") {
+    throw new Error(
+      `Plugin ${pluginId} registered invalid HTTP proxy ${id}: baseUrl must use http or https.`,
+    );
+  }
+  const auth = record.auth ?? null;
+  if (auth && auth.type === "bearer" && !isNonEmptyString(auth.secretRef)) {
+    throw new Error(
+      `Plugin ${pluginId} registered invalid HTTP proxy ${id}: bearer auth requires secretRef.`,
+    );
+  }
+  if (
+    auth &&
+    auth.type === "header" &&
+    (!isNonEmptyString(auth.secretRef) || !isNonEmptyString(auth.headerName))
+  ) {
+    throw new Error(
+      `Plugin ${pluginId} registered invalid HTTP proxy ${id}: header auth requires headerName and secretRef.`,
+    );
+  }
+}
+
+function assertValidProcessEnvRegistration(
+  pluginId: string,
+  id: string,
+  registration: unknown,
+): asserts registration is CamelAIProcessEnvRegistration {
+  if (!registration || typeof registration !== "object") {
+    throw new Error(`Plugin ${pluginId} registered invalid process env ${id}: expected an object.`);
+  }
+  const record = registration as CamelAIProcessEnvRegistration;
+  if (!record.vars || typeof record.vars !== "object") {
+    throw new Error(`Plugin ${pluginId} registered invalid process env ${id}: vars is required.`);
+  }
+  for (const [name, value] of Object.entries(record.vars)) {
+    if (!isNonEmptyString(name)) {
+      throw new Error(`Plugin ${pluginId} registered invalid process env ${id}: env var name is required.`);
+    }
+    if (typeof value === "string") {
+      continue;
+    }
+    if (!value || typeof value !== "object") {
+      throw new Error(`Plugin ${pluginId} registered invalid process env ${id}: env var ${name} must be a string or object.`);
+    }
+    if (value.kind !== "httpUrl") {
+      throw new Error(`Plugin ${pluginId} registered invalid process env ${id}: env var ${name} uses an unsupported kind.`);
+    }
+    if (
+      (value.target !== "route" && value.target !== "proxy") ||
+      !isNonEmptyString(value.id)
+    ) {
+      throw new Error(`Plugin ${pluginId} registered invalid process env ${id}: env var ${name} must reference a valid route or proxy id.`);
+    }
   }
 }

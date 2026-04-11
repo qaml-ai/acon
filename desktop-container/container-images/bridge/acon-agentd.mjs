@@ -13,13 +13,16 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { createServer } from "node:net";
+import { createServer as createHttpServer } from "node:http";
+import { createServer as createNetServer } from "node:net";
 
 const socketPath =
   process.env.ACON_HOST_RPC_SOCKET?.trim() || "/data/host-rpc/bridge.sock";
 const workspaceRoot = process.env.ACON_WORKSPACE_DIR?.trim() || "/workspace";
 const bundledNodeModulesRoot = "/opt/acon/npm-global/node_modules";
 const bundledHostRpcPackagePath = resolve(bundledNodeModulesRoot, "@acon/host-rpc");
+const DEFAULT_HTTP_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_HTTP_REQUEST_MAX_BODY_BYTES = 1024 * 1024;
 
 const GLOBAL_INSTRUCTIONS = `# acon
 
@@ -34,6 +37,9 @@ This environment is for \`acon\`, the standalone camelAI desktop app.
 - Run \`acon-mcp prompts <server-id>\`, \`acon-mcp prompt <server-id> <prompt-name>\`, \`acon-mcp resources <server-id>\`, and \`acon-mcp read-resource <server-id> <uri>\` for standard prompt and resource flows.
 - A typed JavaScript package named \`@acon/host-rpc\` is preinstalled for guest code.
 - Prefer the managed helpers on \`@acon/host-rpc\`: \`listMcpServers()\`, \`listMcpTools(serverId)\`, \`callMcpTool(serverId, toolName, args)\`, \`listMcpPrompts(serverId)\`, \`getMcpPrompt(serverId, promptName, args)\`, \`listMcpResources(serverId)\`, \`listMcpResourceTemplates(serverId)\`, \`readMcpResource(serverId, uri)\`, and \`withMcpSession(serverId, callback)\` for grouped interactions.
+- An authenticated host HTTP bridge is exposed inside the container at \`$ACON_HOST_HTTP_BASE_URL\`.
+- Plugin-owned routes live under \`$ACON_HOST_HTTP_BASE_URL/plugins/<plugin-id>/routes/<route-id>/...\`.
+- Plugin-owned authenticated proxies live under \`$ACON_HOST_HTTP_BASE_URL/plugins/<plugin-id>/proxies/<proxy-id>/...\`.
 - When running a web server in the guest container, bind it to \`0.0.0.0\` instead of \`localhost\`.
 - When opening a preview URL for a guest web server, use the current container IP instead of \`localhost\`.
 - Example:
@@ -57,6 +63,7 @@ This environment is for \`acon\`, the standalone camelAI desktop app.
  *   type: "ready";
  *   protocolVersion: number;
  *   socketPath: string;
+ *   httpBaseUrl?: string;
  * } | {
  *   type: "request";
  *   id: string;
@@ -201,6 +208,23 @@ const openSockets = new Set();
 const pendingHostRequests = new Map();
 
 let shuttingDown = false;
+let hostHttpBaseUrl = "http://127.0.0.1";
+/** @type {import("node:http").Server | null} */
+let hostHttpServer = null;
+/** @type {{ codex: Record<string, string>; claude: Record<string, string>; pi: Record<string, string>; opencode: Record<string, string> }} */
+const configuredProviderEnv = {
+  codex: {},
+  claude: {},
+  pi: {},
+  opencode: {},
+};
+/** @type {{ codex: string; claude: string; pi: string; opencode: string }} */
+const configuredProviderEnvSignature = {
+  codex: "",
+  claude: "",
+  pi: "",
+  opencode: "",
+};
 
 function writeEnvelope(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -212,6 +236,168 @@ function logStderr(message) {
 
 function makeError(code, message) {
   return { code, message };
+}
+
+function normalizeHttpHeaders(headers) {
+  const normalized = {};
+  for (const [key, value] of Object.entries(headers ?? {})) {
+    if (Array.isArray(value)) {
+      normalized[key.toLowerCase()] = value.join(", ");
+      continue;
+    }
+    if (typeof value === "string") {
+      normalized[key.toLowerCase()] = value;
+    }
+  }
+  return normalized;
+}
+
+function getProcessEnvMountPath(pluginId, target, id, path = "/") {
+  const kind = target === "proxy" ? "proxies" : "routes";
+  const normalizedPath = path && path !== "/" ? (path.startsWith("/") ? path : `/${path}`) : "";
+  return `/plugins/${encodeURIComponent(pluginId)}/${kind}/${encodeURIComponent(id)}${normalizedPath}`;
+}
+
+function resolveConfiguredProviderEnvValue(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  if (value.kind === "literal" && typeof value.value === "string") {
+    return value.value;
+  }
+  if (
+    value.kind === "httpUrl" &&
+    typeof value.pluginId === "string" &&
+    (value.target === "route" || value.target === "proxy") &&
+    typeof value.id === "string"
+  ) {
+    return `${hostHttpBaseUrl}${getProcessEnvMountPath(
+      value.pluginId,
+      value.target,
+      value.id,
+      typeof value.path === "string" ? value.path : "/",
+    )}`;
+  }
+  return null;
+}
+
+function applyConfiguredProcessEnv(provider, processEnv) {
+  const nextEnv = {};
+  if (processEnv && typeof processEnv === "object") {
+    for (const [name, rawValue] of Object.entries(processEnv)) {
+      if (typeof name !== "string" || !name.trim()) {
+        continue;
+      }
+      const resolvedValue =
+        typeof rawValue === "string"
+          ? rawValue
+          : resolveConfiguredProviderEnvValue(rawValue);
+      if (typeof resolvedValue === "string") {
+        nextEnv[name] = resolvedValue;
+      }
+    }
+  }
+
+  const nextSignature = JSON.stringify(
+    Object.entries(nextEnv).sort(([left], [right]) => left.localeCompare(right)),
+  );
+  const changed = configuredProviderEnvSignature[provider] !== nextSignature;
+  configuredProviderEnv[provider] = nextEnv;
+  configuredProviderEnvSignature[provider] = nextSignature;
+  return changed;
+}
+
+function readHttpRequestBody(request, maxBodyBytes = DEFAULT_HTTP_REQUEST_MAX_BODY_BYTES) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let totalBytes = 0;
+    let settled = false;
+
+    const finish = (error, body = "") => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(body);
+    };
+
+    request.on("data", (chunk) => {
+      const chunkBuffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += chunkBuffer.length;
+      if (totalBytes > maxBodyBytes) {
+        request.destroy(new Error(`HTTP request body exceeded ${maxBodyBytes} bytes.`));
+        finish(new Error(`HTTP request body exceeded ${maxBodyBytes} bytes.`));
+        return;
+      }
+      chunks.push(chunkBuffer);
+    });
+    request.on("end", () => {
+      finish(null, Buffer.concat(chunks).toString("utf8"));
+    });
+    request.on("error", (error) => {
+      finish(error instanceof Error ? error : new Error(String(error)));
+    });
+  });
+}
+
+async function handleHttpBridgeRequest(request, response) {
+  const requestUrl = new URL(request.url || "/", hostHttpBaseUrl);
+
+  if (request.method === "OPTIONS") {
+    response.writeHead(204, {
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+      "access-control-allow-headers": "*",
+    });
+    response.end();
+    return;
+  }
+
+  if (requestUrl.pathname === "/health") {
+    response.writeHead(200, {
+      "content-type": "application/json",
+    });
+    response.end(JSON.stringify({
+      ok: true,
+      httpBaseUrl: hostHttpBaseUrl,
+    }));
+    return;
+  }
+
+  try {
+    const body = await readHttpRequestBody(request);
+    const result = await createHostRequest("http.request", {
+      method: request.method || "GET",
+      pathname: requestUrl.pathname,
+      search: requestUrl.search,
+      headers: normalizeHttpHeaders(request.headers),
+      body: body || null,
+    }, DEFAULT_HTTP_REQUEST_TIMEOUT_MS);
+
+    const status =
+      result && typeof result === "object" && typeof result.status === "number"
+        ? result.status
+        : 502;
+    const headers =
+      result && typeof result === "object" && result.headers && typeof result.headers === "object"
+        ? normalizeHttpHeaders(result.headers)
+        : { "content-type": "text/plain; charset=utf-8" };
+    const responseBody =
+      result && typeof result === "object" && typeof result.body === "string"
+        ? result.body
+        : "Host HTTP bridge returned an invalid response.";
+    response.writeHead(status, headers);
+    response.end(responseBody);
+  } catch (error) {
+    response.writeHead(502, {
+      "content-type": "text/plain; charset=utf-8",
+    });
+    response.end(error instanceof Error ? error.message : String(error));
+  }
 }
 
 function asRecord(value) {
@@ -308,15 +494,18 @@ function getOpenCodeConfigDir(provider) {
 
 function getProviderEnv(provider, model) {
   const home = getProviderHome(provider);
+  const providerEnv = configuredProviderEnv[provider] ?? {};
   if (provider === "codex") {
     return {
       ...process.env,
+      ...providerEnv,
       HOME: home,
       CODEX_HOME: getCodexHome(),
       DESKTOP_PROVIDER: provider,
       DESKTOP_MODEL: model,
       DESKTOP_CODEX_MODEL: model,
       ACON_HOST_RPC_SOCKET: socketPath,
+      ACON_HOST_HTTP_BASE_URL: hostHttpBaseUrl,
       ACON_WORKSPACE_DIR: workspaceRoot,
     };
   }
@@ -324,12 +513,14 @@ function getProviderEnv(provider, model) {
   if (provider === "claude") {
     return {
       ...process.env,
+      ...providerEnv,
       HOME: home,
       CLAUDE_CONFIG_DIR: getClaudeConfigDir(),
       DESKTOP_PROVIDER: provider,
       DESKTOP_MODEL: model,
       DESKTOP_ANTHROPIC_MODEL: model,
       ACON_HOST_RPC_SOCKET: socketPath,
+      ACON_HOST_HTTP_BASE_URL: hostHttpBaseUrl,
       ACON_WORKSPACE_DIR: workspaceRoot,
     };
   }
@@ -337,22 +528,26 @@ function getProviderEnv(provider, model) {
   if (provider === "pi") {
     return {
       ...process.env,
+      ...providerEnv,
       HOME: home,
       DESKTOP_PROVIDER: provider,
       DESKTOP_MODEL: model,
       ACON_HOST_RPC_SOCKET: socketPath,
+      ACON_HOST_HTTP_BASE_URL: hostHttpBaseUrl,
       ACON_WORKSPACE_DIR: workspaceRoot,
     };
   }
 
   return {
     ...process.env,
+    ...providerEnv,
     HOME: home,
     XDG_DATA_HOME: `${home}/.local/share`,
     XDG_CONFIG_HOME: `${home}/.config`,
     DESKTOP_PROVIDER: provider,
     DESKTOP_MODEL: model,
     ACON_HOST_RPC_SOCKET: socketPath,
+    ACON_HOST_HTTP_BASE_URL: hostHttpBaseUrl,
     ACON_WORKSPACE_DIR: workspaceRoot,
   };
 }
@@ -1744,6 +1939,53 @@ async function ensureAcpSession(session) {
   return session;
 }
 
+function hasActiveProviderPrompt(provider) {
+  for (const session of sessions.values()) {
+    if (session.provider === provider && session.activePrompt) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function resetCodexForEnvChange() {
+  codexAppServer.stop();
+  for (const session of sessions.values()) {
+    if (session.provider !== "codex") {
+      continue;
+    }
+    session.serverGeneration = -1;
+  }
+}
+
+function resetProviderProcessesForEnvChange(provider) {
+  if (provider === "codex") {
+    resetCodexForEnvChange();
+    return;
+  }
+
+  if (provider === "claude") {
+    for (const session of sessions.values()) {
+      if (session.provider !== "claude") {
+        continue;
+      }
+      if (session.process) {
+        resetClaudeProcess(session);
+      }
+    }
+    return;
+  }
+
+  for (const session of sessions.values()) {
+    if (session.provider !== provider) {
+      continue;
+    }
+    if (session.process) {
+      resetAcpProcess(session);
+    }
+  }
+}
+
 async function ensureCodexSession(session) {
   ensureProviderHomes("codex");
   await codexAppServer.ensureStarted();
@@ -1799,6 +2041,18 @@ async function ensureSession(params) {
     typeof params.sessionId === "string" && params.sessionId.trim()
       ? params.sessionId.trim()
       : null;
+  const processEnvChanged = applyConfiguredProcessEnv(
+    provider,
+    params.processEnv && typeof params.processEnv === "object" ? params.processEnv : {},
+  );
+  if (processEnvChanged) {
+    if (hasActiveProviderPrompt(provider)) {
+      throw new Error(
+        `${provider} environment changed while a prompt was running. Try again after the active prompt finishes.`,
+      );
+    }
+    resetProviderProcessesForEnvChange(provider);
+  }
   const key = getSessionKey(provider, sessionName);
   let session = sessions.get(key) ?? null;
   if (!session) {
@@ -2524,6 +2778,7 @@ async function executeSocketMethod(method, params) {
         params: params ?? null,
       };
     case "fetch":
+    case "http.request":
     case "mcp.request":
     case "mcp.close":
     case "mcp.list_servers":
@@ -2643,13 +2898,42 @@ cleanupSocketFile();
 mkdirSync(dirname(socketPath), { recursive: true });
 ensureBundledGuestNodePackages();
 
-const server = createServer(handleSocketConnection);
-server.listen(socketPath, () => {
+const server = createNetServer(handleSocketConnection);
+hostHttpServer = createHttpServer((request, response) => {
+  void handleHttpBridgeRequest(request, response);
+});
+
+Promise.all([
+  new Promise((resolve, reject) => {
+    hostHttpServer.once("error", reject);
+    hostHttpServer.listen(0, "127.0.0.1", () => {
+      const address = hostHttpServer.address();
+      if (!address || typeof address === "string") {
+        reject(new Error("Host HTTP bridge did not expose a TCP port."));
+        return;
+      }
+      hostHttpBaseUrl = `http://127.0.0.1:${address.port}`;
+      resolve();
+    });
+  }),
+  new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, resolve);
+  }),
+]).then(() => {
   writeEnvelope({
     type: "ready",
     protocolVersion: 2,
     socketPath,
+    httpBaseUrl: hostHttpBaseUrl,
   });
+}).catch((error) => {
+  logStderr(
+    `Failed to start guest bridges: ${
+      error instanceof Error ? error.message : String(error)
+    }`,
+  );
+  shutdown();
 });
 
 process.stdin.setEncoding("utf8");
@@ -2738,6 +3022,9 @@ function shutdown() {
     }
   }
   codexAppServer.stop();
+  if (hostHttpServer) {
+    hostHttpServer.close();
+  }
   server.close(() => {
     process.exit(0);
   });

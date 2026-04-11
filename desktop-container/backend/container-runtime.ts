@@ -21,6 +21,7 @@ import type { DesktopRuntimeStatus } from "../../desktop/shared/protocol";
 import { logDesktop } from "../../desktop/backend/log";
 import { getHostClaudeCredentialsJson } from "../../desktop/backend/anthropic";
 import type { DesktopProviderDefinition } from "./provider-types";
+import type { CamelAIResolvedProcessEnvMap } from "./extensions/types";
 import {
   HostMcpRegistry,
   type HostMcpBridgeRequest,
@@ -67,6 +68,9 @@ export interface RuntimeManager {
   getCachedStatus(): DesktopRuntimeStatus;
   registerHostMcpServer(registration: HostMcpServerRegistration): void;
   unregisterHostMcpServer(serverId: string): void;
+  setHostRpcMethodHandler(
+    handler: (method: string, params: unknown) => Promise<unknown>,
+  ): void;
   dispose(): void;
   ensureRuntime(
     provider: DesktopProviderDefinition,
@@ -88,6 +92,7 @@ export interface StreamContainerPromptOptions {
   content: string;
   model: string;
   sessionId?: string | null;
+  processEnv?: CamelAIResolvedProcessEnvMap;
   onSessionId?: (sessionId: string) => void;
   onDelta?: (delta: string) => void;
   onRuntimeEvent?: (event: unknown) => void;
@@ -258,6 +263,9 @@ export class ContainerRuntimeManager implements RuntimeManager {
   private readonly containerImageRoot = resolveContainerImageRoot();
   private readonly checkedImages = new Set<string>();
   private readonly hostMcpRegistry = new HostMcpRegistry();
+  private hostRpcMethodHandler:
+    | ((method: string, params: unknown) => Promise<unknown>)
+    | null = null;
   private readonly activePromptListeners = new Map<
     string,
     Set<ActivePromptListener>
@@ -306,6 +314,12 @@ export class ContainerRuntimeManager implements RuntimeManager {
 
   unregisterHostMcpServer(serverId: string): void {
     this.hostMcpRegistry.unregisterServer(serverId);
+  }
+
+  setHostRpcMethodHandler(
+    handler: (method: string, params: unknown) => Promise<unknown>,
+  ): void {
+    this.hostRpcMethodHandler = handler;
   }
 
   private async ensureContainerSystemStarted(): Promise<void> {
@@ -1307,6 +1321,9 @@ export class ContainerRuntimeManager implements RuntimeManager {
       case "mcp.list_servers":
         return this.hostMcpRegistry.listServers();
       default:
+        if (this.hostRpcMethodHandler) {
+          return await this.hostRpcMethodHandler(method, params);
+        }
         throw new Error(`Unknown host RPC method: ${method || "<missing>"}.`);
     }
   }
@@ -1507,17 +1524,18 @@ export class ContainerRuntimeManager implements RuntimeManager {
     provider: DesktopProviderDefinition,
     threadId: string,
     model: string,
+    processEnv: CamelAIResolvedProcessEnvMap,
     sessionId?: string | null,
   ): Promise<void> {
     try {
-      await this.ensurePromptSessionOnce(provider, threadId, model, sessionId);
+      await this.ensurePromptSessionOnce(provider, threadId, model, processEnv, sessionId);
     } catch (error) {
       if (!isRecoverableRuntimeError(error)) {
         throw error;
       }
 
       await this.restartProviderContainer(provider);
-      await this.ensurePromptSessionOnce(provider, threadId, model, sessionId);
+      await this.ensurePromptSessionOnce(provider, threadId, model, processEnv, sessionId);
     }
   }
 
@@ -1546,6 +1564,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
     provider: DesktopProviderDefinition,
     threadId: string,
     model: string,
+    processEnv: CamelAIResolvedProcessEnvMap,
     sessionId?: string | null,
   ): Promise<void> {
     await this.ensureContainerSystemStarted();
@@ -1560,6 +1579,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
       provider: provider.id,
       sessionName,
       model,
+      processEnv,
       sessionId: sessionId ?? null,
     }, {
       timeoutMs: parseTimeoutMs(
@@ -1602,12 +1622,13 @@ export class ContainerRuntimeManager implements RuntimeManager {
     content,
     model,
     sessionId,
+    processEnv = {},
     onSessionId,
     onDelta,
     onRuntimeEvent,
   }: StreamContainerPromptOptions): Promise<StreamContainerPromptResult> {
     await this.ensureRuntime(provider);
-    await this.ensurePromptSession(provider, threadId, model, sessionId);
+    await this.ensurePromptSession(provider, threadId, model, processEnv, sessionId);
 
     try {
       return await this.streamPromptOnce({
@@ -1626,7 +1647,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
       }
 
       await this.restartProviderContainer(provider);
-      await this.ensurePromptSessionOnce(provider, threadId, model, sessionId);
+      await this.ensurePromptSessionOnce(provider, threadId, model, processEnv, sessionId);
       return this.streamPromptOnce({
         provider,
         threadId,

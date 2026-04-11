@@ -83,10 +83,10 @@ export type PersistedHostMcpInstallOptions =
   | PersistedHostMcpStdioInstallOptions
   | PersistedHostMcpHttpInstallOptions;
 
-export interface PersistedHostMcpInstallResult extends PersistedHostMcpServerRecord {
+export type PersistedHostMcpInstallResult = PersistedHostMcpServerRecord & {
   configPath: string;
   replaced: boolean;
-}
+};
 
 function isDirectory(path: string): boolean {
   try {
@@ -480,7 +480,7 @@ export function createPersistedHostMcpServerRegistration(
                 server.envSecretRefs,
                 `Host MCP stdio server ${server.id} env`,
               ),
-            },
+            } as Record<string, string>,
             stderr: "pipe",
           },
           {

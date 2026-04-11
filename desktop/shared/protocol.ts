@@ -65,9 +65,11 @@ export interface DesktopPluginWebviewContribution {
 }
 
 export type DesktopPluginPermission =
+  | "container-env"
   | "host-mcp"
   | "host-plugins"
   | "serve-mcp"
+  | "serve-http"
   | "thread-preview";
 
 export type DesktopPluginSettingFieldType =
