@@ -38,6 +38,9 @@ import { getHarnessAdapterForProvider } from "./extensions/harness-adapters";
 import type {
   CamelAIHostMcpMutationContext,
   CamelAIHostPluginMutationContext,
+  CamelAIMatchedHttpProxyRequest,
+  CamelAIHttpRequest,
+  CamelAIHttpResponse,
   CamelAIThreadCreateOptions,
   CamelAIThreadEvent,
   CamelAIThreadEventHandler,
@@ -70,7 +73,7 @@ import {
   getInstalledPluginAgentAssetsStatus,
   reconcilePluginAgentAssets,
 } from "./plugin-agent-assets";
-import { setPersistedHostSecret } from "./host-secrets";
+import { getPersistedHostSecret, setPersistedHostSecret } from "./host-secrets";
 
 type Listener = (event: DesktopServerEvent) => void;
 type ThreadEventListener = CamelAIThreadEventHandler;
@@ -112,6 +115,171 @@ function toDesktopPluginFileUrl(path: string): string {
   return `desktop-plugin://local${fileUrl.pathname}`;
 }
 
+const DEFAULT_PLUGIN_HTTP_TIMEOUT_MS = 30_000;
+const DEFAULT_PLUGIN_HTTP_MAX_BODY_BYTES = 512 * 1024;
+const HOP_BY_HOP_HEADERS = new Set([
+  "connection",
+  "content-length",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
+const STRIPPED_PROXY_REQUEST_HEADERS = new Set([
+  "authorization",
+  "cookie",
+  "host",
+  "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-proto",
+]);
+
+function normalizeHttpRequestHeaders(
+  value: unknown,
+): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (!value || typeof value !== "object") {
+    return headers;
+  }
+
+  for (const [key, rawValue] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof rawValue !== "string") {
+      continue;
+    }
+    const normalizedKey = key.trim().toLowerCase();
+    if (!normalizedKey) {
+      continue;
+    }
+    headers[normalizedKey] = rawValue;
+  }
+
+  return headers;
+}
+
+function parsePluginHttpQuery(
+  search: string,
+): Record<string, string | string[]> {
+  const query: Record<string, string | string[]> = {};
+  const params = new URLSearchParams(search);
+  for (const [key, value] of params.entries()) {
+    const existing = query[key];
+    if (existing === undefined) {
+      query[key] = value;
+      continue;
+    }
+    if (Array.isArray(existing)) {
+      existing.push(value);
+      continue;
+    }
+    query[key] = [existing, value];
+  }
+  return query;
+}
+
+function buildPluginHttpResponse(
+  response: CamelAIHttpResponse,
+): {
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+} {
+  const headers: Record<string, string> = {};
+  for (const [key, value] of Object.entries(response.headers ?? {})) {
+    if (HOP_BY_HOP_HEADERS.has(key.trim().toLowerCase())) {
+      continue;
+    }
+    headers[key] = value;
+  }
+  return {
+    status: response.status,
+    headers,
+    body: response.body ?? "",
+  };
+}
+
+function buildPluginProxyTargetUrl(
+  baseUrl: string,
+  path: string,
+  search: string,
+): URL {
+  const url = new URL(baseUrl);
+  const basePath = url.pathname.replace(/\/+$/, "");
+  const tailPath = path.replace(/^\/+/, "");
+  url.pathname = tailPath ? `${basePath}/${tailPath}`.replace(/\/{2,}/g, "/") : basePath || "/";
+  url.search = search;
+  return url;
+}
+
+function filterPluginProxyRequestHeaders(
+  headers: Record<string, string>,
+  stripRequestHeaders: string[] | undefined,
+): Record<string, string> {
+  const stripped = new Set(
+    (stripRequestHeaders ?? []).map((header) => header.trim().toLowerCase()),
+  );
+  const next: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (STRIPPED_PROXY_REQUEST_HEADERS.has(key) || stripped.has(key)) {
+      continue;
+    }
+    next[key] = value;
+  }
+  return next;
+}
+
+function filterPluginResponseHeaders(headers: Headers): Record<string, string> {
+  const filtered: Record<string, string> = {};
+  for (const [key, value] of headers.entries()) {
+    if (HOP_BY_HOP_HEADERS.has(key.toLowerCase())) {
+      continue;
+    }
+    filtered[key] = value;
+  }
+  return filtered;
+}
+
+async function readPluginResponseBody(
+  response: Response,
+  maxBodyBytes: number,
+): Promise<string> {
+  if (!response.body) {
+    return "";
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let totalBytes = 0;
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (!value) {
+        continue;
+      }
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBodyBytes) {
+        await reader.cancel();
+        throw new Error(
+          `Plugin HTTP response exceeded ${maxBodyBytes} bytes.`,
+        );
+      }
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  chunks.push(decoder.decode());
+  return chunks.join("");
+}
+
 export class DesktopService {
   private readonly store = new DesktopStore();
   private readonly runtimeManager: RuntimeManager;
@@ -130,6 +298,9 @@ export class DesktopService {
     options: DesktopServiceOptions = {},
   ) {
     this.runtimeManager = runtimeManager;
+    this.runtimeManager.setHostRpcMethodHandler((method, params) =>
+      this.handleRuntimeHostRpcMethod(method, params),
+    );
     this.dataDirectory =
       process.env.DESKTOP_DATA_DIR?.trim() ||
       resolve(this.runtimeManager.getRuntimeDirectory(), "..", "data");
@@ -158,7 +329,6 @@ export class DesktopService {
       listInstalledPlugins: () => this.listInstalledPlugins(),
       installPluginFromWorkspace: (options, context) =>
         this.installPluginFromWorkspace(options, context),
-      listPluginAgentAssets: (pluginId) => this.listPluginAgentAssets(pluginId),
       listPluginAgentAssets: (pluginId) => this.listPluginAgentAssets(pluginId),
       openThreadPreviewItem: (threadId, target) =>
         this.openThreadPreviewItem(threadId, target),
@@ -375,6 +545,146 @@ export class DesktopService {
       ];
     });
   }
+
+  private async handleRuntimeHostRpcMethod(
+    method: string,
+    params: unknown,
+  ): Promise<unknown> {
+    switch (method) {
+      case "http.request":
+        return await this.handlePluginHttpRequest(params);
+      default:
+        throw new Error(`Unknown host RPC method: ${method || "<missing>"}.`);
+    }
+  }
+
+  private async handlePluginHttpRequest(
+    params: unknown,
+  ): Promise<{
+    status: number;
+    headers: Record<string, string>;
+    body: string;
+  }> {
+    if (!params || typeof params !== "object") {
+      throw new Error("http.request params must be an object.");
+    }
+
+    const record = params as Record<string, unknown>;
+    const pathname = typeof record.pathname === "string" ? record.pathname.trim() : "";
+    if (!pathname || !pathname.startsWith("/")) {
+      throw new Error("http.request params.pathname must be a non-empty absolute path.");
+    }
+
+    const method =
+      typeof record.method === "string" && record.method.trim()
+        ? record.method.trim().toUpperCase()
+        : "GET";
+    const search =
+      typeof record.search === "string" && record.search.trim()
+        ? record.search
+        : "";
+    const request: CamelAIHttpRequest = {
+      method,
+      url: `${pathname}${search}`,
+      pathname,
+      search,
+      path: pathname,
+      query: parsePluginHttpQuery(search),
+      headers: normalizeHttpRequestHeaders(record.headers),
+      body: typeof record.body === "string" ? record.body : null,
+    };
+
+    const dispatchResult = await this.extensionHost.dispatchHttpRequest(
+      request,
+      this.getExtensionActivationContext(),
+    );
+    if (!dispatchResult) {
+      return {
+        status: 404,
+        headers: {
+          "content-type": "text/plain; charset=utf-8",
+        },
+        body: `No plugin HTTP route matched ${pathname}.`,
+      };
+    }
+    if (dispatchResult.type === "response") {
+      return buildPluginHttpResponse(dispatchResult.response);
+    }
+    return await this.executeRegisteredHttpProxy(dispatchResult.proxy);
+  }
+
+  private async executeRegisteredHttpProxy(
+    proxyRequest: CamelAIMatchedHttpProxyRequest,
+  ): Promise<{
+    status: number;
+    headers: Record<string, string>;
+    body: string;
+  }> {
+    const headers = filterPluginProxyRequestHeaders(
+      proxyRequest.request.headers,
+      proxyRequest.proxy.stripRequestHeaders,
+    );
+
+    for (const [key, value] of Object.entries(proxyRequest.proxy.headers ?? {})) {
+      headers[key.trim().toLowerCase()] = value;
+    }
+
+    const auth = proxyRequest.proxy.auth ?? null;
+    if (auth && auth.type !== "none") {
+      const secret = getPersistedHostSecret(this.dataDirectory, auth.secretRef);
+      if (!secret) {
+        throw new Error(
+          `Plugin HTTP proxy ${proxyRequest.pluginId}/${proxyRequest.proxyId} is missing secret ${auth.secretRef}.`,
+        );
+      }
+      if (auth.type === "bearer") {
+        headers[(auth.headerName?.trim() || "authorization").toLowerCase()] =
+          `Bearer ${secret}`;
+      } else {
+        headers[auth.headerName.trim().toLowerCase()] = secret;
+      }
+    }
+
+    const timeoutMs =
+      typeof proxyRequest.proxy.timeoutMs === "number" &&
+      Number.isFinite(proxyRequest.proxy.timeoutMs)
+        ? Math.max(1, Math.trunc(proxyRequest.proxy.timeoutMs))
+        : DEFAULT_PLUGIN_HTTP_TIMEOUT_MS;
+    const maxBodyBytes =
+      typeof proxyRequest.proxy.maxBodyBytes === "number" &&
+      Number.isFinite(proxyRequest.proxy.maxBodyBytes)
+        ? Math.max(1, Math.trunc(proxyRequest.proxy.maxBodyBytes))
+        : DEFAULT_PLUGIN_HTTP_MAX_BODY_BYTES;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort(
+        new Error(`Plugin HTTP proxy timed out after ${timeoutMs}ms.`),
+      );
+    }, timeoutMs);
+
+    try {
+      const upstreamUrl = buildPluginProxyTargetUrl(
+        proxyRequest.proxy.baseUrl,
+        proxyRequest.path,
+        proxyRequest.request.search,
+      );
+      const response = await fetch(upstreamUrl, {
+        method: proxyRequest.request.method,
+        headers,
+        body: proxyRequest.request.body ?? undefined,
+        redirect: "manual",
+        signal: controller.signal,
+      });
+      return {
+        status: response.status,
+        headers: filterPluginResponseHeaders(response.headers),
+        body: await readPluginResponseBody(response, maxBodyBytes),
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   async installStdioHostMcpServer(
     server: PersistedHostMcpStdioInstallOptions,
     context:
@@ -433,6 +743,10 @@ export class DesktopService {
       typeof context === "string"
         ? context
         : context.workspaceDirectory;
+    const normalizedServer = {
+      ...server,
+      transport: server.transport ?? "streamable-http",
+    } satisfies PersistedHostMcpHttpInstallOptions;
     if (typeof context !== "string") {
       const action = this.listInstalledHostMcpServers().some(
         (entry) => entry.id === server.id,
@@ -447,12 +761,11 @@ export class DesktopService {
         harness: context.harness,
         action,
         serverId: server.id,
-        transport: server.transport,
+        transport: normalizedServer.transport,
         command: null,
         args: [],
         cwd: null,
         url: server.url,
-        transport: server.transport,
         name: server.name ?? null,
         version: server.version ?? null,
       });
@@ -461,7 +774,7 @@ export class DesktopService {
     const installed = installPersistedHostMcpHttpServer({
       dataDirectory: this.dataDirectory,
       workspaceDirectory,
-      server,
+      server: normalizedServer,
     });
     this.runtimeManager.registerHostMcpServer(
       createPersistedHostMcpServerRegistration(installed, {
@@ -1112,6 +1425,8 @@ export class DesktopService {
     }
   }
 
+  private ensureDefaultThreadPanels(): void {}
+
   private reconcileWorkbenchState(): void {
     const extensionSnapshot = this.extensionHost.getSnapshot(
       this.getExtensionActivationContext(),
@@ -1462,6 +1777,7 @@ export class DesktopService {
     const provider = requireDesktopProvider(this.store.getThreadProvider(threadId));
     const model = this.getCurrentModel(provider);
     const providerSessionId = this.store.getProviderSessionId(threadId, provider.id);
+    const processEnv = this.extensionHost.getResolvedProcessEnv(provider.id);
 
     try {
       await this.runtimeManager.streamPrompt({
@@ -1470,6 +1786,7 @@ export class DesktopService {
         content,
         model,
         sessionId: providerSessionId,
+        processEnv,
         onSessionId: (sessionId) => {
           this.store.setProviderSessionId(threadId, provider.id, sessionId);
         },
@@ -1528,6 +1845,7 @@ export class DesktopService {
       threadId,
       provider.id,
     );
+    const processEnv = this.extensionHost.getResolvedProcessEnv(provider.id);
 
     try {
       const assistant = this.store.appendMessage(
@@ -1570,6 +1888,7 @@ export class DesktopService {
         content,
         model,
         sessionId: providerSessionId,
+        processEnv,
         onSessionId: (sessionId) => {
           this.store.setProviderSessionId(threadId, provider.id, sessionId);
         },

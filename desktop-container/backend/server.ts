@@ -46,7 +46,22 @@ function disposeService(): void {
 }
 
 function json(body: unknown, init: ResponseInit = {}): Response {
-  const headers = new Headers(init.headers);
+  const headers = new Headers();
+  if (Array.isArray(init.headers)) {
+    for (const [key, value] of init.headers) {
+      headers.set(key, value);
+    }
+  } else if (init.headers && typeof (init.headers as { forEach?: unknown }).forEach === "function") {
+    (init.headers as { forEach: (cb: (value: string, key: string) => void) => void }).forEach(
+      (value, key) => {
+        headers.set(key, value);
+      },
+    );
+  } else if (init.headers && typeof init.headers === "object") {
+    for (const [key, value] of Object.entries(init.headers as Record<string, string>)) {
+      headers.set(key, value);
+    }
+  }
   headers.set("Content-Type", "application/json");
   headers.set("Access-Control-Allow-Origin", "*");
   headers.set("Access-Control-Allow-Headers", "Content-Type");

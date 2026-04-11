@@ -2,9 +2,11 @@ export type CamelAIHarness = "opencode" | "claude-code" | "codex" | "pi";
 export type CamelAIProvider = "claude" | "codex" | "pi" | "opencode";
 export const CAMELAI_PLUGIN_API_VERSION = 1;
 export type CamelAIPermission =
+  | "container-env"
   | "host-mcp"
   | "host-plugins"
   | "serve-mcp"
+  | "serve-http"
   | "thread-preview";
 export type CamelAISettingFieldType =
   | "boolean"
@@ -182,6 +184,86 @@ export interface CamelAIToolRegistration<TParams = unknown, TResult = unknown> {
     params: TParams,
     context: CamelAIToolExecutionContext,
   ) => Promise<TResult>;
+}
+
+export interface CamelAIHttpRequest {
+  method: string;
+  url: string;
+  pathname: string;
+  search: string;
+  path: string;
+  query: Record<string, string | string[]>;
+  headers: Record<string, string>;
+  body: string | null;
+}
+
+export interface CamelAIHttpResponse {
+  status: number;
+  headers?: Record<string, string>;
+  body?: string | null;
+}
+
+export interface CamelAIHttpRouteExecutionContext {
+  harness: CamelAIHarness;
+  pluginId: string;
+  routeId: string;
+  threadId: string | null;
+  workspacePath: string;
+  mountPath: string;
+  threadState: CamelAIThreadStateStore;
+}
+
+export interface CamelAIHttpRouteRegistration {
+  title?: string;
+  description?: string;
+  methods?: string[];
+  handle?: (
+    request: CamelAIHttpRequest,
+    context: CamelAIHttpRouteExecutionContext,
+  ) => Promise<CamelAIHttpResponse> | CamelAIHttpResponse;
+}
+
+export type CamelAIHttpProxyAuth =
+  | {
+      type: "none";
+    }
+  | {
+      type: "bearer";
+      secretRef: string;
+      headerName?: string;
+    }
+  | {
+      type: "header";
+      headerName: string;
+      secretRef: string;
+    };
+
+export interface CamelAIHttpProxyRegistration {
+  title?: string;
+  description?: string;
+  baseUrl: string;
+  methods?: string[];
+  headers?: Record<string, string>;
+  auth?: CamelAIHttpProxyAuth | null;
+  stripRequestHeaders?: string[];
+  timeoutMs?: number;
+  maxBodyBytes?: number;
+}
+
+export type CamelAIProcessEnvValue =
+  | string
+  | {
+      kind: "httpUrl";
+      target: "route" | "proxy";
+      id: string;
+      path?: string;
+    };
+
+export interface CamelAIProcessEnvRegistration {
+  title?: string;
+  description?: string;
+  providers?: Array<CamelAIProvider | "*">;
+  vars: Record<string, CamelAIProcessEnvValue>;
 }
 
 export interface CamelAIMcpServerSessionContext {
@@ -468,6 +550,18 @@ export interface CamelAIActivationApi {
   registerTool<TParams = unknown, TResult = unknown>(
     id: string,
     tool: CamelAIToolRegistration<TParams, TResult>,
+  ): CamelAIDisposable;
+  registerHttpRoute(
+    id: string,
+    route: CamelAIHttpRouteRegistration,
+  ): CamelAIDisposable;
+  registerHttpProxy(
+    id: string,
+    proxy: CamelAIHttpProxyRegistration,
+  ): CamelAIDisposable;
+  registerProcessEnv(
+    id: string,
+    registration: CamelAIProcessEnvRegistration,
   ): CamelAIDisposable;
   registerMcpServer(
     id: string,
