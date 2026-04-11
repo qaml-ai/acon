@@ -5,6 +5,7 @@ import type {
   DesktopServerEvent,
   DesktopSnapshot,
 } from '../../shared/protocol';
+import type { PreviewTarget } from '../../../src/types';
 
 interface DesktopShellApi {
   platform: string;
@@ -46,6 +47,7 @@ interface DesktopShellApi {
     canceled: boolean;
     destinationPath: string | null;
   }>;
+  resolvePreviewSrc?: (target: PreviewTarget) => Promise<string | null>;
   installPlugin?: () => Promise<DesktopPluginInstallResult>;
   openPluginDirectory?: () => Promise<string>;
   resolveWebviewSrc?: (entrypoint: string) => Promise<string>;

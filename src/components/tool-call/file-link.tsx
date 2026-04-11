@@ -134,6 +134,7 @@ export function FileLink({
             onOpenChange={setPreviewOpen}
             filename={displayName}
             previewUrl={previewUrl}
+            previewTarget={previewTarget}
           />
         ) : null}
       </>

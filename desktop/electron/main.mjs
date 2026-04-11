@@ -1340,6 +1340,10 @@ ipcMain.handle('desktop:resolve-webview-src', async (_event, entrypoint) => {
   return toDesktopPluginUrl(entrypoint);
 });
 
+ipcMain.handle('desktop:resolve-preview-src', async (_event, target) => {
+  return directDesktopService?.resolvePreviewTargetSource(target) ?? null;
+});
+
 ipcMain.on('desktop:send', (_event, payload) => {
   void sendBackendEvent(payload).catch((error) => {
     for (const window of BrowserWindow.getAllWindows()) {
