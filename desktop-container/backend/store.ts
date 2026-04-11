@@ -62,6 +62,7 @@ interface PersistedState {
     >
   >;
   pluginEnabledById?: Record<string, boolean>;
+  pluginSettingsById?: Record<string, Record<string, string | number | boolean>>;
   threadGroups?: DesktopThreadGroup[];
   threads: DesktopThread[];
   messagesByThread: Record<string, DesktopMessage[]>;
@@ -522,6 +523,24 @@ export class DesktopStore {
                 ),
               )
             : {},
+        pluginSettingsById:
+          parsed.pluginSettingsById && typeof parsed.pluginSettingsById === 'object'
+            ? Object.fromEntries(
+                Object.entries(parsed.pluginSettingsById).flatMap(([pluginId, rawSettings]) => {
+                  if (!rawSettings || typeof rawSettings !== 'object' || Array.isArray(rawSettings)) {
+                    return [];
+                  }
+                  const settings = Object.fromEntries(
+                    Object.entries(rawSettings).flatMap(([fieldId, value]) =>
+                      typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+                        ? [[fieldId, value]]
+                        : [],
+                    ),
+                  );
+                  return [[pluginId, settings]];
+                }),
+              )
+            : {},
         threadGroups,
         threads,
         messagesByThread: parsed.messagesByThread ?? {},
@@ -542,6 +561,7 @@ export class DesktopStore {
         threadPreviewStateById: {},
         providerStateByThread: {},
         pluginEnabledById: {},
+        pluginSettingsById: {},
         threadGroups: [defaultThreadGroup],
         threads: [],
         messagesByThread: {},
@@ -803,6 +823,44 @@ export class DesktopStore {
       next[pluginId] = false;
     }
     this.state.pluginEnabledById = next;
+    this.persist();
+  }
+
+  getPluginSetting(
+    pluginId: string,
+    fieldId: string,
+  ): string | number | boolean | null {
+    const pluginSettings = this.state.pluginSettingsById?.[pluginId];
+    if (!pluginSettings) {
+      return null;
+    }
+    const value = pluginSettings[fieldId];
+    return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+      ? value
+      : null;
+  }
+
+  setPluginSetting(
+    pluginId: string,
+    fieldId: string,
+    value: string | number | boolean | null,
+  ): void {
+    const nextSettingsByPlugin = { ...(this.state.pluginSettingsById ?? {}) };
+    const nextPluginSettings = { ...(nextSettingsByPlugin[pluginId] ?? {}) };
+
+    if (value === null) {
+      delete nextPluginSettings[fieldId];
+    } else {
+      nextPluginSettings[fieldId] = value;
+    }
+
+    if (Object.keys(nextPluginSettings).length === 0) {
+      delete nextSettingsByPlugin[pluginId];
+    } else {
+      nextSettingsByPlugin[pluginId] = nextPluginSettings;
+    }
+
+    this.state.pluginSettingsById = nextSettingsByPlugin;
     this.persist();
   }
 

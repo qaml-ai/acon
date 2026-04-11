@@ -6,6 +6,7 @@ Current scope:
 
 - Apple `container` on top of Apple Virtualization.framework
 - `acon-agentd` as the internal agent/session runtime layer
+- a versioned `acon` runtime protocol between the desktop backend and runtime adapters, with the local Apple-container path as the first implementation
 - Codex and Claude providers only
 - packaged builds resolve the Apple `container` CLI from app resources instead of assuming a system install
 - the same persisted local threads and renderer used by `desktop/`
@@ -23,6 +24,7 @@ Current limits:
 - provider startup always writes a small built-in global instruction file into container `~/.codex/AGENTS.md` or `~/.claude/CLAUDE.md` with `acon` context, `acon-mcp` guidance, and guest JavaScript `@acon/host-rpc` usage
 - the backend currently uses fixed default models per provider (`gpt-5.4` for Codex and `sonnet` for Claude)
 - provider sessions persist per thread inside a single long-lived shared agent container, and the container's main daemon process brokers both agent control and guest-to-host RPC over one stdio connection to the desktop backend
+- remote/container providers should target the shared runtime protocol instead of extending the desktop plugin host directly
 - release packaging still needs to stage the vendored Apple `container` binary and image contexts into app resources
 
 ## Commands
@@ -62,15 +64,14 @@ Host MCP notes:
 
 - Host code can register MCP servers on `DesktopService` with `registerHostMcpServer({ id, createServer })`.
 - Plugins can register in-process MCP servers with `api.registerMcpServer(id, { createServer })`; plugin-owned servers declare `serve-mcp`, persisted host MCP registry mutation requires `host-mcp`, and plugin bundle installation plus bundled `camelai.agentAssets` inspection require `host-plugins`.
-- Persisted host MCP server registrations live under the desktop data directory at `host-mcp/servers/*.json`.
-- Persisted remote MCP servers can use `streamable-http` or legacy `sse` transport. Host-managed OAuth is configured automatically, and OAuth tokens/client state are kept in the host secret store. On macOS this uses Keychain; other environments fall back to host-local secret files under the desktop data directory.
-- Persisted stdio MCP servers can attach `envSecretRefs`, and persisted remote HTTP MCP servers can attach `headerSecretRefs`, so secrets stay in the host vault and are only resolved at launch time.
-- The builtin `host-mcp-manager` plugin registers a host MCP server that can list, install, and remove persisted host MCP servers, prompt the user to store secrets in the host vault, install local plugin bundles from the managed guest workspace into the desktop user's plugin directory, and inspect plugin-declared `camelai.agentAssets`. Those bundled skills and MCP configs are reconciled declaratively into the Codex and Claude runtime homes when plugins are loaded or refreshed.
-- Plugins can register in-process MCP servers with `api.registerMcpServer(id, { createServer })`; plugin-owned servers declare `serve-mcp`, persisted host MCP registry mutation requires `host-mcp`, and plugin bundle installation plus bundled `camelai.agentAssets` inspection require `host-plugins`.
+- Plugins can register remote runtime providers with `api.registerRuntimeProvider(id, { resolveTarget })`; runtime-provider plugins declare `runtime-provider`, resolve to a runtime protocol adapter URL at connection time, and stay separate from the out-of-process runtime implementation itself.
+- Plugins can declare manifest `settings`, and Extension Lab now serves as the configuration page for those values; secret settings stay in the host vault and are available to plugin code through `api.settings.getSecret(...)` instead of install-time prompts.
 - Persisted host MCP server registrations live under the desktop data directory at `host-mcp/servers/*.json`.
 - Persisted remote MCP servers can use `streamable-http` or legacy `sse` transport. Host-managed OAuth is configured automatically, and OAuth tokens/client state are kept in the host secret store. On macOS this uses Keychain; other environments fall back to host-local secret files under the desktop data directory.
 - Persisted stdio MCP servers can attach `envSecretRefs`, and persisted remote HTTP MCP servers can attach `headerSecretRefs`, so secrets stay in the host vault and are only resolved at launch time.
 - The builtin `host-mcp-manager` plugin registers a host MCP server that can list, install, and remove persisted host MCP servers, prompt the user to store secrets in the host vault, install the repo-local `rest-api` stdio MCP server, install local plugin bundles from the managed guest workspace into the desktop user's plugin directory, and inspect plugin-declared `camelai.agentAssets`. Those bundled skills and MCP configs are reconciled declaratively into the Codex and Claude runtime homes when plugins are loaded or refreshed.
+- The runtime boundary is moving toward a versioned external protocol so remote/container adapters can live out of process instead of inside the desktop plugin host.
+- `desktop-container/backend/runtime-protocol.ts` defines the versioned runtime contract that the local `acon-agentd` path already follows and that future external adapters should implement.
 - Repo-shipped builtin stdio servers should be launched through `desktop-container/bin/acon-mcp-builtin.mjs <name>` so persisted configs stay stable even if the underlying implementation files move.
 - The builtin `preview-control` plugin registers a host MCP server that can open, replace, clear, and hide/show thread preview items for workspace files and URLs in the right-side preview pane.
 - Inside the container, `acon-mcp --help` shows the CLI surface.
@@ -110,6 +111,9 @@ Optional:
 export DESKTOP_CONTAINER_WORKSPACE_DIR=/absolute/path/to/workspace
 export DESKTOP_CONTAINER_USER_DATA_DIR=/custom/path
 export DESKTOP_CONTAINER_AGENT_IMAGE=acon-desktop-acpx:0.1
+export DESKTOP_RUNTIME_MODE=remote
+export DESKTOP_REMOTE_RUNTIME_URL=ws://127.0.0.1:4316/runtime
+export DESKTOP_RUNTIME_PROVIDER=plugin:example-runtime:default
 export DESKTOP_APPLE_CONTAINER_REPO_DIR=/absolute/path/to/apple-container
 export DESKTOP_CONTAINER_CLAUDE_IMAGE=acon-desktop-claude:0.1
 export DESKTOP_CONTAINER_CODEX_IMAGE=acon-desktop-codex:0.1
@@ -141,13 +145,14 @@ export ANTHROPIC_API_KEY=...
 ## Architecture
 
 - `desktop-container/backend/container-runtime.ts` verifies that the prebuilt Apple container image is available, starts the long-lived shared agent container daemon, and drives provider turns with per-thread session reuse.
+- `desktop-container/backend/runtime-protocol.ts` defines the shared session lifecycle contract (`session.ensure`, `session.prompt`, `session.cancel`, streaming notifications, and host-bridge requests) so the local container daemon and future remote adapters share one control plane.
+- `desktop-container/backend/remote-runtime.ts` implements the same runtime-manager contract over a remote WebSocket adapter that speaks the shared runtime protocol, so external runtimes can plug in without entering the desktop plugin host.
+- `desktop-container/backend/runtime-manager.ts` selects between the local Apple-container runtime and the remote protocol runtime, and can resolve plugin-contributed runtime providers through `DESKTOP_RUNTIME_PROVIDER`.
 - The backend mounts an app-managed persistent workspace into the container at `/workspace`.
 - Provider-specific runtime data lives under the shared desktop runtime directory and is mounted into the container under `/data/providers/<provider>`.
 - `desktop-container/container-images/` contains the shared Apple-container image definition that installs Codex and Claude Code together, plus the internal `acon-agentd` daemon and the `acon-mcp` convenience CLI so agents can reach host MCP servers from inside the container.
 - Packaged builds should stage the Apple `container` CLI at `Contents/Resources/desktop/bin/container`, the helper tree at `Contents/Resources/desktop/libexec/container/`, builtin plugin manifests under `Contents/Resources/desktop/plugins/builtin/`, and the image contexts at `Contents/Resources/desktop/container-images/`.
-- `desktop-container/backend/extensions/host.ts` discovers V2 `camelai` plugin manifests from `desktop-container/plugins/builtin/` plus the user install directory, loads extension modules, enforces manifest metadata such as API compatibility and declared permissions, supports registration disposables plus `deactivate()` cleanup, and exposes the runtime-first API (`on`, `registerView`, `registerCommand`, `registerTool`, host MCP registration, thread preview mutation) that materializes plugin workbench views into the shared snapshot model.
-- `desktop-container/backend/extensions/thread-state.ts` provides a persistent per-thread plugin state store under the desktop runtime directory so workbench views and runtime hooks can share thread-scoped JSON state.
-- `desktop-container/backend/extensions/host.ts` discovers V2 `camelai` plugin manifests from `desktop-container/plugins/builtin/` plus the user install directory, loads extension modules, enforces manifest metadata such as API compatibility and declared permissions, supports registration disposables plus `deactivate()` cleanup, and exposes the runtime-first API (`on`, `registerView`, `registerCommand`, `registerTool`, `registerMcpServer`, persisted host MCP management, thread preview mutation) that materializes plugin workbench views into the shared snapshot model.
+- `desktop-container/backend/extensions/host.ts` discovers V2 `camelai` plugin manifests from `desktop-container/plugins/builtin/` plus the user install directory, loads extension modules, enforces manifest metadata such as API compatibility and declared permissions, supports registration disposables plus `deactivate()` cleanup, and exposes the runtime-first API (`on`, `registerView`, `registerCommand`, `registerTool`, `registerRuntimeProvider`, host MCP registration, thread preview mutation) that materializes plugin workbench views into the shared snapshot model.
 - `desktop-container/backend/extensions/thread-state.ts` provides a persistent per-thread plugin state store under the desktop runtime directory so workbench views and runtime hooks can share thread-scoped JSON state.
 - `desktop-container/backend/extensions/harness-adapters.ts` is the abstraction layer between supported harnesses and the unified extension model; it currently includes `codex`, `claude-code`, and `opencode` adapter identities.
 - `desktop/electron/main.mjs` exposes the desktop-shell install flow for user plugins, including folder selection, copying into the user plugin directory, and triggering a live catalog refresh; enabled and disabled plugin state is persisted in the desktop backend store and surfaced through Extension Lab.

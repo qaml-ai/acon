@@ -37,7 +37,7 @@ function getClaudeAuthState(): DesktopAuthState {
 export const claudeProvider: DesktopProviderDefinition = {
   id: "claude",
   label: "Claude",
-  transport: "container-agentd",
+  transport: "acon-runtime-protocol",
   option: {
     id: "claude",
     label: "Claude",

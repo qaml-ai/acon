@@ -59,6 +59,13 @@ export interface DesktopPluginToolContribution {
   availableTo: Array<DesktopHarness | "*">;
 }
 
+export interface DesktopPluginRuntimeProviderContribution {
+  id: string;
+  title: string;
+  description: string | null;
+  kind: "remote-container" | "container" | "vm" | "custom";
+}
+
 export interface DesktopPluginWebviewContribution {
   id: string;
   entrypoint: string;
@@ -67,6 +74,7 @@ export interface DesktopPluginWebviewContribution {
 export type DesktopPluginPermission =
   | "host-mcp"
   | "host-plugins"
+  | "runtime-provider"
   | "serve-mcp"
   | "thread-preview";
 
@@ -82,6 +90,8 @@ export interface DesktopPluginSettingFieldOption {
   value: string;
 }
 
+export type DesktopPluginSettingValue = boolean | number | string | null;
+
 export interface DesktopPluginSettingFieldRecord {
   id: string;
   type: DesktopPluginSettingFieldType;
@@ -89,6 +99,8 @@ export interface DesktopPluginSettingFieldRecord {
   description: string | null;
   required: boolean;
   options: DesktopPluginSettingFieldOption[];
+  configured: boolean;
+  value: DesktopPluginSettingValue;
 }
 
 export interface DesktopPluginSettingsRecord {
@@ -123,6 +135,7 @@ export interface DesktopPluginRecord {
     sidebarPanels: DesktopPluginSidebarPanelContribution[];
     commands: DesktopPluginCommandContribution[];
     tools: DesktopPluginToolContribution[];
+    runtimeProviders: DesktopPluginRuntimeProviderContribution[];
   };
   runtime: {
     activated: boolean;
@@ -132,6 +145,7 @@ export interface DesktopPluginRecord {
     registeredSidebarPanelIds: string[];
     registeredCommandIds: string[];
     registeredToolIds: string[];
+    registeredRuntimeProviderIds: string[];
   };
 }
 
@@ -476,6 +490,12 @@ export type DesktopClientEvent =
       type: "set_plugin_enabled";
       pluginId: string;
       enabled: boolean;
+    }
+  | {
+      type: "update_plugin_setting";
+      pluginId: string;
+      fieldId: string;
+      value: DesktopPluginSettingValue;
     }
   | {
       type: "ping";

@@ -53,6 +53,8 @@ import type {
   CamelAIPersistedHostMcpServerRecord,
   CamelAIPreviewProviderRegistration,
   CamelAIPluginApi,
+  CamelAIRuntimeProviderRegistration,
+  CamelAIRuntimeProviderTarget,
   CamelAIRuntimeRecord,
   CamelAIToolRegistration,
   DiscoveredCamelAIExtension,
@@ -100,6 +102,7 @@ const BUILTIN_EXTENSION_MODULES: Record<string, CamelAIExtensionModule> = {
 const VALID_PLUGIN_PERMISSIONS = new Set<DesktopPluginPermission>([
   "host-mcp",
   "host-plugins",
+  "runtime-provider",
   "thread-preview",
   "serve-mcp",
 ]);
@@ -159,6 +162,14 @@ export interface CamelAIExtensionHostOptions {
     options: CamelAIInstallWorkspacePluginOptions,
     context: CamelAIHostPluginMutationContext,
   ) => Promise<CamelAIInstallPluginResult>;
+  getPluginSettingValue?: (
+    pluginId: string,
+    settingId: string,
+  ) => string | number | boolean | null;
+  getPluginSettingSecretValue?: (
+    pluginId: string,
+    settingId: string,
+  ) => string | null;
   listPluginAgentAssets?: (
     pluginId?: string | null,
   ) => CamelAIPluginAgentAssetsBundleRecord[];
@@ -667,6 +678,7 @@ export class CamelAIExtensionHost {
       commands: new Map(),
       previewProviders: new Map(),
       tools: new Map(),
+      runtimeProviders: new Map(),
       handlers: new Map(),
       disposables: [],
       deactivate: null,
@@ -726,6 +738,7 @@ export class CamelAIExtensionHost {
       record.commands.clear();
       record.previewProviders.clear();
       record.tools.clear();
+      record.runtimeProviders.clear();
       record.handlers.clear();
       record.registeredHostMcpServerIds.clear();
       record.activated = false;
@@ -826,6 +839,18 @@ export class CamelAIExtensionHost {
     };
   }
 
+  private createRuntimeProviderContext(
+    pluginId: string,
+    runtimeProviderId: string,
+    context: CamelAIActivationContext,
+  ) {
+    return {
+      ...context,
+      pluginId,
+      runtimeProviderId,
+    };
+  }
+
   private createApi(
     record: CamelAIRuntimeRecord,
     context: CamelAIActivationContext,
@@ -886,6 +911,12 @@ export class CamelAIExtensionHost {
     return {
       pluginId,
       harnessAdapters,
+      settings: {
+        get: (settingId) =>
+          this.options.getPluginSettingValue?.(pluginId, settingId) ?? null,
+        getSecret: (settingId) =>
+          this.options.getPluginSettingSecretValue?.(pluginId, settingId) ?? null,
+      },
       registerDisposable: (disposable) =>
         this.registerRecordDisposable(record, disposable),
       on: (event, handler) => {
@@ -975,6 +1006,14 @@ export class CamelAIExtensionHost {
         record.tools.set(id, tool);
         return this.registerRecordDisposable(record, () => {
           record.tools.delete(id);
+        });
+      },
+      registerRuntimeProvider: (id, provider) => {
+        this.assertPluginPermission(record, "runtime-provider");
+        assertValidRuntimeProviderRegistration(pluginId, id, provider);
+        record.runtimeProviders.set(id, provider);
+        return this.registerRecordDisposable(record, () => {
+          record.runtimeProviders.delete(id);
         });
       },
       registerMcpServer,
@@ -1237,6 +1276,63 @@ export class CamelAIExtensionHost {
     return bestMatch?.renderer ?? null;
   }
 
+  async resolveRuntimeProviderTarget(
+    runtimeProviderId: string,
+    context: CamelAIActivationContext,
+  ): Promise<CamelAIRuntimeProviderTarget | null> {
+    const normalizedRuntimeProviderId = runtimeProviderId.trim();
+    if (!normalizedRuntimeProviderId) {
+      return null;
+    }
+
+    for (const record of this.records.values()) {
+      if (
+        !record.enabled ||
+        !record.activated ||
+        record.activationError ||
+        record.compatibilityError
+      ) {
+        continue;
+      }
+
+      for (const [providerId, provider] of record.runtimeProviders.entries()) {
+        const qualifiedId = getContributionId(record.discovered.id, providerId);
+        if (
+          normalizedRuntimeProviderId !== qualifiedId &&
+          normalizedRuntimeProviderId !== providerId
+        ) {
+          continue;
+        }
+
+        assertValidRuntimeProviderRegistration(
+          record.discovered.id,
+          providerId,
+          provider,
+        );
+        const target = await provider.resolveTarget(
+          this.createRuntimeProviderContext(
+            record.discovered.id,
+            qualifiedId,
+            this.resolveActivationContext(context),
+          ),
+        );
+        if (!target) {
+          return null;
+        }
+        assertValidRuntimeProviderTarget(
+          record.discovered.id,
+          providerId,
+          target,
+        );
+        return {
+          url: target.url.trim(),
+        };
+      }
+    }
+
+    return null;
+  }
+
   private createPluginRecord(record: CamelAIRuntimeRecord): DesktopPluginRecord {
     const { discovered } = record;
     const settings =
@@ -1256,6 +1352,25 @@ export class CamelAIExtensionHost {
                   description: field.description ?? null,
                   required: field.required === true,
                   options: field.options ?? [],
+                  configured:
+                    field.type === "secret"
+                      ? Boolean(
+                          this.options.getPluginSettingSecretValue?.(
+                            discovered.id,
+                            fieldId,
+                          ),
+                        )
+                      : this.options.getPluginSettingValue?.(
+                            discovered.id,
+                            fieldId,
+                          ) !== null,
+                  value:
+                    field.type === "secret"
+                      ? null
+                      : this.options.getPluginSettingValue?.(
+                            discovered.id,
+                            fieldId,
+                          ) ?? null,
                 }),
               ),
             }
@@ -1348,6 +1463,21 @@ export class CamelAIExtensionHost {
             return [];
           }
         }),
+        runtimeProviders: Array.from(record.runtimeProviders.entries()).flatMap(
+          ([id, provider]) => {
+            try {
+              assertValidRuntimeProviderRegistration(discovered.id, id, provider);
+              return [{
+                id: getContributionId(discovered.id, id),
+                title: provider.title,
+                description: provider.description ?? null,
+                kind: provider.kind ?? "custom",
+              }];
+            } catch {
+              return [];
+            }
+          },
+        ),
       },
       runtime: {
         activated: record.activated,
@@ -1357,6 +1487,9 @@ export class CamelAIExtensionHost {
         registeredSidebarPanelIds: Array.from(record.sidebarPanels.keys()),
         registeredCommandIds: Array.from(record.commands.keys()),
         registeredToolIds: Array.from(record.tools.keys()),
+        registeredRuntimeProviderIds: Array.from(record.runtimeProviders.keys()).map(
+          (id) => getContributionId(discovered.id, id),
+        ),
       },
     };
   }
@@ -1712,5 +1845,39 @@ function assertValidToolRegistration(
 ): asserts tool is CamelAIToolRegistration {
   if (!tool || typeof tool !== "object") {
     throw new Error(`Plugin ${pluginId} registered invalid tool ${id}: expected an object.`);
+  }
+}
+
+function assertValidRuntimeProviderRegistration(
+  pluginId: string,
+  id: string,
+  provider: unknown,
+): asserts provider is CamelAIRuntimeProviderRegistration {
+  if (!provider || typeof provider !== "object") {
+    throw new Error(`Plugin ${pluginId} registered invalid runtime provider ${id}: expected an object.`);
+  }
+  const record = provider as CamelAIRuntimeProviderRegistration;
+  if (!isNonEmptyString(record.title)) {
+    throw new Error(`Plugin ${pluginId} registered invalid runtime provider ${id}: title is required.`);
+  }
+  if (record.kind !== undefined &&
+      !["remote-container", "container", "vm", "custom"].includes(record.kind)) {
+    throw new Error(`Plugin ${pluginId} registered invalid runtime provider ${id}: kind is unsupported.`);
+  }
+  if (typeof record.resolveTarget !== "function") {
+    throw new Error(`Plugin ${pluginId} registered invalid runtime provider ${id}: resolveTarget is required.`);
+  }
+}
+
+function assertValidRuntimeProviderTarget(
+  pluginId: string,
+  id: string,
+  target: unknown,
+): asserts target is CamelAIRuntimeProviderTarget {
+  if (!target || typeof target !== "object") {
+    throw new Error(`Plugin ${pluginId} resolved invalid runtime provider target ${id}: expected an object.`);
+  }
+  if (!isNonEmptyString((target as CamelAIRuntimeProviderTarget).url)) {
+    throw new Error(`Plugin ${pluginId} resolved invalid runtime provider target ${id}: url is required.`);
   }
 }

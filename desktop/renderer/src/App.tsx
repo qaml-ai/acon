@@ -76,6 +76,8 @@ import type { ContentBlock, Message, PreviewTarget } from "@/types";
 import type {
   DesktopClientEvent,
   DesktopModel,
+  DesktopPluginRecord,
+  DesktopPluginSettingValue,
   DesktopPreviewTarget,
   DesktopThreadPreviewState,
   DesktopProvider,
@@ -142,6 +144,267 @@ function readStoredThreadPreviewWidth(): number {
   } catch {
     return THREAD_PREVIEW_DEFAULT_WIDTH;
   }
+}
+
+function toPluginSettingDraftValue(value: DesktopPluginSettingValue): string {
+  if (typeof value === "boolean") {
+    return value ? "true" : "false";
+  }
+  if (typeof value === "number") {
+    return String(value);
+  }
+  return value ?? "";
+}
+
+function PluginSettingsForm({
+  plugin,
+  onUpdateSetting,
+}: {
+  plugin: DesktopPluginRecord;
+  onUpdateSetting: (
+    pluginId: string,
+    fieldId: string,
+    value: DesktopPluginSettingValue,
+  ) => void;
+}) {
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const settingsSignature = useMemo(
+    () =>
+      JSON.stringify(
+        (plugin.settings?.fields ?? []).map((field) => ({
+          id: field.id,
+          type: field.type,
+          configured: field.configured,
+          value: field.value,
+        })),
+      ),
+    [plugin.settings],
+  );
+
+  useEffect(() => {
+    const nextDrafts = Object.fromEntries(
+      (plugin.settings?.fields ?? []).map((field) => [
+        field.id,
+        field.type === "secret" ? "" : toPluginSettingDraftValue(field.value),
+      ]),
+    );
+    setDrafts(nextDrafts);
+  }, [plugin.id, settingsSignature]);
+
+  if (!plugin.settings || plugin.settings.fields.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-3 rounded-md border border-border/70 bg-muted/20 px-3 py-3">
+      <div className="space-y-1">
+        <p className="text-sm font-medium text-foreground">Plugin settings</p>
+        {plugin.settings.description ? (
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {plugin.settings.description}
+          </p>
+        ) : null}
+      </div>
+
+      <div className="space-y-3">
+        {plugin.settings.fields.map((field) => {
+          const draftValue = drafts[field.id] ?? "";
+          const commonActions = (
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  const nextValue =
+                    field.type === "boolean"
+                      ? draftValue === ""
+                        ? null
+                        : draftValue === "true"
+                      : draftValue === ""
+                        ? null
+                        : draftValue;
+                  onUpdateSetting(plugin.id, field.id, nextValue);
+                }}
+              >
+                Save
+              </Button>
+              {!field.required ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setDrafts((current) => ({
+                      ...current,
+                      [field.id]: "",
+                    }));
+                    onUpdateSetting(plugin.id, field.id, null);
+                  }}
+                >
+                  Clear
+                </Button>
+              ) : null}
+            </div>
+          );
+
+          return (
+            <div
+              key={field.id}
+              className="space-y-2 rounded-md border border-border/60 bg-background/70 px-3 py-3"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm font-medium text-foreground">{field.label}</p>
+                <Badge variant={field.configured ? "secondary" : "outline"}>
+                  {field.configured ? "configured" : "not set"}
+                </Badge>
+                <Badge variant="outline">{field.type}</Badge>
+                {field.required ? <Badge variant="outline">required</Badge> : null}
+              </div>
+
+              {field.description ? (
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {field.description}
+                </p>
+              ) : null}
+
+              {field.type === "select" ? (
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <Select
+                    value={draftValue || "__unset__"}
+                    onValueChange={(nextValue) => {
+                      setDrafts((current) => ({
+                        ...current,
+                        [field.id]: nextValue === "__unset__" ? "" : nextValue,
+                      }));
+                    }}
+                  >
+                    <SelectTrigger className="w-full sm:max-w-sm">
+                      <SelectValue placeholder="Choose a value" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__unset__">Not set</SelectItem>
+                      {field.options.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {commonActions}
+                </div>
+              ) : null}
+
+              {field.type === "boolean" ? (
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <Select
+                    value={draftValue || "__unset__"}
+                    onValueChange={(nextValue) => {
+                      setDrafts((current) => ({
+                        ...current,
+                        [field.id]: nextValue === "__unset__" ? "" : nextValue,
+                      }));
+                    }}
+                  >
+                    <SelectTrigger className="w-full sm:max-w-sm">
+                      <SelectValue placeholder="Choose true or false" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__unset__">Not set</SelectItem>
+                      <SelectItem value="true">True</SelectItem>
+                      <SelectItem value="false">False</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {commonActions}
+                </div>
+              ) : null}
+
+              {field.type === "number" ? (
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <Input
+                    type="number"
+                    value={draftValue}
+                    onChange={(event) => {
+                      setDrafts((current) => ({
+                        ...current,
+                        [field.id]: event.target.value,
+                      }));
+                    }}
+                    className="sm:max-w-sm"
+                  />
+                  {commonActions}
+                </div>
+              ) : null}
+
+              {field.type === "string" ? (
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <Input
+                    value={draftValue}
+                    onChange={(event) => {
+                      setDrafts((current) => ({
+                        ...current,
+                        [field.id]: event.target.value,
+                      }));
+                    }}
+                    className="sm:max-w-sm"
+                  />
+                  {commonActions}
+                </div>
+              ) : null}
+
+              {field.type === "secret" ? (
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <Input
+                    type="password"
+                    value={draftValue}
+                    placeholder={field.configured ? "Saved value hidden" : "Enter secret"}
+                    onChange={(event) => {
+                      setDrafts((current) => ({
+                        ...current,
+                        [field.id]: event.target.value,
+                      }));
+                    }}
+                    className="sm:max-w-sm"
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        if (!draftValue.trim()) {
+                          return;
+                        }
+                        onUpdateSetting(plugin.id, field.id, draftValue);
+                        setDrafts((current) => ({
+                          ...current,
+                          [field.id]: "",
+                        }));
+                      }}
+                    >
+                      Save
+                    </Button>
+                    {!field.required ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setDrafts((current) => ({
+                            ...current,
+                            [field.id]: "",
+                          }));
+                          onUpdateSetting(plugin.id, field.id, null);
+                        }}
+                      >
+                        Clear
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function clampThreadPreviewWidth(width: number, containerWidth: number): number {
@@ -1525,6 +1788,18 @@ function ExtensionCatalogPane({
     [onSendEvent],
   );
 
+  const handleUpdatePluginSetting = useCallback(
+    (pluginId: string, fieldId: string, value: DesktopPluginSettingValue) => {
+      onSendEvent({
+        type: "update_plugin_setting",
+        pluginId,
+        fieldId,
+        value,
+      });
+    },
+    [onSendEvent],
+  );
+
   return (
     <div className="flex min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
       <div className="mx-auto flex min-h-0 w-full max-w-5xl flex-col gap-4 px-4 pb-8 pt-5 md:px-6">
@@ -1605,6 +1880,12 @@ function ExtensionCatalogPane({
                     plugin.capabilities.tools.length > 0
                       ? plugin.capabilities.tools.map((tool) => tool.id).join(", ")
                       : null;
+                  const runtimeProviderSummary =
+                    plugin.capabilities.runtimeProviders.length > 0
+                      ? plugin.capabilities.runtimeProviders
+                          .map((provider) => provider.id)
+                          .join(", ")
+                      : null;
                   const hookSummary =
                     plugin.runtime.subscribedEvents.length > 0
                       ? plugin.runtime.subscribedEvents.join(", ")
@@ -1679,7 +1960,8 @@ function ExtensionCatalogPane({
                             {plugin.capabilities.views.length} views ·{" "}
                             {plugin.capabilities.sidebarPanels.length} sidebar panels ·{" "}
                             {plugin.capabilities.commands.length} commands ·{" "}
-                            {plugin.capabilities.tools.length} tools
+                            {plugin.capabilities.tools.length} tools ·{" "}
+                            {plugin.capabilities.runtimeProviders.length} runtime providers
                           </p>
 
                           {toolSummary ? (
@@ -1687,6 +1969,15 @@ function ExtensionCatalogPane({
                               Tools:{" "}
                               <span className="break-words text-foreground">
                                 {toolSummary}
+                              </span>
+                            </p>
+                          ) : null}
+
+                          {runtimeProviderSummary ? (
+                            <p className="text-sm leading-relaxed text-muted-foreground">
+                              Runtime providers:{" "}
+                              <span className="break-words text-foreground">
+                                {runtimeProviderSummary}
                               </span>
                             </p>
                           ) : null}
@@ -1750,6 +2041,13 @@ function ExtensionCatalogPane({
                             {plugin.runtime.activationError}
                           </AlertDescription>
                         </Alert>
+                      ) : null}
+
+                      {plugin.settings?.fields.length ? (
+                        <PluginSettingsForm
+                          plugin={plugin}
+                          onUpdateSetting={handleUpdatePluginSetting}
+                        />
                       ) : null}
                     </div>
                   );

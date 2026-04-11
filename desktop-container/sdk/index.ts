@@ -4,6 +4,7 @@ export const CAMELAI_PLUGIN_API_VERSION = 1;
 export type CamelAIPermission =
   | "host-mcp"
   | "host-plugins"
+  | "runtime-provider"
   | "serve-mcp"
   | "thread-preview";
 export type CamelAISettingFieldType =
@@ -90,6 +91,13 @@ export interface CamelAISettingsField {
 export interface CamelAISettingsSchema {
   description?: string;
   fields: Record<string, CamelAISettingsField>;
+}
+
+export type CamelAIPluginSettingValue = boolean | number | string | null;
+
+export interface CamelAISettingsApi {
+  get(settingId: string): CamelAIPluginSettingValue;
+  getSecret(settingId: string): string | null;
 }
 
 export interface CamelAIDisposable {
@@ -182,6 +190,42 @@ export interface CamelAIToolRegistration<TParams = unknown, TResult = unknown> {
     params: TParams,
     context: CamelAIToolExecutionContext,
   ) => Promise<TResult>;
+}
+
+export interface CamelAIRuntimeProviderContext {
+  pluginId: string;
+  runtimeProviderId: string;
+  provider: CamelAIProvider;
+  harness: CamelAIHarness;
+  model: string;
+  activeThreadId: string | null;
+  activeGroupId: string | null;
+  runtimeStatus: {
+    state: string;
+    detail: string;
+    runtimeDirectory?: string | null;
+    controlPlaneAddress?: string | null;
+    controlPlanePort?: number | null;
+  };
+  runtimeDirectory: string | null;
+  workspaceDirectory: string;
+  threadStateDirectory: string | null;
+}
+
+export interface CamelAIRuntimeProviderTarget {
+  url: string;
+}
+
+export interface CamelAIRuntimeProviderRegistration {
+  title: string;
+  description?: string;
+  kind?: "remote-container" | "container" | "vm" | "custom";
+  resolveTarget: (
+    context: CamelAIRuntimeProviderContext,
+  ) =>
+    | CamelAIRuntimeProviderTarget
+    | null
+    | Promise<CamelAIRuntimeProviderTarget | null>;
 }
 
 export interface CamelAIMcpServerSessionContext {
@@ -429,6 +473,7 @@ export type CamelAIEventName =
 export interface CamelAIActivationApi {
   readonly pluginId: string;
   readonly harnessAdapters: CamelAIHarnessAdapterInfo[];
+  readonly settings: CamelAISettingsApi;
   registerDisposable(disposable: CamelAIDisposableLike): CamelAIDisposable;
   on(
     event: CamelAIEventName,
@@ -468,6 +513,10 @@ export interface CamelAIActivationApi {
   registerTool<TParams = unknown, TResult = unknown>(
     id: string,
     tool: CamelAIToolRegistration<TParams, TResult>,
+  ): CamelAIDisposable;
+  registerRuntimeProvider(
+    id: string,
+    provider: CamelAIRuntimeProviderRegistration,
   ): CamelAIDisposable;
   registerMcpServer(
     id: string,

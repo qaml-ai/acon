@@ -106,6 +106,13 @@ export interface CamelAISettingsSchema {
   fields: Record<string, CamelAISettingsField>;
 }
 
+export type CamelAIPluginSettingValue = boolean | number | string | null;
+
+export interface CamelAISettingsApi {
+  get(settingId: string): CamelAIPluginSettingValue;
+  getSecret(settingId: string): string | null;
+}
+
 export interface CamelAIDisposable {
   dispose(): void | Promise<void>;
 }
@@ -224,6 +231,27 @@ export interface CamelAIToolRegistration<TParams = unknown, TResult = unknown> {
     params: TParams,
     context: CamelAIToolExecutionContext,
   ) => Promise<TResult>;
+}
+
+export interface CamelAIRuntimeProviderTarget {
+  url: string;
+}
+
+export interface CamelAIRuntimeProviderContext extends CamelAIActivationContext {
+  pluginId: string;
+  runtimeProviderId: string;
+}
+
+export interface CamelAIRuntimeProviderRegistration {
+  title: string;
+  description?: string;
+  kind?: "remote-container" | "container" | "vm" | "custom";
+  resolveTarget: (
+    context: CamelAIRuntimeProviderContext,
+  ) =>
+    | CamelAIRuntimeProviderTarget
+    | null
+    | Promise<CamelAIRuntimeProviderTarget | null>;
 }
 
 export interface CamelAIHostMcpSessionServer {
@@ -494,6 +522,7 @@ export type CamelAIEventHandler = (
 export interface CamelAIPluginApi {
   readonly pluginId: string;
   readonly harnessAdapters: CamelAIHarnessAdapterInfo[];
+  readonly settings: CamelAISettingsApi;
   registerDisposable(disposable: CamelAIDisposableLike): CamelAIDisposable;
   on(event: CamelAIEventName, handler: CamelAIEventHandler): CamelAIDisposable;
   listThreads(): CamelAIThreadRecord[];
@@ -521,6 +550,10 @@ export interface CamelAIPluginApi {
     provider: CamelAIPreviewProviderRegistration,
   ): CamelAIDisposable;
   registerTool(id: string, tool: CamelAIToolRegistration): CamelAIDisposable;
+  registerRuntimeProvider(
+    id: string,
+    provider: CamelAIRuntimeProviderRegistration,
+  ): CamelAIDisposable;
   registerMcpServer(
     id: string,
     registration: CamelAIMcpServerRegistration,
@@ -581,6 +614,7 @@ export interface CamelAIRuntimeRecord {
   commands: Map<string, CamelAICommandRegistration>;
   previewProviders: Map<string, CamelAIPreviewProviderRegistration>;
   tools: Map<string, CamelAIToolRegistration>;
+  runtimeProviders: Map<string, CamelAIRuntimeProviderRegistration>;
   handlers: Map<CamelAIEventName, CamelAIEventHandler[]>;
   disposables: CamelAIDisposable[];
   deactivate?: (() => void | Promise<void>) | null;

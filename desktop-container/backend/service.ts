@@ -32,7 +32,7 @@ import {
   getProviderOptions,
   requireDesktopProvider,
 } from "./providers";
-import { ContainerRuntimeManager, type RuntimeManager } from "./container-runtime";
+import { createRuntimeManager, type RuntimeManager } from "./runtime-manager";
 import { CamelAIExtensionHost } from "./extensions/host";
 import { getHarnessAdapterForProvider } from "./extensions/harness-adapters";
 import type {
@@ -70,7 +70,10 @@ import {
   getInstalledPluginAgentAssetsStatus,
   reconcilePluginAgentAssets,
 } from "./plugin-agent-assets";
-import { setPersistedHostSecret } from "./host-secrets";
+import {
+  getPersistedHostSecret,
+  setPersistedHostSecret,
+} from "./host-secrets";
 
 type Listener = (event: DesktopServerEvent) => void;
 type ThreadEventListener = CamelAIThreadEventHandler;
@@ -112,6 +115,10 @@ function toDesktopPluginFileUrl(path: string): string {
   return `desktop-plugin://local${fileUrl.pathname}`;
 }
 
+function getPluginSettingSecretRef(pluginId: string, fieldId: string): string {
+  return `plugin-setting:${pluginId}:${fieldId}`;
+}
+
 export class DesktopService {
   private readonly store = new DesktopStore();
   private readonly runtimeManager: RuntimeManager;
@@ -126,10 +133,18 @@ export class DesktopService {
   private runtimeStartupPromise: Promise<void> | null = null;
 
   constructor(
-    runtimeManager: RuntimeManager = new ContainerRuntimeManager(),
+    runtimeManager?: RuntimeManager,
     options: DesktopServiceOptions = {},
   ) {
-    this.runtimeManager = runtimeManager;
+    this.runtimeManager =
+      runtimeManager ??
+      createRuntimeManager({
+        resolveRuntimeProviderTarget: async (runtimeProviderId) =>
+          (await this.extensionHost?.resolveRuntimeProviderTarget(
+            runtimeProviderId,
+            this.getExtensionActivationContext(),
+          )) ?? null,
+      });
     this.dataDirectory =
       process.env.DESKTOP_DATA_DIR?.trim() ||
       resolve(this.runtimeManager.getRuntimeDirectory(), "..", "data");
@@ -156,6 +171,10 @@ export class DesktopService {
       uninstallInstalledHostMcpServer: (serverId, context) =>
         this.uninstallInstalledHostMcpServer(serverId, context),
       listInstalledPlugins: () => this.listInstalledPlugins(),
+      getPluginSettingValue: (pluginId, settingId) =>
+        this.store.getPluginSetting(pluginId, settingId),
+      getPluginSettingSecretValue: (pluginId, settingId) =>
+        this.getPluginSecretSettingValue(pluginId, settingId),
       installPluginFromWorkspace: (options, context) =>
         this.installPluginFromWorkspace(options, context),
       listPluginAgentAssets: (pluginId) => this.listPluginAgentAssets(pluginId),
@@ -342,6 +361,16 @@ export class DesktopService {
 
   listInstalledPlugins() {
     return this.getSnapshot().plugins;
+  }
+
+  private getPluginSecretSettingValue(
+    pluginId: string,
+    fieldId: string,
+  ): string | null {
+    return getPersistedHostSecret(
+      this.dataDirectory,
+      getPluginSettingSecretRef(pluginId, fieldId),
+    );
   }
 
   listPluginAgentAssets(pluginId?: string | null): CamelAIPluginAgentAssetsBundleRecord[] {
@@ -995,6 +1024,14 @@ export class DesktopService {
         void this.handleSetPluginEnabled(event.pluginId, event.enabled);
         return;
       }
+      case "update_plugin_setting": {
+        void this.handleUpdatePluginSetting(
+          event.pluginId,
+          event.fieldId,
+          event.value,
+        );
+        return;
+      }
       case "send_message": {
         void this.sendMessage(event.threadId, event.content);
         return;
@@ -1183,6 +1220,112 @@ export class DesktopService {
 
     this.store.setPluginEnabled(pluginId, enabled);
     await this.handleRefreshPlugins();
+  }
+
+  private async handleUpdatePluginSetting(
+    pluginId: string,
+    fieldId: string,
+    value: boolean | number | string | null,
+  ): Promise<void> {
+    const plugin = this.getSnapshot().plugins.find((entry) => entry.id === pluginId);
+    if (!plugin) {
+      this.broadcast({
+        type: "error",
+        message: `Plugin ${pluginId} does not exist.`,
+      });
+      return;
+    }
+
+    const field = plugin.settings?.fields.find((entry) => entry.id === fieldId) ?? null;
+    if (!field) {
+      this.broadcast({
+        type: "error",
+        message: `Plugin ${plugin.name} does not define setting ${fieldId}.`,
+      });
+      return;
+    }
+
+    try {
+      switch (field.type) {
+        case "boolean": {
+          let normalizedValue: boolean | null = null;
+          if (typeof value === "boolean") {
+            normalizedValue = value;
+          } else if (typeof value === "string") {
+            if (value === "true") {
+              normalizedValue = true;
+            } else if (value === "false") {
+              normalizedValue = false;
+            }
+          }
+          if (field.required && normalizedValue === null) {
+            throw new Error(`Setting ${field.label} is required.`);
+          }
+          this.store.setPluginSetting(pluginId, fieldId, normalizedValue);
+          break;
+        }
+        case "number": {
+          if (value === null || value === "") {
+            if (field.required) {
+              throw new Error(`Setting ${field.label} is required.`);
+            }
+            this.store.setPluginSetting(pluginId, fieldId, null);
+            break;
+          }
+          const parsed =
+            typeof value === "number"
+              ? value
+              : typeof value === "string"
+                ? Number.parseFloat(value)
+                : Number.NaN;
+          if (!Number.isFinite(parsed)) {
+            throw new Error(`Setting ${field.label} must be a valid number.`);
+          }
+          this.store.setPluginSetting(pluginId, fieldId, parsed);
+          break;
+        }
+        case "secret": {
+          const normalizedValue =
+            typeof value === "string" && value.trim() ? value.trim() : null;
+          if (field.required && !normalizedValue) {
+            throw new Error(`Setting ${field.label} is required.`);
+          }
+          setPersistedHostSecret(
+            this.dataDirectory,
+            getPluginSettingSecretRef(pluginId, fieldId),
+            normalizedValue,
+          );
+          break;
+        }
+        case "select":
+        case "string": {
+          const normalizedValue =
+            typeof value === "string" && value.trim() ? value.trim() : null;
+          if (field.required && !normalizedValue) {
+            throw new Error(`Setting ${field.label} is required.`);
+          }
+          if (
+            field.type === "select" &&
+            normalizedValue &&
+            !field.options.some((option) => option.value === normalizedValue)
+          ) {
+            throw new Error(`Setting ${field.label} must use one of the declared options.`);
+          }
+          this.store.setPluginSetting(pluginId, fieldId, normalizedValue);
+          break;
+        }
+        default: {
+          const neverField: never = field.type;
+          throw new Error(`Unsupported plugin setting type: ${neverField}`);
+        }
+      }
+      this.emitSnapshot();
+    } catch (error) {
+      this.broadcast({
+        type: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private activateDefaultThreadView(threadId: string): boolean {

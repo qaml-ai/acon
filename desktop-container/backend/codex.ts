@@ -31,7 +31,7 @@ function getCodexAuthState(): DesktopAuthState {
 export const codexProvider: DesktopProviderDefinition = {
   id: "codex",
   label: "Codex",
-  transport: "container-agentd",
+  transport: "acon-runtime-protocol",
   option: {
     id: "codex",
     label: "Codex",

@@ -9,7 +9,7 @@ import type {
 export interface DesktopProviderDefinition {
   id: DesktopProvider;
   label: string;
-  transport: "container-agentd";
+  transport: "acon-runtime-protocol";
   option: DesktopProviderOption;
   getDefaultModel(): DesktopModel;
   getAvailableModels(): DesktopModelOption[];

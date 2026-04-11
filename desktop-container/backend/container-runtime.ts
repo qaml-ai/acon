@@ -12,19 +12,26 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import type { DesktopRuntimeStatus } from "../../desktop/shared/protocol";
 import { logDesktop } from "../../desktop/backend/log";
 import { getHostClaudeCredentialsJson } from "../../desktop/backend/anthropic";
 import type { DesktopProviderDefinition } from "./provider-types";
+import type { HostMcpServerRegistration } from "./host-mcp";
+import { RuntimeHostBridge } from "./runtime-host-bridge";
 import {
-  HostMcpRegistry,
-  type HostMcpBridgeRequest,
-  type HostMcpServerRegistration,
-} from "./host-mcp";
+  RuntimeProtocolClient,
+  type RuntimeHostToRuntimeMethod,
+  type RuntimeHostToRuntimeParamsMap,
+  type RuntimeHostToRuntimeResultsMap,
+  type RuntimeNotificationEnvelope,
+  type RuntimeNotificationParamsMap,
+  type RuntimeProtocolEnvelope,
+  type RuntimeRequestEnvelope,
+  type RuntimeRuntimeToHostMethod,
+  type RuntimeRuntimeToHostResultsMap,
+} from "./runtime-protocol";
 
 const DEFAULT_RUNTIME_DIRECTORY = resolve(process.cwd(), "desktop-container/.local/runtime");
 const DEFAULT_WORKSPACE_DIRECTORY = resolve(process.cwd());
@@ -33,8 +40,6 @@ const DEFAULT_CONTAINER_IMAGE_ROOT = resolve(
   "desktop-container/container-images",
 );
 const CONTAINER_HOST_RPC_SOCKET_PATH = "/data/host-rpc/bridge.sock";
-const DEFAULT_HOST_RPC_FETCH_TIMEOUT_MS = 15_000;
-const DEFAULT_HOST_RPC_FETCH_MAX_BODY_BYTES = 256 * 1024;
 const DEFAULT_CONTAINER_COMMAND_TIMEOUT_MS = 60_000;
 const DEFAULT_CONTAINER_DAEMON_READY_TIMEOUT_MS = 30_000;
 const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 30_000;
@@ -206,18 +211,6 @@ interface CapturedCommandResult {
   stderr: string;
 }
 
-interface DaemonEnvelope {
-  id?: unknown;
-  method?: unknown;
-  params?: unknown;
-  type?: unknown;
-  result?: unknown;
-  error?: {
-    code?: string;
-    message?: string;
-  };
-}
-
 function isRecoverableRuntimeError(error: unknown): boolean {
   const message = formatError(error);
   return /failed to create process in container|xpc connection error|connection interrupted|container system start|container daemon exited|daemon is not ready|broken pipe|not running/i.test(
@@ -238,7 +231,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
   private readonly containerCommand = resolveContainerCommand();
   private readonly containerImageRoot = resolveContainerImageRoot();
   private readonly checkedImages = new Set<string>();
-  private readonly hostMcpRegistry = new HostMcpRegistry();
+  private readonly hostBridge = new RuntimeHostBridge();
   private readonly activePromptListeners = new Map<
     string,
     Set<ActivePromptListener>
@@ -282,11 +275,11 @@ export class ContainerRuntimeManager implements RuntimeManager {
   }
 
   registerHostMcpServer(registration: HostMcpServerRegistration): void {
-    this.hostMcpRegistry.registerServer(registration);
+    this.hostBridge.registerHostMcpServer(registration);
   }
 
   unregisterHostMcpServer(serverId: string): void {
-    this.hostMcpRegistry.unregisterServer(serverId);
+    this.hostBridge.unregisterHostMcpServer(serverId);
   }
 
   private async ensureContainerSystemStarted(): Promise<void> {
@@ -307,7 +300,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
   }
 
   dispose(): void {
-    this.hostMcpRegistry.dispose();
+    this.hostBridge.dispose();
     if (this.sharedContainerState) {
       const state = this.sharedContainerState;
       this.stopProviderDaemon(state);
@@ -911,9 +904,9 @@ export class ContainerRuntimeManager implements RuntimeManager {
               continue;
             }
 
-            let message: DaemonEnvelope;
+            let message: RuntimeProtocolEnvelope;
             try {
-              message = JSON.parse(line) as DaemonEnvelope;
+              message = JSON.parse(line) as RuntimeProtocolEnvelope;
             } catch {
               fail(new Error(`Container daemon returned invalid JSON: ${line}`));
               continue;
@@ -928,10 +921,13 @@ export class ContainerRuntimeManager implements RuntimeManager {
               continue;
             }
 
-            if (message.type === "request") {
-              void this.handleProviderDaemonRequest(state, message);
-              continue;
-            }
+              if (message.type === "request") {
+                void this.handleProviderDaemonRequest(
+                  state,
+                  message as RuntimeRequestEnvelope,
+                );
+                continue;
+              }
 
             if (message.type === "response") {
               const requestId =
@@ -953,10 +949,12 @@ export class ContainerRuntimeManager implements RuntimeManager {
               continue;
             }
 
-            if (message.type === "notification") {
-              this.handleProviderDaemonNotification(message);
-              continue;
-            }
+              if (message.type === "notification") {
+                this.handleProviderDaemonNotification(
+                  message as RuntimeNotificationEnvelope,
+                );
+                continue;
+              }
 
             logDesktop(
               "desktop-runtime",
@@ -1035,18 +1033,20 @@ export class ContainerRuntimeManager implements RuntimeManager {
 
   private async handleProviderDaemonRequest(
     state: ProviderContainerState,
-    message: DaemonEnvelope,
+    message: RuntimeRequestEnvelope,
   ): Promise<void> {
     const id = typeof message.id === "string" ? message.id : null;
     if (!id) {
       return;
     }
 
-    let response: DaemonEnvelope;
+    let response: RuntimeProtocolEnvelope;
     try {
       const result = await this.executeProviderDaemonMethod(
         state,
-        typeof message.method === "string" ? message.method : "",
+        typeof message.method === "string"
+          ? (message.method as RuntimeRuntimeToHostMethod)
+          : "",
         message.params,
       );
       response = {
@@ -1073,35 +1073,45 @@ export class ContainerRuntimeManager implements RuntimeManager {
     daemon.child.stdin.write(`${JSON.stringify(response)}\n`);
   }
 
-  private handleProviderDaemonNotification(message: DaemonEnvelope): void {
+  private handleProviderDaemonNotification(
+    message: RuntimeNotificationEnvelope,
+  ): void {
     const method = typeof message.method === "string" ? message.method : "";
     const params =
       message.params && typeof message.params === "object"
-        ? (message.params as Record<string, unknown>)
+        ? message.params
         : null;
     if (!params) {
       return;
     }
 
     if (method === "session.runtime_event") {
-      const sessionName =
-        typeof params.sessionName === "string" ? params.sessionName : "";
+      const { sessionName, event } =
+        params as RuntimeNotificationParamsMap["session.runtime_event"];
       for (const listener of this.activePromptListeners.get(sessionName) ?? []) {
-        listener.onRuntimeEvent?.(params.event);
+        listener.onRuntimeEvent?.(event);
       }
       return;
     }
 
     if (method === "session.delta") {
-      const sessionName =
-        typeof params.sessionName === "string" ? params.sessionName : "";
-      const delta = typeof params.delta === "string" ? params.delta : "";
+      const { sessionName, delta } =
+        params as RuntimeNotificationParamsMap["session.delta"];
       if (delta) {
         for (const listener of this.activePromptListeners.get(sessionName) ?? []) {
           listener.onDelta?.(delta);
         }
       }
     }
+  }
+
+  private createRuntimeProtocolClient(
+    state: ProviderContainerState,
+  ): RuntimeProtocolClient {
+    return new RuntimeProtocolClient({
+      request: async (method, params, options) =>
+        await this.callProviderDaemon(state, method, params, options),
+    });
   }
 
   private addActivePromptListener(
@@ -1127,266 +1137,61 @@ export class ContainerRuntimeManager implements RuntimeManager {
     }
   }
 
-  private async callProviderDaemon(
+  private async callProviderDaemon<TMethod extends RuntimeHostToRuntimeMethod>(
     state: ProviderContainerState,
-    method: string,
-    params: unknown,
+    method: TMethod,
+    params: RuntimeHostToRuntimeParamsMap[TMethod],
     options: {
       timeoutMs?: number;
     } = {},
-  ): Promise<unknown> {
+  ): Promise<RuntimeHostToRuntimeResultsMap[TMethod]> {
     const daemon = state.daemon;
     if (!daemon || daemon.child.stdin.destroyed) {
       throw new Error("Container daemon is not ready.");
     }
 
     const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-    return await new Promise<unknown>((resolvePromise, rejectPromise) => {
-      const timeoutMs =
-        typeof options.timeoutMs === "number"
-          ? options.timeoutMs
-          : DEFAULT_DAEMON_REQUEST_TIMEOUT_MS;
-      const timer =
-        timeoutMs > 0
-          ? setTimeout(() => {
-              daemon.pendingRequests.delete(requestId);
-              rejectPromise(formatTimeoutError(`container daemon ${method}`, timeoutMs));
-            }, timeoutMs)
-          : null;
-      daemon.pendingRequests.set(requestId, {
-        resolve: resolvePromise,
-        reject: rejectPromise,
-        timer,
-      });
-      daemon.child.stdin.write(
-        `${JSON.stringify({
-          type: "request",
-          id: requestId,
-          method,
-          params,
-        })}\n`,
-      );
-    });
+    return await new Promise<RuntimeHostToRuntimeResultsMap[TMethod]>(
+      (resolvePromise, rejectPromise) => {
+        const timeoutMs =
+          typeof options.timeoutMs === "number"
+            ? options.timeoutMs
+            : DEFAULT_DAEMON_REQUEST_TIMEOUT_MS;
+        const timer =
+          timeoutMs > 0
+            ? setTimeout(() => {
+                daemon.pendingRequests.delete(requestId);
+                rejectPromise(formatTimeoutError(`container daemon ${method}`, timeoutMs));
+              }, timeoutMs)
+            : null;
+        daemon.pendingRequests.set(requestId, {
+          resolve: (value) => {
+            resolvePromise(value as RuntimeHostToRuntimeResultsMap[TMethod]);
+          },
+          reject: rejectPromise,
+          timer,
+        });
+        daemon.child.stdin.write(
+          `${JSON.stringify({
+            type: "request",
+            id: requestId,
+            method,
+            params,
+          } satisfies RuntimeProtocolEnvelope)}\n`,
+        );
+      },
+    );
   }
 
   private async executeProviderDaemonMethod(
     state: ProviderContainerState,
-    method: string,
+    method: RuntimeRuntimeToHostMethod | "",
     params: unknown,
-  ): Promise<unknown> {
-    switch (method) {
-      case "ping": {
-        return {
-          ok: true,
-          containerName: state.containerName,
-          now: new Date().toISOString(),
-          pid: process.pid,
-          params: params ?? null,
-        };
-      }
-      case "fetch":
-        return await this.executeProviderBridgeFetch(params);
-      case "mcp.request":
-        return await this.executeProviderBridgeMcpRequest(params);
-      case "mcp.close":
-        return await this.executeProviderBridgeMcpClose(params);
-      case "mcp.list_servers":
-        return this.hostMcpRegistry.listServers();
-      default:
-        throw new Error(`Unknown host RPC method: ${method || "<missing>"}.`);
-    }
-  }
-
-  private async executeProviderBridgeMcpRequest(
-    params: unknown,
-  ): Promise<unknown> {
-    if (!params || typeof params !== "object") {
-      throw new Error("mcp.request params must be an object.");
-    }
-
-    const record = params as Record<string, unknown>;
-    if (!record.message || typeof record.message !== "object") {
-      throw new Error("mcp.request params.message must be an object.");
-    }
-
-    return await this.hostMcpRegistry.dispatchRequest({
-      serverId:
-        typeof record.serverId === "string" ? record.serverId : "",
-      sessionId:
-        typeof record.sessionId === "string" ? record.sessionId : "",
-      message: record.message as HostMcpBridgeRequest["message"],
+  ): Promise<RuntimeRuntimeToHostResultsMap[RuntimeRuntimeToHostMethod] | unknown> {
+    return await this.hostBridge.execute(method, params, {
+      runtimeLabel: state.containerName,
+      pid: process.pid,
     });
-  }
-
-  private async executeProviderBridgeMcpClose(params: unknown): Promise<unknown> {
-    if (!params || typeof params !== "object") {
-      throw new Error("mcp.close params must be an object.");
-    }
-
-    const record = params as Record<string, unknown>;
-    await this.hostMcpRegistry.closeSession(
-      typeof record.serverId === "string" ? record.serverId : "",
-      typeof record.sessionId === "string" ? record.sessionId : "",
-    );
-    return { ok: true };
-  }
-
-  private async executeProviderBridgeFetch(params: unknown): Promise<unknown> {
-    if (!params || typeof params !== "object") {
-      throw new Error("fetch params must be an object.");
-    }
-
-    const record = params as Record<string, unknown>;
-    const url = typeof record.url === "string" ? record.url.trim() : "";
-    if (!url) {
-      throw new Error("fetch params.url must be a non-empty string.");
-    }
-
-    const method =
-      typeof record.method === "string" && record.method.trim()
-        ? record.method.trim().toUpperCase()
-        : "GET";
-    const timeoutMs =
-      typeof record.timeoutMs === "number" && Number.isFinite(record.timeoutMs)
-        ? Math.max(1, Math.trunc(record.timeoutMs))
-        : DEFAULT_HOST_RPC_FETCH_TIMEOUT_MS;
-    const maxBodyBytes =
-      typeof record.maxBodyBytes === "number" && Number.isFinite(record.maxBodyBytes)
-        ? Math.max(1, Math.trunc(record.maxBodyBytes))
-        : DEFAULT_HOST_RPC_FETCH_MAX_BODY_BYTES;
-    const body = typeof record.body === "string" ? record.body : undefined;
-    const targetUrl = new URL(url);
-    if (targetUrl.protocol !== "http:" && targetUrl.protocol !== "https:") {
-      throw new Error(
-        `fetch only supports http/https URLs. Received ${targetUrl.protocol || "<missing>"}.`,
-      );
-    }
-
-    const headers: Record<string, string> = {};
-    if (record.headers && typeof record.headers === "object") {
-      for (const [key, value] of Object.entries(record.headers as Record<string, unknown>)) {
-        if (typeof value === "string") {
-          headers[key] = value;
-        }
-      }
-    }
-    if (body !== undefined && !Object.keys(headers).some((key) => key.toLowerCase() === "content-length")) {
-      headers["content-length"] = Buffer.byteLength(body).toString();
-    }
-
-    const response = await new Promise<{
-      ok: boolean;
-      status: number;
-      statusText: string;
-      url: string;
-      headers: Record<string, string>;
-      body: string;
-      truncated: boolean;
-    }>((resolvePromise, rejectPromise) => {
-      const requestFn = targetUrl.protocol === "https:" ? httpsRequest : httpRequest;
-      let abortedForTruncation = false;
-      const request = requestFn(
-        targetUrl,
-        {
-          method,
-          headers,
-        },
-        (incomingResponse) => {
-          const chunks: Buffer[] = [];
-          let totalBytes = 0;
-          let truncated = false;
-          let settled = false;
-
-          const buildResponse = () => ({
-            ok:
-              typeof incomingResponse.statusCode === "number" &&
-              incomingResponse.statusCode >= 200 &&
-              incomingResponse.statusCode < 300,
-            status: incomingResponse.statusCode ?? 0,
-            statusText: incomingResponse.statusMessage ?? "",
-            url: targetUrl.toString(),
-            headers: Object.fromEntries(
-              Object.entries(incomingResponse.headers).flatMap(([key, value]) => {
-                if (Array.isArray(value)) {
-                  return [[key, value.join(", ")]];
-                }
-                return typeof value === "string" ? [[key, value]] : [];
-              }),
-            ),
-            body: Buffer.concat(chunks).toString("utf8"),
-            truncated,
-          });
-
-          const finish = (error?: Error | null) => {
-            if (settled) {
-              return;
-            }
-            settled = true;
-            if (error) {
-              rejectPromise(error);
-              return;
-            }
-            resolvePromise(buildResponse());
-          };
-
-          incomingResponse.on("data", (chunk: string | Buffer) => {
-            const chunkBuffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-            if (totalBytes >= maxBodyBytes) {
-              truncated = true;
-              abortedForTruncation = true;
-              incomingResponse.destroy();
-              request.destroy();
-              finish(null);
-              return;
-            }
-
-            if (totalBytes + chunkBuffer.length > maxBodyBytes) {
-              const remainingBytes = maxBodyBytes - totalBytes;
-              if (remainingBytes > 0) {
-                chunks.push(chunkBuffer.subarray(0, remainingBytes));
-                totalBytes += remainingBytes;
-              }
-              truncated = true;
-              abortedForTruncation = true;
-              incomingResponse.destroy();
-              request.destroy();
-              finish(null);
-              return;
-            }
-
-            chunks.push(chunkBuffer);
-            totalBytes += chunkBuffer.length;
-          });
-
-          incomingResponse.on("end", () => {
-            finish(null);
-          });
-
-          incomingResponse.on("error", (error) => {
-            if (truncated) {
-              return;
-            }
-            finish(error instanceof Error ? error : new Error(String(error)));
-          });
-        },
-      );
-
-      request.setTimeout(timeoutMs, () => {
-        request.destroy(new Error(`Host RPC request timed out after ${timeoutMs}ms.`));
-      });
-      request.on("error", (error) => {
-        if (abortedForTruncation) {
-          return;
-        }
-        rejectPromise(error instanceof Error ? error : new Error(String(error)));
-      });
-      if (body !== undefined) {
-        request.write(body);
-      }
-      request.end();
-    });
-
-    return response;
   }
 
   private async ensurePromptSession(
@@ -1415,10 +1220,10 @@ export class ContainerRuntimeManager implements RuntimeManager {
     await this.ensureRuntime(provider);
     await this.ensureContainerSystemStarted();
     const state = this.getSharedContainerState();
-    const sessionName = `${provider.id}-${threadId}`;
-    await this.callProviderDaemon(state, "session.cancel", {
+    const client = this.createRuntimeProtocolClient(state);
+    await client.cancelSession({
       provider: provider.id,
-      sessionName,
+      sessionName: `${provider.id}-${threadId}`,
       model,
     }, {
       timeoutMs: parseTimeoutMs(
@@ -1436,13 +1241,14 @@ export class ContainerRuntimeManager implements RuntimeManager {
   ): Promise<void> {
     await this.ensureContainerSystemStarted();
     const state = this.getSharedContainerState();
+    const client = this.createRuntimeProtocolClient(state);
     const sessionName = `${provider.id}-${threadId}`;
     const sessionKey = `${model}:${sessionId?.trim() || ""}`;
     if (state.ensuredSessions.get(sessionName) === sessionKey) {
       return;
     }
 
-    await this.callProviderDaemon(state, "session.ensure", {
+    await client.ensureSession({
       provider: provider.id,
       sessionName,
       model,
@@ -1539,6 +1345,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
     await this.ensureContainerSystemStarted();
     mkdirSync(this.getThreadStateDirectory(threadId), { recursive: true });
     const state = this.getSharedContainerState();
+    const client = this.createRuntimeProtocolClient(state);
     const sessionName = `${provider.id}-${threadId}`;
     const promptListener =
       onDelta || onRuntimeEvent
@@ -1552,7 +1359,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
     }
 
     try {
-      const result = await this.callProviderDaemon(state, "session.prompt", {
+      const result = await client.promptSession({
         provider: provider.id,
         sessionName,
         content,
