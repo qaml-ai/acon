@@ -11,6 +11,7 @@ export interface CamelAIHarnessAdapterInfo {
 const HARNESS_ADAPTERS: CamelAIHarnessAdapterInfo[] = [
   { id: "codex", label: "Codex" },
   { id: "claude-code", label: "Claude Code" },
+  { id: "pi", label: "PI" },
   { id: "opencode", label: "OpenCode" },
 ];
 
@@ -26,5 +27,9 @@ export function getHarnessAdapterForProvider(
       return HARNESS_ADAPTERS[0];
     case "claude":
       return HARNESS_ADAPTERS[1];
+    case "pi":
+      return HARNESS_ADAPTERS[2];
+    case "opencode":
+      return HARNESS_ADAPTERS[3];
   }
 }

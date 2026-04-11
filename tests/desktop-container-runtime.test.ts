@@ -4,9 +4,13 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { ContainerRuntimeManager } from "../desktop-container/backend/container-runtime";
-import { requireDesktopProvider } from "../desktop-container/backend/providers";
+import type { DesktopProvider } from "../desktop/shared/protocol";
+import {
+  getSupportedDesktopProviders,
+  requireDesktopProvider,
+} from "../desktop-container/backend/providers";
 
-function getRunArgs(providerId: "codex" | "claude"): string[] {
+function getRunArgs(providerId: DesktopProvider): string[] {
   const runtime = new ContainerRuntimeManager() as ContainerRuntimeManager & {
     buildProviderContainerRunArgs: (
       provider: ReturnType<typeof requireDesktopProvider>,
@@ -196,6 +200,23 @@ describe("ContainerRuntimeManager", () => {
     }
   });
 
+  it("installs PI and OpenCode guest wrappers in the shared image definition", () => {
+    const containerfileSource = readFileSync(
+      resolve(
+        process.cwd(),
+        "desktop-container/container-images/acpx-shared/Containerfile",
+      ),
+      "utf8",
+    );
+
+    expect(containerfileSource).toContain("@mariozechner/pi-coding-agent");
+    expect(containerfileSource).toContain("pi-acp");
+    expect(containerfileSource).toContain("opencode-ai");
+    expect(containerfileSource).toContain("/usr/local/bin/pi");
+    expect(containerfileSource).toContain("/usr/local/bin/pi-acp");
+    expect(containerfileSource).toContain("/usr/local/bin/opencode");
+  });
+
   it("preinstalls curated Python packages in the shared image definition", () => {
     const containerfileSource = readFileSync(
       resolve(
@@ -351,6 +372,37 @@ describe("ContainerRuntimeManager", () => {
     expect(args.at(-3)).toBe("acon-desktop-acpx:0.1");
     expect(args.at(-2)).toBe("node");
     expect(args.at(-1)).toBe("/usr/local/lib/acon/acon-agentd.mjs");
+  });
+
+  it("forwards provider API keys into the shared container", () => {
+    const previousOpenRouterApiKey = process.env.OPENROUTER_API_KEY;
+    const previousOpenCodeApiKey = process.env.OPENCODE_API_KEY;
+    process.env.OPENROUTER_API_KEY = "or-test-key";
+    process.env.OPENCODE_API_KEY = "oc-test-key";
+
+    try {
+      const args = getRunArgs("pi");
+
+      expect(args).toContain("OPENROUTER_API_KEY=or-test-key");
+      expect(args).toContain("OPENCODE_API_KEY=oc-test-key");
+    } finally {
+      if (previousOpenRouterApiKey === undefined) {
+        delete process.env.OPENROUTER_API_KEY;
+      } else {
+        process.env.OPENROUTER_API_KEY = previousOpenRouterApiKey;
+      }
+      if (previousOpenCodeApiKey === undefined) {
+        delete process.env.OPENCODE_API_KEY;
+      } else {
+        process.env.OPENCODE_API_KEY = previousOpenCodeApiKey;
+      }
+    }
+  });
+
+  it("registers PI and OpenCode as supported providers", () => {
+    expect(getSupportedDesktopProviders().map((provider) => provider.id)).toEqual(
+      expect.arrayContaining(["claude", "codex", "pi", "opencode"]),
+    );
   });
 
   it("creates a persistent empty managed workspace under app data", () => {

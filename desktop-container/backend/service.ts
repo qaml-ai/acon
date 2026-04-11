@@ -92,7 +92,7 @@ export interface DesktopServiceOptions {
 }
 
 function extractProviderSessionIdFromRuntimeEvent(
-  _providerId: "claude" | "codex",
+  _providerId: "claude" | "codex" | "pi" | "opencode",
   event: unknown,
 ): string | null {
   if (!event || typeof event !== "object") {

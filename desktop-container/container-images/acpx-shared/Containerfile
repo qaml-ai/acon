@@ -55,7 +55,10 @@ RUN chmod +x \
     /usr/local/lib/acon/acon-mcp.mjs \
   && printf '%s\n' '#!/bin/sh' 'exec node /opt/acon/npm-global/node_modules/@anthropic-ai/claude-code/cli.js "$@"' > /usr/local/bin/claude \
   && printf '%s\n' '#!/bin/sh' 'exec node /opt/acon/npm-global/node_modules/@openai/codex/bin/codex.js "$@"' > /usr/local/bin/codex \
-  && chmod +x /usr/local/bin/claude /usr/local/bin/codex \
+  && printf '%s\n' '#!/bin/sh' 'exec node /opt/acon/npm-global/node_modules/@mariozechner/pi-coding-agent/dist/cli.js "$@"' > /usr/local/bin/pi \
+  && printf '%s\n' '#!/bin/sh' 'exec node /opt/acon/npm-global/node_modules/pi-acp/dist/index.js "$@"' > /usr/local/bin/pi-acp \
+  && printf '%s\n' '#!/bin/sh' 'exec node /opt/acon/npm-global/node_modules/opencode-ai/bin/opencode "$@"' > /usr/local/bin/opencode \
+  && chmod +x /usr/local/bin/claude /usr/local/bin/codex /usr/local/bin/pi /usr/local/bin/pi-acp /usr/local/bin/opencode \
   && ln -sf /usr/local/lib/acon/acon-agentd.mjs /usr/local/bin/acon-agentd \
   && ln -sf /usr/local/lib/acon/acon-mcp.mjs /usr/local/bin/acon-mcp
 
