@@ -191,7 +191,6 @@ export class DesktopService {
       .then(() => {
         this.reconcileDeclaredPluginAgentAssets();
         this.ensureDefaultTab();
-        this.ensureDefaultThreadPanels();
         this.emitSnapshot();
       })
       .catch((error) => {

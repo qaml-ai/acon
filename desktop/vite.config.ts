@@ -2,7 +2,8 @@ import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  base: command === 'build' ? './' : '/',
   root: resolve(__dirname, 'renderer'),
   publicDir: resolve(__dirname, '../public'),
   plugins: [react()],
@@ -23,4 +24,4 @@ export default defineConfig({
   css: {
     postcss: resolve(__dirname, '..'),
   },
-});
+}));

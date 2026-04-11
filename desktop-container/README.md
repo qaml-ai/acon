@@ -17,7 +17,7 @@ Current scope:
 
 Current limits:
 
-- local bundle builds exist, but signed/notarized release packaging is still not wired
+- release packaging supports Developer ID signing plus Apple notarization for direct macOS distribution, but TestFlight or Mac App Store packaging is not wired
 - the container workspace at `/workspace` is an app-managed persistent directory under desktop app data, not a live mount of the host checkout
 - auth is seeded from host `~/.codex`, host `~/.claude` / `~/.claude.json`, or `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`
 - provider startup always writes a small built-in global instruction file into container `~/.codex/AGENTS.md` or `~/.claude/CLAUDE.md` with `acon` context, `acon-mcp` guidance, and guest JavaScript `@acon/host-rpc` usage
@@ -31,12 +31,17 @@ Current limits:
 bun install
 bun run prepare:container
 bun run build:bundle
+bun run build:bundle:release
+bun run build:dmg
+bun run build:dmg:notarized
+bun run build:release:notarized
 bun run dev
 bun run check
 bun run backend
 bun run probe:claude
 bun run probe:codex
 bun run probe
+bun run setup:notary
 bun run test:integration
 bun run start
 ```
@@ -48,6 +53,11 @@ Notes:
 - The shared agent image also preinstalls curated Python libraries from `desktop-container/container-images/acpx-shared/python-requirements.txt` plus `desktop-container/container-images/acpx-shared/python-connectivity-requirements.txt` for Office documents, PDF processing, AI/ML, data analysis, DuckDB/Postgres/Redshift/BigQuery/Snowflake/Databricks/SQL Server connectivity, DynamoDB and MongoDB document-store access, Redis, Neo4j, OpenSearch, ClickHouse, Trino, DuckDB CLI access, SQLAlchemy-based database workflows, parsing, image/media work, OCR, and LibreOffice UNO workflows.
 - `build` only builds the renderer.
 - `build:bundle` assembles the packaged desktop resources, bundles the backend entrypoint, stages builtin plugin manifests for packaged discovery, and produces an unpacked macOS `.app` bundle in `dist/bundle/`.
+- `build:bundle:release` builds direct-distribution macOS release artifacts in `dist/bundle/`. It expects a `Developer ID Application` certificate in the local keychain and notarization credentials in `APPLE_KEYCHAIN_PROFILE`, or `APPLE_API_KEY_PATH` (or inline `APPLE_API_KEY`, which also needs `APPLE_API_KEY_ID`) plus optional `APPLE_API_ISSUER`, or `APPLE_ID` plus `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID`.
+- `setup:notary` stores a reusable `notarytool` keychain profile. Set `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, and optionally `APPLE_API_KEY_PATH` first. If `APPLE_API_KEY_PATH` is omitted, the script looks for `~/Downloads/AuthKey_<APPLE_API_KEY_ID>.p8`. The default keychain profile name is `super-camel-notary`.
+- `build:dmg` builds the signed drag-install disk image in `dist/bundle/`.
+- `build:dmg:notarized` builds the same `.dmg` and notarizes it using `APPLE_KEYCHAIN_PROFILE` or the default `super-camel-notary` profile.
+- `build:release:notarized` builds notarized `dmg` and `zip` release artifacts using the same keychain profile behavior.
 - `dev` is the main command. It starts the renderer plus Electron and picks a free localhost port automatically.
 - `dev` runs container-asset preparation by default. Set `DESKTOP_PREPARE_CONTAINER_ASSETS=0` to skip it.
 - `backend` is a smoke check for backend startup, not a long-lived backend server.
@@ -110,6 +120,13 @@ export DESKTOP_CONTAINER_CLAUDE_IMAGE=acon-desktop-claude:0.1
 export DESKTOP_CONTAINER_CODEX_IMAGE=acon-desktop-codex:0.1
 export DESKTOP_CONTAINER_BIN_PATH=/absolute/path/to/container
 export DESKTOP_PREPARE_CONTAINER_ASSETS=0
+export APPLE_KEYCHAIN_PROFILE=acon-notary
+export APPLE_API_KEY_PATH=/absolute/path/to/AuthKey_ABCDEFGHIJ.p8
+export APPLE_API_KEY_ID=ABCDEFGHIJ
+export APPLE_API_ISSUER=00000000-0000-0000-0000-000000000000
+export APPLE_ID=developer@example.com
+export APPLE_APP_SPECIFIC_PASSWORD=xxxx-xxxx-xxxx-xxxx
+export APPLE_TEAM_ID=ABCDEFGHIJ
 ```
 
 `DESKTOP_CONTAINER_ACPX_IMAGE` is still accepted as a legacy alias.
