@@ -9,6 +9,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { FilePreviewContent } from './file-preview-content';
+import type { PreviewTarget } from '@/types';
+import { useResolvedPreviewUrl } from './use-resolved-preview-url';
 
 export interface FilePreviewPopoverProps {
   open: boolean;
@@ -16,6 +18,7 @@ export interface FilePreviewPopoverProps {
   filename: string;
   previewUrl: string;
   contentType?: string;
+  previewTarget?: PreviewTarget;
 }
 
 export function FilePreviewPopover({
@@ -24,7 +27,10 @@ export function FilePreviewPopover({
   filename,
   previewUrl,
   contentType,
+  previewTarget,
 }: FilePreviewPopoverProps) {
+  const resolvedPreviewUrl = useResolvedPreviewUrl(previewUrl, previewTarget);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -36,7 +42,7 @@ export function FilePreviewPopover({
           <div className="flex items-center gap-1">
             <Button variant="ghost" size="icon-sm" asChild>
               <a
-                href={previewUrl}
+                href={resolvedPreviewUrl ?? previewUrl}
                 download={filename}
                 aria-label={`Download ${filename}`}
               >
@@ -55,6 +61,7 @@ export function FilePreviewPopover({
             filename={filename}
             previewUrl={previewUrl}
             contentType={contentType}
+            previewTarget={previewTarget}
             layout="dialog"
           />
         </div>

@@ -7,6 +7,7 @@ import { FilePreviewPopover } from './file-preview-popover';
 import type { PreviewTarget } from '@/types';
 import { useChatPreviewContext } from '@/components/chat-preview/preview-context';
 import { FileCard } from '@/components/file-card';
+import { useResolvedPreviewUrl } from './use-resolved-preview-url';
 
 export interface FilePreviewChipProps {
   filename: string;
@@ -30,6 +31,7 @@ export function FilePreviewChip({
   const previewContext = useChatPreviewContext();
   const showImage = isImageFile(filename, contentType) && !imageError;
   const shouldUseChatPanel = Boolean(previewContext && previewTarget);
+  const resolvedPreviewUrl = useResolvedPreviewUrl(previewUrl, previewTarget);
 
   const handleOpen = () => {
     if (previewContext && previewTarget) {
@@ -39,7 +41,7 @@ export function FilePreviewChip({
     setPreviewOpen(true);
   };
 
-  if (showImage) {
+  if (showImage && resolvedPreviewUrl) {
     return (
       <>
         <button
@@ -52,7 +54,7 @@ export function FilePreviewChip({
           aria-label={`Open preview for ${filename}`}
         >
           <img
-            src={previewUrl}
+            src={resolvedPreviewUrl}
             alt={filename}
             loading="lazy"
             className="h-full w-full object-cover"
@@ -66,6 +68,7 @@ export function FilePreviewChip({
             filename={filename}
             previewUrl={previewUrl}
             contentType={contentType}
+            previewTarget={previewTarget}
           />
         )}
       </>
@@ -88,6 +91,7 @@ export function FilePreviewChip({
           filename={filename}
           previewUrl={previewUrl}
           contentType={contentType}
+          previewTarget={previewTarget}
         />
       )}
     </>

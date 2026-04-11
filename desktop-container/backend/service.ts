@@ -635,6 +635,10 @@ export class DesktopService {
     return snapshot;
   }
 
+  resolvePreviewTargetSource(target: DesktopPreviewTarget): string | null {
+    return this.resolvePreviewSource(target);
+  }
+
   private resolveThreadRuntimeStates(
     threads: DesktopThread[],
   ): Record<string, DesktopThreadRuntimeState> {

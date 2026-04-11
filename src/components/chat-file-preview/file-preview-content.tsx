@@ -10,6 +10,8 @@ import { MermaidPreview } from './mermaid-preview';
 import { NotebookPreview } from './notebook-preview';
 import type { NotebookFile } from './notebook-preview';
 import { SpreadsheetPreview } from './spreadsheet-preview';
+import type { PreviewTarget } from '@/types';
+import { useResolvedPreviewUrl } from './use-resolved-preview-url';
 
 const MAX_TEXT_LINES = 500;
 const MAX_SPREADSHEET_LINES = 500;
@@ -93,6 +95,7 @@ export interface FilePreviewContentProps {
   filename: string;
   previewUrl: string;
   contentType?: string;
+  previewTarget?: PreviewTarget;
   layout?: PreviewLayout;
   notebookViewMode?: 'report' | 'notebook';
   markdownViewMode?: 'rendered' | 'source';
@@ -108,11 +111,13 @@ function FilePreviewContentComponent({
   filename,
   previewUrl,
   contentType,
+  previewTarget,
   layout = 'dialog',
   notebookViewMode,
   markdownViewMode,
   onNotebookStateChange,
 }: FilePreviewContentProps) {
+  const resolvedPreviewUrl = useResolvedPreviewUrl(previewUrl, previewTarget);
   const previewType = useMemo(
     () => getPreviewType(filename, contentType),
     [filename, contentType]
@@ -151,7 +156,7 @@ function FilePreviewContentComponent({
       previewType === 'notebook' ||
       previewType === 'markdown' ||
       previewType === 'mermaid';
-    if (!shouldFetchText) return;
+    if (!shouldFetchText || !resolvedPreviewUrl) return;
 
     const controller = new AbortController();
     let cancelled = false;
@@ -164,7 +169,7 @@ function FilePreviewContentComponent({
       notebookStateChangeRef.current?.({ notebook: null, status: 'loading' });
     }
 
-    fetch(previewUrl, { signal: controller.signal })
+    fetch(resolvedPreviewUrl, { signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) {
           const error = new Error('Failed to load preview') as Error & { status?: number };
@@ -232,7 +237,7 @@ function FilePreviewContentComponent({
       cancelled = true;
       controller.abort();
     };
-  }, [previewType, previewUrl]);
+  }, [previewType, resolvedPreviewUrl, filename]);
 
   useEffect(() => {
     if (previewType === 'pdf' || previewType === 'audio' || previewType === 'video') {
@@ -242,13 +247,17 @@ function FilePreviewContentComponent({
       setMediaLoading(false);
       setMediaError(false);
     }
-  }, [previewType, previewUrl]);
+  }, [previewType, resolvedPreviewUrl]);
 
   return (
     <div className={cn('min-w-0 overflow-hidden', layout === 'panel' && 'h-full')}>
       {previewType === 'image' && (
         <div className={cn(layout === 'panel' && 'p-3')}>
-          <ImagePreview src={previewUrl} alt={filename} layout={layout} />
+          {resolvedPreviewUrl ? (
+            <ImagePreview src={resolvedPreviewUrl} alt={filename} layout={layout} />
+          ) : (
+            <p className="text-sm text-muted-foreground">Failed to load image.</p>
+          )}
         </div>
       )}
 
@@ -265,7 +274,7 @@ function FilePreviewContentComponent({
             </div>
           )}
           <iframe
-            src={previewUrl}
+            src={resolvedPreviewUrl ?? undefined}
             title={filename}
             className={cn(
               'w-full rounded-md border',
@@ -298,7 +307,7 @@ function FilePreviewContentComponent({
               setMediaError(true);
             }}
           >
-            <source src={previewUrl} />
+            <source src={resolvedPreviewUrl ?? undefined} />
             Your browser does not support the audio element.
           </audio>
         </div>
@@ -325,7 +334,7 @@ function FilePreviewContentComponent({
               setMediaError(true);
             }}
           >
-            <source src={previewUrl} />
+            <source src={resolvedPreviewUrl ?? undefined} />
             Your browser does not support the video tag.
           </video>
         </div>
