@@ -256,6 +256,7 @@ function createSnapshot(): DesktopSnapshot {
         status: null,
         lane: null,
         archivedAt: null,
+        hasUnreadUpdate: false,
       },
     ],
     messagesByThread: {
@@ -765,6 +766,37 @@ describe("desktop container renderer streaming", () => {
     await renderAppWithShell(snapshot);
 
     expect(screen.getAllByLabelText("Chat running")).toHaveLength(2);
+  });
+
+  it("shows unread review indicators in the sidebar and kanban view", async () => {
+    const snapshot = createSnapshot();
+    snapshot.threads[0] = {
+      ...snapshot.threads[0],
+      hasUnreadUpdate: true,
+      status: "ready_for_review",
+      lane: "ready_for_review",
+    };
+    snapshot.threadRuntimeById["thread-1"] = {
+      ...snapshot.threadRuntimeById["thread-1"],
+      hasMessages: true,
+    };
+    snapshot.tabs.push({
+      id: "tab-kanban",
+      kind: "workspace",
+      threadId: null,
+      viewId: "plugin:kanban:kanban.board",
+      title: "Kanban",
+      subtitle: null,
+      icon: "KanbanSquare",
+      closable: true,
+    });
+    snapshot.activeTabId = "tab-kanban";
+    snapshot.activeViewId = "plugin:kanban:kanban.board";
+
+    await renderAppWithShell(snapshot);
+
+    expect(screen.getByLabelText("New update to review")).toBeInTheDocument();
+    expect(screen.getByText("New review")).toBeInTheDocument();
   });
 
   it("switches back to the default thread view when a chat thread is selected", async () => {

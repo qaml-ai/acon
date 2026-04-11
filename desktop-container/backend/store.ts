@@ -133,6 +133,7 @@ function normalizeThread(value: unknown, defaultGroupId: string): DesktopThread 
     status?: unknown;
     lane?: unknown;
     archivedAt?: unknown;
+    hasUnreadUpdate?: unknown;
   };
   const id = normalizePersistedId(raw.id);
   if (!id) {
@@ -182,6 +183,7 @@ function normalizeThread(value: unknown, defaultGroupId: string): DesktopThread 
     status,
     lane,
     archivedAt,
+    hasUnreadUpdate: raw.hasUnreadUpdate === true,
   };
 }
 
@@ -1157,6 +1159,7 @@ export class DesktopStore {
       status?: string | null;
       lane?: string | null;
       archivedAt?: number | null;
+      hasUnreadUpdate?: boolean;
     },
   ): DesktopThread {
     const thread = this.findThread(threadId);
@@ -1202,6 +1205,10 @@ export class DesktopStore {
           : null;
     }
 
+    if ('hasUnreadUpdate' in update) {
+      thread.hasUnreadUpdate = update.hasUnreadUpdate === true;
+    }
+
     thread.updatedAt = now();
     if (this.state.activeThreadId === thread.id) {
       this.state.activeGroupId = thread.groupId;
@@ -1211,6 +1218,17 @@ export class DesktopStore {
     }
     this.touchThreadGroup(thread.groupId, thread.updatedAt);
     this.sortThreads();
+    this.persist();
+    return cloneThread(thread);
+  }
+
+  setThreadUnreadUpdate(threadId: string, hasUnreadUpdate: boolean): DesktopThread {
+    const thread = this.findThread(threadId);
+    if (!thread) {
+      throw new Error(`Thread ${threadId} does not exist`);
+    }
+
+    thread.hasUnreadUpdate = hasUnreadUpdate;
     this.persist();
     return cloneThread(thread);
   }
@@ -1238,6 +1256,7 @@ export class DesktopStore {
     status?: string | null;
     lane?: string | null;
     archivedAt?: number | null;
+    hasUnreadUpdate?: boolean;
   }): DesktopThread {
     const normalizedProvider = requireDesktopProvider(options.provider ?? this.state.provider).id;
     const resolvedGroupId = this.findThreadGroup(options.groupId)?.id;
@@ -1265,6 +1284,7 @@ export class DesktopStore {
         typeof options.archivedAt === 'number' && Number.isFinite(options.archivedAt)
           ? options.archivedAt
           : null,
+      hasUnreadUpdate: options.hasUnreadUpdate === true,
     };
     this.state.threads.unshift(thread);
     this.state.messagesByThread[thread.id] = [];
