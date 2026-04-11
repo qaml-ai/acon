@@ -6,10 +6,12 @@ import { DesktopStore } from "./store";
 import { logDesktop } from "../../desktop/backend/log";
 import type {
   DesktopClientEvent,
+  DesktopCustomOpenAiCompatibleProviderConfig,
   DesktopPreviewItem,
   DesktopPreviewTarget,
   DesktopPermissionRequest,
   DesktopRuntimeStatus,
+  DesktopSaveCustomOpenAiCompatibleProviderConfigInput,
   DesktopServerEvent,
   DesktopSnapshot,
   DesktopThread,
@@ -74,6 +76,12 @@ import {
   reconcilePluginAgentAssets,
 } from "./plugin-agent-assets";
 import { getPersistedHostSecret, setPersistedHostSecret } from "./host-secrets";
+import {
+  clearCustomOpenAiCompatibleProviderConfig,
+  getCustomOpenAiCompatibleProcessEnv,
+  readCustomOpenAiCompatibleProviderConfig,
+  saveCustomOpenAiCompatibleProviderConfig,
+} from "./custom-openai-compatible-provider";
 
 type Listener = (event: DesktopServerEvent) => void;
 type ThreadEventListener = CamelAIThreadEventHandler;
@@ -507,6 +515,33 @@ export class DesktopService {
       dataDirectory: this.dataDirectory,
       workspaceDirectory: this.runtimeManager.getWorkspaceDirectory(),
     });
+  }
+
+  getCustomOpenAiCompatibleProviderConfig():
+    | DesktopCustomOpenAiCompatibleProviderConfig
+    | null {
+    return readCustomOpenAiCompatibleProviderConfig({
+      dataDirectory: this.dataDirectory,
+    });
+  }
+
+  saveCustomOpenAiCompatibleProviderConfig(
+    input: DesktopSaveCustomOpenAiCompatibleProviderConfigInput,
+  ): DesktopCustomOpenAiCompatibleProviderConfig {
+    const saved = saveCustomOpenAiCompatibleProviderConfig(input, {
+      dataDirectory: this.dataDirectory,
+      runtimeDirectory: this.runtimeManager.getRuntimeDirectory(),
+    });
+    this.emitSnapshot();
+    return saved;
+  }
+
+  clearCustomOpenAiCompatibleProviderConfig(): void {
+    clearCustomOpenAiCompatibleProviderConfig({
+      dataDirectory: this.dataDirectory,
+      runtimeDirectory: this.runtimeManager.getRuntimeDirectory(),
+    });
+    this.emitSnapshot();
   }
 
   listInstalledPlugins() {
@@ -1777,7 +1812,7 @@ export class DesktopService {
     const provider = requireDesktopProvider(this.store.getThreadProvider(threadId));
     const model = this.getCurrentModel(provider);
     const providerSessionId = this.store.getProviderSessionId(threadId, provider.id);
-    const processEnv = this.extensionHost.getResolvedProcessEnv(provider.id);
+    const processEnv = this.getResolvedProviderProcessEnv(provider.id);
 
     try {
       await this.runtimeManager.streamPrompt({
@@ -1845,7 +1880,7 @@ export class DesktopService {
       threadId,
       provider.id,
     );
-    const processEnv = this.extensionHost.getResolvedProcessEnv(provider.id);
+    const processEnv = this.getResolvedProviderProcessEnv(provider.id);
 
     try {
       const assistant = this.store.appendMessage(
@@ -2010,5 +2045,18 @@ export class DesktopService {
         this.appendErrorMessage(threadId, error);
       }
     }
+  }
+
+  private getResolvedProviderProcessEnv(
+    providerId: DesktopSnapshot["provider"],
+  ) {
+    return {
+      ...this.extensionHost.getResolvedProcessEnv(providerId),
+      ...(providerId === "pi" || providerId === "opencode"
+        ? getCustomOpenAiCompatibleProcessEnv(providerId, {
+            dataDirectory: this.dataDirectory,
+          })
+        : {}),
+    };
   }
 }

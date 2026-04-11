@@ -21,7 +21,7 @@ Current limits:
 - the container workspace at `/workspace` is an app-managed persistent directory under desktop app data, not a live mount of the host checkout
 - auth is seeded from host `~/.codex`, host `~/.claude` / `~/.claude.json`, host `~/.pi`, host OpenCode auth/config under `~/.local/share/opencode` and `~/.config/opencode`, or forwarded API keys such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, and `OPENCODE_API_KEY`
 - provider startup writes a small built-in global instruction file into the Codex and Claude runtime homes, while PI and OpenCode reuse the shared workspace `AGENTS.md` plus their seeded auth/config state
-- the backend currently uses fixed default models for Codex and Claude, plus provider-family selectors for PI and OpenCode (`OpenRouter`, `OpenCode Go`, `OpenCode Zen`, or the provider default)
+- the backend currently uses fixed default models for Codex and Claude, plus provider-family selectors for PI and OpenCode (`OpenRouter`, `OpenCode Go`, `OpenCode Zen`, `Custom OpenAI-Compatible`, or the provider default)
 - provider sessions persist per thread inside a single long-lived shared agent container, and the container's main daemon process brokers both agent control and guest-to-host RPC over one stdio connection to the desktop backend
 - release packaging still needs to stage the vendored Apple `container` binary and image contexts into app resources
 
