@@ -5,6 +5,7 @@ import { ThemePreference } from "@/components/settings/theme-preference";
 import { FontPreference } from "@/components/settings/font-preference";
 import { ColorSchemePreference } from "@/components/settings/color-scheme-preference";
 import { SettingsNav } from "./settings-nav";
+import { CustomOpenAiCompatibleProviderSettings } from "./custom-openai-compatible-provider-settings";
 
 function SettingsHeader({ title, description }: { title: string; description: string }) {
   return (
@@ -44,11 +45,24 @@ function PlaceholderContent({ title }: { title: string }) {
   );
 }
 
+function WorkspaceAiContent() {
+  return (
+    <div className="max-w-3xl space-y-6">
+      <SettingsHeader
+        title="AI Provider"
+        description="Configure shared provider settings for desktop harnesses."
+      />
+      <Separator />
+      <CustomOpenAiCompatibleProviderSettings />
+    </div>
+  );
+}
+
 const SETTINGS_PANELS: Record<string, { title: string; component: React.ComponentType }> = {
   general: { title: "General", component: () => <PlaceholderContent title="General" /> },
   appearance: { title: "Appearance", component: AppearanceContent },
   "workspace-general": { title: "General", component: () => <PlaceholderContent title="Workspace General" /> },
-  "workspace-ai": { title: "AI Provider", component: () => <PlaceholderContent title="AI Provider" /> },
+  "workspace-ai": { title: "AI Provider", component: WorkspaceAiContent },
 };
 
 export function SettingsPage() {
