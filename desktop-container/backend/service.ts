@@ -251,6 +251,7 @@ export class DesktopService {
       status: options?.status,
       lane: options?.lane,
       archivedAt: options?.archivedAt,
+      hasUnreadUpdate: options?.hasUnreadUpdate,
     });
     this.activateDefaultThreadView(thread.id);
     this.emitSnapshot();
@@ -283,6 +284,10 @@ export class DesktopService {
   }
 
   selectThread(threadId: string): CamelAIThreadRecord {
+    const existing = this.store.getThread(threadId);
+    if (existing?.hasUnreadUpdate) {
+      this.store.setThreadUnreadUpdate(threadId, false);
+    }
     if (!this.activateDefaultThreadView(threadId)) {
       this.store.setActiveThread(threadId);
     }
@@ -671,6 +676,7 @@ export class DesktopService {
       status: thread.status,
       lane: thread.lane,
       archivedAt: thread.archivedAt,
+      hasUnreadUpdate: thread.hasUnreadUpdate,
       active: thread.id === this.store.getActiveThreadId(),
       hasMessages: this.store.getThreadMessages(thread.id).length > 0,
       sessionId: this.store.getProviderSessionId(thread.id, thread.provider),
@@ -881,6 +887,7 @@ export class DesktopService {
           status: event.status,
           lane: event.lane,
           archivedAt: event.archivedAt,
+          hasUnreadUpdate: event.hasUnreadUpdate,
         });
         return;
       }
@@ -1434,6 +1441,12 @@ export class DesktopService {
 
     const promptContent = promptUpdate.content;
     this.store.appendMessage(threadId, "user", promptContent, "done");
+    this.store.updateThread(threadId, {
+      status: "in_progress",
+      lane: "in_progress",
+      archivedAt: null,
+      hasUnreadUpdate: false,
+    });
     this.emitSnapshot();
     this.emitThreadUpdated(threadId, "message");
     if (activeRun) {
@@ -1640,6 +1653,12 @@ export class DesktopService {
             ? INTERRUPTED_MESSAGE_TEXT
             : undefined,
       );
+      this.store.updateThread(threadId, {
+        status: "ready_for_review",
+        lane: "ready_for_review",
+        archivedAt: null,
+        hasUnreadUpdate: true,
+      });
 
       logDesktop("desktop-service", "send_message:completed", {
         turnId,
@@ -1678,6 +1697,12 @@ export class DesktopService {
             `Error: ${detail}`,
           );
         }
+        this.store.updateThread(threadId, {
+          status: "ready_for_review",
+          lane: "ready_for_review",
+          archivedAt: null,
+          hasUnreadUpdate: true,
+        });
         this.emitSnapshot();
         this.emitThreadUpdated(threadId, "message");
         if (!activeRun.stopRequested) {

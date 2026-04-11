@@ -252,6 +252,13 @@ function ChatRecentThreadsSidebarPanel({
                                 <div className="grid min-w-0 flex-1 text-left text-sm leading-tight">
                                   <span className="flex items-center gap-1.5 truncate font-medium">
                                     <span className="truncate">{thread.title}</span>
+                                    {thread.hasUnreadUpdate ? (
+                                      <span
+                                        aria-label="New update to review"
+                                        title="New update to review"
+                                        className="size-2 shrink-0 rounded-full bg-sky-500"
+                                      />
+                                    ) : null}
                                     <ThreadRuntimeIndicator runtime={runtime} className="size-3" />
                                   </span>
                                   <span className="truncate text-xs text-muted-foreground">

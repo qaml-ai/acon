@@ -281,6 +281,7 @@ describe("DesktopService", () => {
               status: null,
               lane: null,
               archivedAt: null,
+              hasUnreadUpdate: false,
             },
           ],
           threadGroups: [
@@ -479,6 +480,49 @@ describe("DesktopService", () => {
         persisted.providerStateByThread?.[threadId]?.claude?.sessionId,
       ).toBe("acp-session-123");
     });
+  });
+
+  it("marks completed chats as ready for review and clears the indicator when reopened", async () => {
+    const { runtime, pendingPrompts, streamPrompt } = createRuntimeManagerStub();
+    const service = new DesktopService(runtime);
+    const threadId = service.getSnapshot().threads[0]?.id ?? "";
+
+    service.handleClientEvent({
+      type: "send_message",
+      threadId,
+      content: "wrap this up",
+    });
+    await waitFor(() => expect(streamPrompt).toHaveBeenCalledTimes(1));
+
+    pendingPrompts.shift()?.resolve({
+      finalText: "done reviewing",
+      model: "sonnet",
+      sessionId: "session-1",
+      stopReason: null,
+    });
+
+    await waitFor(() => {
+      const thread = service.getSnapshot().threads.find((entry) => entry.id === threadId);
+      expect(thread).toEqual(
+        expect.objectContaining({
+          status: "ready_for_review",
+          lane: "ready_for_review",
+          archivedAt: null,
+          hasUnreadUpdate: true,
+        }),
+      );
+    });
+
+    service.handleClientEvent({
+      type: "select_thread",
+      threadId,
+    });
+
+    const selectedThread = service
+      .getSnapshot()
+      .threads.find((entry) => entry.id === threadId);
+    expect(selectedThread?.hasUnreadUpdate).toBe(false);
+    expect(selectedThread?.lane).toBe("ready_for_review");
   });
 
   it("emits permission requests for host MCP mutations and resolves approvals", async () => {
