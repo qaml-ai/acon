@@ -1035,8 +1035,9 @@ function createWindow() {
     show: !startupProbeEnabled,
     ...(isMac
       ? {
-          titleBarStyle: 'hidden',
+          titleBarStyle: 'hiddenInset',
           roundedCorners: true,
+          trafficLightPosition: { x: 16, y: 18 },
         }
       : {
           titleBarStyle: 'hiddenInset',
