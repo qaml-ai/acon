@@ -29,6 +29,7 @@ function createRuntimeManagerStub(
 
   const registerHostMcpServer = vi.fn();
   const unregisterHostMcpServer = vi.fn();
+  const setHostRpcMethodHandler = vi.fn();
   const managedWorkspaceDirectory =
     options.managedWorkspaceDirectory ?? "/managed-workspace";
   const runtimeDirectory = options.runtimeDirectory ?? "/runtime";
@@ -48,6 +49,7 @@ function createRuntimeManagerStub(
     }),
     registerHostMcpServer,
     unregisterHostMcpServer,
+    setHostRpcMethodHandler,
     dispose: () => {},
     ensureRuntime: vi.fn(async () => ({
       state: "running",
@@ -68,6 +70,7 @@ function createRuntimeManagerStub(
     cancelPrompt: runtime.cancelPrompt as ReturnType<typeof vi.fn>,
     registerHostMcpServer,
     unregisterHostMcpServer,
+    setHostRpcMethodHandler,
   };
 }
 
@@ -281,6 +284,7 @@ describe("DesktopService", () => {
               status: null,
               lane: null,
               archivedAt: null,
+              hasUnreadUpdate: false,
             },
           ],
           threadGroups: [
@@ -481,6 +485,49 @@ describe("DesktopService", () => {
     });
   });
 
+  it("marks completed chats as ready for review and clears the indicator when reopened", async () => {
+    const { runtime, pendingPrompts, streamPrompt } = createRuntimeManagerStub();
+    const service = new DesktopService(runtime);
+    const threadId = service.getSnapshot().threads[0]?.id ?? "";
+
+    service.handleClientEvent({
+      type: "send_message",
+      threadId,
+      content: "wrap this up",
+    });
+    await waitFor(() => expect(streamPrompt).toHaveBeenCalledTimes(1));
+
+    pendingPrompts.shift()?.resolve({
+      finalText: "done reviewing",
+      model: "sonnet",
+      sessionId: "session-1",
+      stopReason: null,
+    });
+
+    await waitFor(() => {
+      const thread = service.getSnapshot().threads.find((entry) => entry.id === threadId);
+      expect(thread).toEqual(
+        expect.objectContaining({
+          status: "ready_for_review",
+          lane: "ready_for_review",
+          archivedAt: null,
+          hasUnreadUpdate: true,
+        }),
+      );
+    });
+
+    service.handleClientEvent({
+      type: "select_thread",
+      threadId,
+    });
+
+    const selectedThread = service
+      .getSnapshot()
+      .threads.find((entry) => entry.id === threadId);
+    expect(selectedThread?.hasUnreadUpdate).toBe(false);
+    expect(selectedThread?.lane).toBe("ready_for_review");
+  });
+
   it("emits permission requests for host MCP mutations and resolves approvals", async () => {
     const { runtime } = createRuntimeManagerStub();
     const service = new DesktopService(runtime);
@@ -677,7 +724,7 @@ describe("DesktopService", () => {
     expect(CamelAIExtensionHost.prototype.refresh).toHaveBeenCalled();
   });
 
-  it("reconciles declarative plugin agent assets for both providers on startup", async () => {
+  it("reconciles declarative plugin agent skill assets for every provider on startup", async () => {
     const pluginDirectory = resolve(sandboxDataDir, "plugins", "declarative-assets-plugin");
     mkdirSync(resolve(pluginDirectory, "agent-assets", "skills", "authoring"), {
       recursive: true,
@@ -784,6 +831,36 @@ describe("DesktopService", () => {
             "claude",
             "home",
             ".claude",
+            "skills",
+            "declarative-assets-plugin--authoring",
+            "SKILL.md",
+          ),
+        ),
+      ).toBe(true);
+      expect(
+        existsSync(
+          resolve(
+            runtimeDirectory,
+            "providers",
+            "pi",
+            "home",
+            ".pi",
+            "agent",
+            "skills",
+            "declarative-assets-plugin--authoring",
+            "SKILL.md",
+          ),
+        ),
+      ).toBe(true);
+      expect(
+        existsSync(
+          resolve(
+            runtimeDirectory,
+            "providers",
+            "opencode",
+            "home",
+            ".config",
+            "opencode",
             "skills",
             "declarative-assets-plugin--authoring",
             "SKILL.md",
@@ -915,6 +992,36 @@ describe("DesktopService", () => {
           ),
         ),
       ).toBe(true);
+      expect(
+        existsSync(
+          resolve(
+            runtimeDirectory,
+            "providers",
+            "pi",
+            "home",
+            ".pi",
+            "agent",
+            "skills",
+            "toggle-assets-plugin--research",
+            "SKILL.md",
+          ),
+        ),
+      ).toBe(true);
+      expect(
+        existsSync(
+          resolve(
+            runtimeDirectory,
+            "providers",
+            "opencode",
+            "home",
+            ".config",
+            "opencode",
+            "skills",
+            "toggle-assets-plugin--research",
+            "SKILL.md",
+          ),
+        ),
+      ).toBe(true);
     });
 
     pluginEnabled = false;
@@ -971,6 +1078,34 @@ describe("DesktopService", () => {
           "claude",
           "home",
           ".claude",
+          "skills",
+          "toggle-assets-plugin--research",
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      existsSync(
+        resolve(
+          runtimeDirectory,
+          "providers",
+          "pi",
+          "home",
+          ".pi",
+          "agent",
+          "skills",
+          "toggle-assets-plugin--research",
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      existsSync(
+        resolve(
+          runtimeDirectory,
+          "providers",
+          "opencode",
+          "home",
+          ".config",
+          "opencode",
           "skills",
           "toggle-assets-plugin--research",
         ),

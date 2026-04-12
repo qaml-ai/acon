@@ -17,6 +17,12 @@ contextBridge.exposeInMainWorld('desktopShell', {
   openPluginDirectory: () => ipcRenderer.invoke('desktop:open-plugin-directory'),
   resolveWebviewSrc: (entrypoint) =>
     ipcRenderer.invoke('desktop:resolve-webview-src', entrypoint),
+  getCustomOpenAiCompatibleProviderConfig: () =>
+    ipcRenderer.invoke('desktop:get-custom-openai-compatible-provider-config'),
+  saveCustomOpenAiCompatibleProviderConfig: (config) =>
+    ipcRenderer.invoke('desktop:save-custom-openai-compatible-provider-config', config),
+  clearCustomOpenAiCompatibleProviderConfig: () =>
+    ipcRenderer.invoke('desktop:clear-custom-openai-compatible-provider-config'),
   sendEvent: (event) => ipcRenderer.send('desktop:send', event),
   reportReady: (payload) => ipcRenderer.send('desktop:ready', payload),
   onEvent: (listener) => {

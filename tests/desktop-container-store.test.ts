@@ -6,6 +6,7 @@ import { DesktopStore } from "../desktop-container/backend/store";
 import type {
   DesktopAuthState,
   DesktopModelOption,
+  DesktopModelSourceOption,
   DesktopProviderOption,
   DesktopRuntimeStatus,
   DesktopView,
@@ -23,6 +24,10 @@ const providerOptions: DesktopProviderOption[] = [
 
 const modelOptions: DesktopModelOption[] = [
   { id: "sonnet", label: "Claude Sonnet", provider: "claude" },
+];
+
+const modelSourceOptions: DesktopModelSourceOption[] = [
+  { id: "default", label: "Default", provider: "claude" },
 ];
 
 const auth: DesktopAuthState = {
@@ -70,6 +75,8 @@ function buildSnapshot(store: DesktopStore) {
     providerOptions,
     "sonnet",
     modelOptions,
+    "default",
+    modelSourceOptions,
     auth,
     views,
     [],

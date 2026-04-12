@@ -13,6 +13,8 @@ import type {
   DesktopPaneNode,
   DesktopPaneSplit,
   DesktopPaneSplitDirection,
+  DesktopModelSource,
+  DesktopModelSourceOption,
   DesktopPreviewItem,
   DesktopPreviewTarget,
   DesktopProvider,
@@ -58,6 +60,7 @@ interface PersistedState {
   activeViewId?: string | null;
   provider: DesktopProvider;
   modelsByProvider: Partial<Record<DesktopProvider, DesktopModel>>;
+  modelSourcesByProvider?: Partial<Record<DesktopProvider, DesktopModelSource>>;
   threadPreviewStateById?: Record<string, PersistedThreadPreviewState>;
   providerStateByThread?: Partial<
     Record<
@@ -420,6 +423,7 @@ function normalizeThread(value: unknown, defaultGroupId: string): DesktopThread 
     status?: unknown;
     lane?: unknown;
     archivedAt?: unknown;
+    hasUnreadUpdate?: unknown;
   };
   const id = normalizePersistedId(raw.id);
   if (!id) {
@@ -469,6 +473,7 @@ function normalizeThread(value: unknown, defaultGroupId: string): DesktopThread 
     status,
     lane,
     archivedAt,
+    hasUnreadUpdate: raw.hasUnreadUpdate === true,
   };
 }
 
@@ -765,6 +770,7 @@ export class DesktopStore {
           : undefined;
       const modelsByProvider = parsed.modelsByProvider ?? {};
       const persistedProviderModel = modelsByProvider[fallbackProvider];
+      const modelSourcesByProvider = parsed.modelSourcesByProvider ?? {};
       const providerStateByThread = parsed.providerStateByThread ?? {};
       const activeViewId =
         normalizePersistedId(parsed.activeViewId) ??
@@ -799,6 +805,12 @@ export class DesktopStore {
         (activeThreadId
           ? threads.find((thread) => thread.id === activeThreadId)?.provider
           : null) ?? fallbackProvider;
+      const activeThreadProviderAdapter = requireDesktopProvider(activeThreadProvider);
+      const persistedActiveProviderModel =
+        modelsByProvider[activeThreadProvider] ??
+        persistedProviderModel ??
+        legacyModel ??
+        activeThreadProviderAdapter.getDefaultModel();
       const activeGroupId =
         normalizePersistedId(parsed.activeGroupId) ?? threadGroups[0]?.id ?? null;
       const threadPreviewStateById = Object.fromEntries(
@@ -901,11 +913,16 @@ export class DesktopStore {
         provider: activeThreadProvider,
         modelsByProvider: {
           ...modelsByProvider,
-          [activeThreadProvider]: requireDesktopProvider(activeThreadProvider).normalizeModel(
-            modelsByProvider[activeThreadProvider] ??
-              persistedProviderModel ??
-              legacyModel ??
-              requireDesktopProvider(activeThreadProvider).getDefaultModel(),
+          [activeThreadProvider]: activeThreadProviderAdapter.normalizeModel(
+            persistedActiveProviderModel,
+          ),
+        },
+        modelSourcesByProvider: {
+          ...modelSourcesByProvider,
+          [activeThreadProvider]: activeThreadProviderAdapter.normalizeModelSource(
+            modelSourcesByProvider[activeThreadProvider] ??
+              persistedActiveProviderModel ??
+              activeThreadProviderAdapter.getDefaultModelSource(),
           ),
         },
         threadPreviewStateById,
@@ -939,6 +956,9 @@ export class DesktopStore {
         provider,
         modelsByProvider: {
           [provider]: requireDesktopProvider(provider).getDefaultModel(),
+        },
+        modelSourcesByProvider: {
+          [provider]: requireDesktopProvider(provider).getDefaultModelSource(),
         },
         threadPreviewStateById: {},
         providerStateByThread: {},
@@ -1797,6 +1817,15 @@ export class DesktopStore {
       this.state.modelsByProvider[provider] =
         requireDesktopProvider(provider).getDefaultModel();
     }
+    if (!this.state.modelSourcesByProvider?.[provider]) {
+      this.state.modelSourcesByProvider = {
+        ...(this.state.modelSourcesByProvider ?? {}),
+        [provider]: requireDesktopProvider(provider).normalizeModelSource(
+          this.state.modelsByProvider[provider] ??
+            requireDesktopProvider(provider).getDefaultModelSource(),
+        ),
+      };
+    }
   }
 
   getModel(provider = this.state.provider): DesktopModel {
@@ -1809,6 +1838,23 @@ export class DesktopStore {
   setModel(model: DesktopModel, provider = this.state.provider): void {
     this.state.modelsByProvider[provider] =
       requireDesktopProvider(provider).normalizeModel(model);
+    this.persist();
+  }
+
+  getModelSource(provider = this.state.provider): DesktopModelSource {
+    const adapter = requireDesktopProvider(provider);
+    return adapter.normalizeModelSource(
+      this.state.modelSourcesByProvider?.[provider] ??
+        this.state.modelsByProvider[provider] ??
+        adapter.getDefaultModelSource(),
+    );
+  }
+
+  setModelSource(modelSource: DesktopModelSource, provider = this.state.provider): void {
+    this.state.modelSourcesByProvider = {
+      ...(this.state.modelSourcesByProvider ?? {}),
+      [provider]: requireDesktopProvider(provider).normalizeModelSource(modelSource),
+    };
     this.persist();
   }
 
@@ -1900,6 +1946,7 @@ export class DesktopStore {
       status?: string | null;
       lane?: string | null;
       archivedAt?: number | null;
+      hasUnreadUpdate?: boolean;
     },
   ): DesktopThread {
     const thread = this.findThread(threadId);
@@ -1945,6 +1992,10 @@ export class DesktopStore {
           : null;
     }
 
+    if ('hasUnreadUpdate' in update) {
+      thread.hasUnreadUpdate = update.hasUnreadUpdate === true;
+    }
+
     thread.updatedAt = now();
     if (this.state.activeThreadId === thread.id) {
       this.state.activeGroupId = thread.groupId;
@@ -1954,6 +2005,17 @@ export class DesktopStore {
     }
     this.touchThreadGroup(thread.groupId, thread.updatedAt);
     this.sortThreads();
+    this.persist();
+    return cloneThread(thread);
+  }
+
+  setThreadUnreadUpdate(threadId: string, hasUnreadUpdate: boolean): DesktopThread {
+    const thread = this.findThread(threadId);
+    if (!thread) {
+      throw new Error(`Thread ${threadId} does not exist`);
+    }
+
+    thread.hasUnreadUpdate = hasUnreadUpdate;
     this.persist();
     return cloneThread(thread);
   }
@@ -1981,6 +2043,7 @@ export class DesktopStore {
     status?: string | null;
     lane?: string | null;
     archivedAt?: number | null;
+    hasUnreadUpdate?: boolean;
   }): DesktopThread {
     const normalizedProvider = requireDesktopProvider(options.provider ?? this.state.provider).id;
     const resolvedGroupId = this.findThreadGroup(options.groupId)?.id;
@@ -2008,6 +2071,7 @@ export class DesktopStore {
         typeof options.archivedAt === 'number' && Number.isFinite(options.archivedAt)
           ? options.archivedAt
           : null,
+      hasUnreadUpdate: options.hasUnreadUpdate === true,
     };
     this.state.threads.unshift(thread);
     this.state.messagesByThread[thread.id] = [];
@@ -2178,6 +2242,8 @@ export class DesktopStore {
     availableProviders: DesktopProviderOption[],
     model: DesktopModel,
     availableModels: DesktopModelOption[],
+    modelSource: DesktopModelSource,
+    availableModelSources: DesktopModelSourceOption[],
     auth: DesktopAuthState,
     views: DesktopView[],
     sidebarPanels: DesktopSidebarPanel[],
@@ -2208,6 +2274,8 @@ export class DesktopStore {
       availableProviders,
       model,
       availableModels,
+      modelSource,
+      availableModelSources,
       auth,
       runtimeStatus,
       views,

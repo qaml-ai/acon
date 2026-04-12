@@ -79,6 +79,7 @@ import type {
   DesktopPane,
   DesktopPaneDropPlacement,
   DesktopPaneNode,
+  DesktopModelSource,
   DesktopPreviewTarget,
   DesktopThreadPreviewState,
   DesktopProvider,
@@ -140,6 +141,7 @@ type HostSurfaceComponentProps = {
   onDraftChange: (threadId: string | null, draft: string) => void;
   onSetProvider: (provider: DesktopProvider) => void;
   onSetModel: (model: string) => void;
+  onSetModelSource: (modelSource: string) => void;
   onStopThread: (threadId: string) => void;
   onSubmitMessage: (threadId: string, content: string) => void;
   onRequestCreateGroup: () => void;
@@ -671,30 +673,137 @@ const MemoizedTranscriptPane = memo(
   (prev, next) => prev.rawMessages === next.rawMessages,
 );
 
+function ComposerToolbar({
+  availableProviders,
+  availableModels,
+  availableModelSources,
+  provider,
+  model,
+  modelSource,
+  onSetProvider,
+  onSetModel,
+  onSetModelSource,
+}: {
+  availableProviders: DesktopSnapshot["availableProviders"];
+  availableModels: DesktopSnapshot["availableModels"];
+  availableModelSources: DesktopSnapshot["availableModelSources"];
+  provider: DesktopProvider;
+  model: DesktopModel;
+  modelSource: DesktopModelSource;
+  onSetProvider: (provider: DesktopProvider) => void;
+  onSetModel: (model: string) => void;
+  onSetModelSource: (modelSource: string) => void;
+}) {
+  const showModelSourceSelector = availableModelSources.length > 1;
+  const modelSelectDisabled = showModelSourceSelector && availableModels.length <= 1;
+
+  return (
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      <Select
+        value={provider}
+        onValueChange={(value) => onSetProvider(value as DesktopProvider)}
+      >
+        <SelectTrigger
+          size="sm"
+          className="desktop-chat-provider-switcher w-[148px]"
+          aria-label="Provider"
+        >
+          <SelectValue placeholder="Provider" />
+        </SelectTrigger>
+        <SelectContent>
+          {availableProviders.map((option) => (
+            <SelectItem key={option.id} value={option.id}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {showModelSourceSelector ? (
+        <Select value={modelSource} onValueChange={onSetModelSource}>
+          <SelectTrigger
+            size="sm"
+            className="desktop-chat-model-source-switcher w-[168px]"
+            aria-label="Model source"
+          >
+            <SelectValue placeholder="Source" />
+          </SelectTrigger>
+          <SelectContent>
+            {availableModelSources.map((option) => (
+              <SelectItem key={option.id} value={option.id}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      ) : null}
+      <Select
+        value={model}
+        onValueChange={onSetModel}
+        disabled={modelSelectDisabled}
+      >
+        <SelectTrigger
+          size="sm"
+          className="desktop-chat-model-switcher w-[168px]"
+          aria-label="Model"
+        >
+          <SelectValue placeholder="Model" />
+        </SelectTrigger>
+        <SelectContent>
+          {availableModels.map((option) => (
+            <SelectItem key={option.id} value={option.id}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+const MemoizedComposerToolbar = memo(
+  ComposerToolbar,
+  (prev, next) =>
+    prev.availableProviders === next.availableProviders &&
+    prev.availableModels === next.availableModels &&
+    prev.availableModelSources === next.availableModelSources &&
+    prev.provider === next.provider &&
+    prev.model === next.model &&
+    prev.modelSource === next.modelSource &&
+    prev.onSetProvider === next.onSetProvider &&
+    prev.onSetModel === next.onSetModel &&
+    prev.onSetModelSource === next.onSetModelSource,
+);
+
 function Composer({
   availableProviders,
   availableModels,
+  availableModelSources,
   activeThreadId,
   initialDraft,
   isStreaming,
   provider,
   model,
+  modelSource,
   onDraftChange,
   onSetProvider,
   onSetModel,
+  onSetModelSource,
   onStopThread,
   onSubmitMessage,
 }: {
   availableProviders: DesktopSnapshot["availableProviders"];
   availableModels: DesktopSnapshot["availableModels"];
+  availableModelSources: DesktopSnapshot["availableModelSources"];
   activeThreadId: string | null;
   initialDraft: string;
   isStreaming: boolean;
   provider: DesktopProvider;
   model: DesktopModel;
+  modelSource: DesktopModelSource;
   onDraftChange: (threadId: string | null, draft: string) => void;
   onSetProvider: (provider: DesktopProvider) => void;
   onSetModel: (model: string) => void;
+  onSetModelSource: (modelSource: string) => void;
   onStopThread: (threadId: string) => void;
   onSubmitMessage: (threadId: string, content: string) => void;
 }) {
@@ -951,43 +1060,17 @@ function Composer({
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center justify-end gap-2">
-        <Select
-          value={provider}
-          onValueChange={(value) => onSetProvider(value as DesktopProvider)}
-        >
-          <SelectTrigger
-            size="sm"
-            className="desktop-chat-provider-switcher w-[148px]"
-            aria-label="Provider"
-          >
-            <SelectValue placeholder="Provider" />
-          </SelectTrigger>
-          <SelectContent>
-            {availableProviders.map((option) => (
-              <SelectItem key={option.id} value={option.id}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={model} onValueChange={onSetModel}>
-          <SelectTrigger
-            size="sm"
-            className="desktop-chat-model-switcher w-[168px]"
-            aria-label="Model"
-          >
-            <SelectValue placeholder="Model" />
-          </SelectTrigger>
-          <SelectContent>
-            {availableModels.map((option) => (
-              <SelectItem key={option.id} value={option.id}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      <MemoizedComposerToolbar
+        availableProviders={availableProviders}
+        availableModels={availableModels}
+        availableModelSources={availableModelSources}
+        provider={provider}
+        model={model}
+        modelSource={modelSource}
+        onSetProvider={onSetProvider}
+        onSetModel={onSetModel}
+        onSetModelSource={onSetModelSource}
+      />
       <PromptInput
         className="shrink-0"
         value={draft}
@@ -1010,14 +1093,17 @@ const MemoizedComposer = memo(
   (prev, next) =>
     prev.availableProviders === next.availableProviders &&
     prev.availableModels === next.availableModels &&
+    prev.availableModelSources === next.availableModelSources &&
     prev.activeThreadId === next.activeThreadId &&
     prev.initialDraft === next.initialDraft &&
     prev.isStreaming === next.isStreaming &&
     prev.provider === next.provider &&
     prev.model === next.model &&
+    prev.modelSource === next.modelSource &&
     prev.onDraftChange === next.onDraftChange &&
     prev.onSetProvider === next.onSetProvider &&
     prev.onSetModel === next.onSetModel &&
+    prev.onSetModelSource === next.onSetModelSource &&
     prev.onStopThread === next.onStopThread &&
     prev.onSubmitMessage === next.onSubmitMessage,
 );
@@ -1079,6 +1165,7 @@ function ChatThreadView({
   onDraftChange,
   onSetProvider,
   onSetModel,
+  onSetModelSource,
   onStopThread,
   onSubmitMessage,
   onOpenPreviewTarget,
@@ -1094,6 +1181,7 @@ function ChatThreadView({
   | "onDraftChange"
   | "onSetProvider"
   | "onSetModel"
+  | "onSetModelSource"
   | "onStopThread"
   | "onSubmitMessage"
   | "onOpenPreviewTarget"
@@ -1132,14 +1220,17 @@ function ChatThreadView({
                 <MemoizedComposer
                   availableProviders={snapshot.availableProviders}
                   availableModels={snapshot.availableModels}
+                  availableModelSources={snapshot.availableModelSources}
                   activeThreadId={activeThreadId}
                   initialDraft={initialDraft}
                   isStreaming={isStreaming}
                   provider={snapshot.provider}
                   model={snapshot.model}
+                  modelSource={snapshot.modelSource}
                   onDraftChange={onDraftChange}
                   onSetProvider={onSetProvider}
                   onSetModel={onSetModel}
+                  onSetModelSource={onSetModelSource}
                   onStopThread={onStopThread}
                   onSubmitMessage={onSubmitMessage}
                 />
@@ -1179,6 +1270,9 @@ function resolveKanbanLane(
     case "finished":
       return thread.lane;
     default:
+      if (thread.hasUnreadUpdate) {
+        return "ready_for_review";
+      }
       return runtime?.hasMessages ? "ready_for_review" : "drafts";
   }
 }
@@ -1395,6 +1489,9 @@ function KanbanBoardPane({
                             </div>
                             <div className="flex flex-wrap gap-1">
                               <Badge variant="outline">{thread.provider}</Badge>
+                              {thread.hasUnreadUpdate ? (
+                                <Badge variant="secondary">New review</Badge>
+                              ) : null}
                               {runtime?.isRunning ? (
                                 <Badge variant="default">
                                   {runtime.stopRequested ? "Stopping" : "Running"}
@@ -2862,6 +2959,13 @@ export function App() {
     sendEvent({ type: "set_model", model: model as DesktopModel });
   }, [sendEvent, snapshot?.availableModels]);
 
+  const handleSetModelSource = useCallback((modelSource: string) => {
+    if (!snapshot?.availableModelSources.some((option) => option.id === modelSource)) {
+      return;
+    }
+    sendEvent({ type: "set_model_source", modelSource });
+  }, [sendEvent, snapshot?.availableModelSources]);
+
   const handleSetProvider = useCallback((provider: DesktopProvider) => {
     if (!snapshot?.availableProviders.some((option) => option.id === provider)) {
       return;
@@ -3123,6 +3227,7 @@ export function App() {
       onDraftChange: handleDraftChange,
       onSetProvider: handleSetProvider,
       onSetModel: handleSetModel,
+      onSetModelSource: handleSetModelSource,
       onStopThread: handleStopThread,
       onSubmitMessage: handleSubmitMessage,
       onRequestCreateGroup: handleRequestCreateGroup,
@@ -3142,6 +3247,7 @@ export function App() {
     handleRequestDeleteGroup,
     handleRequestRenameGroup,
     handleSetModel,
+    handleSetModelSource,
     handleSetPreviewTargets,
     handleSetProvider,
     handleStopThread,

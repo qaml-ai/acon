@@ -2,6 +2,7 @@ import type { ContentBlock } from "../../src/types";
 
 export type DesktopProvider = "claude" | "codex" | "pi" | "opencode";
 export type DesktopModel = string;
+export type DesktopModelSource = string;
 export type DesktopAuthSource = "provider-account" | "api-key" | "missing";
 export type DesktopHarness = "opencode" | "claude-code" | "codex" | "pi";
 
@@ -260,11 +261,54 @@ export interface DesktopModelOption {
   provider: DesktopProvider;
 }
 
+export interface DesktopModelSourceOption {
+  id: DesktopModelSource;
+  label: string;
+  provider: DesktopProvider;
+}
+
 export interface DesktopAuthState {
   provider: DesktopProvider;
   available: boolean;
   source: DesktopAuthSource;
   label: string;
+}
+
+export type DesktopCustomOpenAiCompatibleMaxTokensField =
+  | "max_completion_tokens"
+  | "max_tokens";
+
+export interface DesktopCustomOpenAiCompatibleProviderConfig {
+  label: string | null;
+  baseUrl: string;
+  modelId: string;
+  modelName: string | null;
+  headers: Record<string, string>;
+  reasoning: boolean;
+  imageInput: boolean;
+  contextWindow: number | null;
+  maxTokens: number | null;
+  supportsDeveloperRole: boolean | null;
+  supportsReasoningEffort: boolean | null;
+  maxTokensField: DesktopCustomOpenAiCompatibleMaxTokensField | null;
+  hasApiKey: boolean;
+  version: string;
+}
+
+export interface DesktopSaveCustomOpenAiCompatibleProviderConfigInput {
+  label?: string | null;
+  baseUrl: string;
+  modelId: string;
+  modelName?: string | null;
+  headers?: Record<string, string> | null;
+  reasoning?: boolean;
+  imageInput?: boolean;
+  contextWindow?: number | null;
+  maxTokens?: number | null;
+  supportsDeveloperRole?: boolean | null;
+  supportsReasoningEffort?: boolean | null;
+  maxTokensField?: DesktopCustomOpenAiCompatibleMaxTokensField | null;
+  apiKey?: string | null;
 }
 
 export interface DesktopThreadGroup {
@@ -285,6 +329,7 @@ export interface DesktopThread {
   status: string | null;
   lane: string | null;
   archivedAt: number | null;
+  hasUnreadUpdate: boolean;
 }
 
 export interface DesktopThreadRuntimeState {
@@ -383,6 +428,8 @@ export interface DesktopSnapshot {
   availableProviders: DesktopProviderOption[];
   model: DesktopModel;
   availableModels: DesktopModelOption[];
+  modelSource: DesktopModelSource;
+  availableModelSources: DesktopModelSourceOption[];
   auth: DesktopAuthState;
   runtimeStatus: DesktopRuntimeStatus;
   views: DesktopView[];
@@ -430,6 +477,7 @@ export type DesktopClientEvent =
       status?: string | null;
       lane?: string | null;
       archivedAt?: number | null;
+      hasUnreadUpdate?: boolean;
     }
   | {
       type: "select_thread";
@@ -506,6 +554,7 @@ export type DesktopClientEvent =
         status?: string | null;
         lane?: string | null;
         archivedAt?: number | null;
+        hasUnreadUpdate?: boolean;
       };
     }
   | {
@@ -515,6 +564,10 @@ export type DesktopClientEvent =
   | {
       type: "set_model";
       model: DesktopModel;
+    }
+  | {
+      type: "set_model_source";
+      modelSource: DesktopModelSource;
     }
   | {
       type: "refresh_plugins";

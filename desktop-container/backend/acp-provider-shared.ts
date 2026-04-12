@@ -5,10 +5,19 @@ import type {
   DesktopAuthState,
   DesktopModel,
   DesktopModelOption,
+  DesktopModelSource,
+  DesktopModelSourceOption,
   DesktopProvider,
 } from "../../desktop/shared/protocol";
+import {
+  getCustomOpenAiCompatibleProviderLabel,
+  getCustomOpenAiCompatibleProviderModel,
+  isCustomOpenAiCompatibleProviderConfigured,
+  readCustomOpenAiCompatibleProviderConfig,
+} from "./custom-openai-compatible-provider";
 
 export const DEFAULT_ACP_MODEL = "default";
+export const DEFAULT_ACP_MODEL_SOURCE = "default";
 
 const HOST_PI_AUTH_PATH = resolve(homedir(), ".pi", "agent", "auth.json");
 const HOST_PI_MODELS_PATH = resolve(homedir(), ".pi", "agent", "models.json");
@@ -22,7 +31,7 @@ const HOST_OPENCODE_AUTH_PATH = resolve(
 
 const ACP_PROVIDER_FAMILY_OPTIONS = [
   {
-    id: DEFAULT_ACP_MODEL,
+    id: DEFAULT_ACP_MODEL_SOURCE,
     label: "Default",
   },
   {
@@ -37,12 +46,17 @@ const ACP_PROVIDER_FAMILY_OPTIONS = [
     id: "opencode/default",
     label: "OpenCode Zen",
   },
+  {
+    id: getCustomOpenAiCompatibleProviderModel(),
+    label: getCustomOpenAiCompatibleProviderLabel(),
+  },
 ] as const;
 
 const ACP_PROVIDER_FAMILY_LABELS: Record<string, string> = {
   openrouter: "OpenRouter",
   opencode: "OpenCode Zen",
   "opencode-go": "OpenCode Go",
+  "openai-compatible": getCustomOpenAiCompatibleProviderLabel(),
 };
 
 const PI_AUTH_KEYS = ["openrouter", "opencode", "opencode-go"] as const;
@@ -100,6 +114,12 @@ function getRequestedProviderFamily(
   if (normalized === "opencode/default" || normalized.startsWith("opencode/")) {
     return "opencode";
   }
+  if (
+    normalized === getCustomOpenAiCompatibleProviderModel() ||
+    normalized.startsWith("openai-compatible/")
+  ) {
+    return "openai-compatible";
+  }
 
   return null;
 }
@@ -108,28 +128,121 @@ function getFamilyLabel(family: string | null): string {
   return family ? (ACP_PROVIDER_FAMILY_LABELS[family] ?? family) : "Configured providers";
 }
 
-export function getAcpProviderModels(provider: DesktopProvider): DesktopModelOption[] {
+export function getAcpProviderModelSources(
+  provider: DesktopProvider,
+): DesktopModelSourceOption[] {
   return ACP_PROVIDER_FAMILY_OPTIONS.map((option) => ({
     ...option,
     provider,
   }));
 }
 
+function isAcpProviderFamilyModel(value: string): boolean {
+  return ACP_PROVIDER_FAMILY_OPTIONS.some((option) => option.id === value);
+}
+
 export function normalizeAcpProviderModel(
   value: string | null | undefined,
 ): DesktopModel {
   const normalized = value?.trim();
-  if (!normalized) {
+  if (!normalized || isAcpProviderFamilyModel(normalized)) {
     return DEFAULT_ACP_MODEL;
   }
 
-  return ACP_PROVIDER_FAMILY_OPTIONS.some((option) => option.id === normalized)
-    ? normalized
-    : DEFAULT_ACP_MODEL;
+  return normalized;
 }
 
-export function getPiAuthState(model?: DesktopModel): DesktopAuthState {
-  const requestedFamily = getRequestedProviderFamily(model);
+export function normalizeAcpProviderModelSource(
+  value: string | null | undefined,
+): DesktopModelSource {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return DEFAULT_ACP_MODEL_SOURCE;
+  }
+
+  return isAcpProviderFamilyModel(normalized)
+    ? normalized
+    : DEFAULT_ACP_MODEL_SOURCE;
+}
+
+function matchesAcpProviderModelSource(
+  model: DesktopModel,
+  modelSource: DesktopModelSource,
+): boolean {
+  if (
+    !model ||
+    model === DEFAULT_ACP_MODEL ||
+    modelSource === DEFAULT_ACP_MODEL_SOURCE
+  ) {
+    return true;
+  }
+  if (!modelSource.endsWith("/default")) {
+    return true;
+  }
+  const prefix = modelSource.slice(0, -"/default".length);
+  return model === prefix || model.startsWith(`${prefix}/`);
+}
+
+function formatAcpModelLabel(model: string): string {
+  for (const [family, label] of Object.entries(ACP_PROVIDER_FAMILY_LABELS)) {
+    if (model === family) {
+      return label;
+    }
+    if (model.startsWith(`${family}/`)) {
+      return model.slice(family.length + 1) || label;
+    }
+  }
+  return model;
+}
+
+export function getAcpProviderModels(
+  provider: DesktopProvider,
+  modelSource: DesktopModelSource = DEFAULT_ACP_MODEL_SOURCE,
+  discoveredModelIds: readonly string[] = [],
+  currentModelId: string | null = null,
+): DesktopModelOption[] {
+  const normalizedSource = normalizeAcpProviderModelSource(modelSource);
+  const currentModelLabel =
+    currentModelId && matchesAcpProviderModelSource(currentModelId, normalizedSource)
+      ? formatAcpModelLabel(currentModelId)
+      : null;
+  const discoveredOptions = Array.from(new Set(discoveredModelIds))
+    .filter((model): model is string => Boolean(model.trim()))
+    .filter((model) => matchesAcpProviderModelSource(model, normalizedSource))
+    .map((model) => ({
+      id: model,
+      label: formatAcpModelLabel(model),
+      provider,
+    }));
+
+  return [
+    {
+      id: DEFAULT_ACP_MODEL,
+      label: currentModelLabel ? `Auto (${currentModelLabel})` : "Auto",
+      provider,
+    },
+    ...discoveredOptions,
+  ];
+}
+
+export function getAcpModelPreference(
+  model: DesktopModel,
+  modelSource: DesktopModelSource,
+): DesktopModel {
+  return model && model !== DEFAULT_ACP_MODEL
+    ? model
+    : normalizeAcpProviderModelSource(modelSource);
+}
+
+export function isAcpModelInSource(
+  model: DesktopModel,
+  modelSource: DesktopModelSource,
+): boolean {
+  return matchesAcpProviderModelSource(model, normalizeAcpProviderModelSource(modelSource));
+}
+
+export function getPiAuthState(modelSource?: DesktopModelSource): DesktopAuthState {
+  const requestedFamily = getRequestedProviderFamily(modelSource);
   const authRecord = readJsonRecord(HOST_PI_AUTH_PATH);
   const missingSuffix = requestedFamily ? ` for ${getFamilyLabel(requestedFamily)}` : "";
 
@@ -154,9 +267,20 @@ export function getPiAuthState(model?: DesktopModel): DesktopAuthState {
         label: getFamilyLabel(requestedFamily),
       };
     }
+  } else if (requestedFamily === "openai-compatible") {
+    const config = readCustomOpenAiCompatibleProviderConfig();
+    if (config) {
+      return {
+        provider: "pi",
+        available: true,
+        source: "api-key",
+        label: config.label || getFamilyLabel(requestedFamily),
+      };
+    }
   } else if (
     existsSync(HOST_PI_AUTH_PATH) ||
     existsSync(HOST_PI_MODELS_PATH) ||
+    isCustomOpenAiCompatibleProviderConfigured() ||
     PI_RELEVANT_ENV_VARS.some((name) => hasEnvVar(name))
   ) {
     return {
@@ -171,12 +295,12 @@ export function getPiAuthState(model?: DesktopModel): DesktopAuthState {
     provider: "pi",
     available: false,
     source: "missing",
-    label: `PI auth missing${missingSuffix}`,
+    label: `Pi auth missing${missingSuffix}`,
   };
 }
 
-export function getOpenCodeAuthState(model?: DesktopModel): DesktopAuthState {
-  const requestedFamily = getRequestedProviderFamily(model);
+export function getOpenCodeAuthState(modelSource?: DesktopModelSource): DesktopAuthState {
+  const requestedFamily = getRequestedProviderFamily(modelSource);
   const authRecord = readJsonRecord(HOST_OPENCODE_AUTH_PATH);
   const missingSuffix = requestedFamily ? ` for ${getFamilyLabel(requestedFamily)}` : "";
 
@@ -201,8 +325,19 @@ export function getOpenCodeAuthState(model?: DesktopModel): DesktopAuthState {
         label: getFamilyLabel(requestedFamily),
       };
     }
+  } else if (requestedFamily === "openai-compatible") {
+    const config = readCustomOpenAiCompatibleProviderConfig();
+    if (config) {
+      return {
+        provider: "opencode",
+        available: true,
+        source: "api-key",
+        label: config.label || getFamilyLabel(requestedFamily),
+      };
+    }
   } else if (
     existsSync(HOST_OPENCODE_AUTH_PATH) ||
+    isCustomOpenAiCompatibleProviderConfigured() ||
     OPENCODE_RELEVANT_ENV_VARS.some((name) => hasEnvVar(name))
   ) {
     return {
