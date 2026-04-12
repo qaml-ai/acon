@@ -3331,7 +3331,9 @@ export function App() {
             }
           }}
         >
-          {paneContent}
+          <div className="desktop-workbench-pane-surface">
+            {paneContent}
+          </div>
           {draggingTabId ? (
             <div className="desktop-pane-drop-zones">
               {paneBodyDropTargets.map((placement) => {
