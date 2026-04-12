@@ -254,6 +254,7 @@ export interface DesktopThread {
   status: string | null;
   lane: string | null;
   archivedAt: number | null;
+  hasUnreadUpdate: boolean;
 }
 
 export interface DesktopThreadRuntimeState {
@@ -396,6 +397,7 @@ export type DesktopClientEvent =
       status?: string | null;
       lane?: string | null;
       archivedAt?: number | null;
+      hasUnreadUpdate?: boolean;
     }
   | {
       type: "select_thread";
@@ -461,6 +463,7 @@ export type DesktopClientEvent =
         status?: string | null;
         lane?: string | null;
         archivedAt?: number | null;
+        hasUnreadUpdate?: boolean;
       };
     }
   | {
