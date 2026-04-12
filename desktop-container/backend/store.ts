@@ -1899,6 +1899,17 @@ export class DesktopStore {
     return thread ? cloneThread(thread) : null;
   }
 
+  isThreadVisible(threadId: string): boolean {
+    if (!this.findThread(threadId)) {
+      return false;
+    }
+
+    return this.listPaneIds().some((paneId) => {
+      const tab = this.getActiveTabForPane(paneId);
+      return tab?.kind === 'thread' && tab.threadId === threadId;
+    });
+  }
+
   private touchThreadGroup(groupId: string, timestamp = now()): void {
     const group = this.findThreadGroup(groupId);
     if (group) {
