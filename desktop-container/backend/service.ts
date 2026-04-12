@@ -10,11 +10,13 @@ import type {
   DesktopPreviewItem,
   DesktopPreviewTarget,
   DesktopPermissionRequest,
+  DesktopPane,
   DesktopProvider,
   DesktopRuntimeStatus,
   DesktopSaveCustomOpenAiCompatibleProviderConfigInput,
   DesktopServerEvent,
   DesktopSnapshot,
+  DesktopTab,
   DesktopThread,
   DesktopThreadPreviewState,
   DesktopThreadRuntimeState,
@@ -1012,6 +1014,8 @@ export class DesktopService {
     snapshot.threadPreviewStateById = this.resolveThreadPreviewStates(
       snapshot.threadPreviewStateById,
     );
+    snapshot.tabs = this.resolveSnapshotTabs(snapshot.tabs);
+    snapshot.panes = this.resolveSnapshotPanes(snapshot.panes, snapshot.tabs);
     snapshot.threadRuntimeById = this.resolveThreadRuntimeStates(snapshot.threads);
     snapshot.pendingPermissionRequest =
       this.pendingPermissionRequests[0]?.request ?? null;
@@ -1838,21 +1842,27 @@ export class DesktopService {
       this.resolveFileWithinRoot(
         this.runtimeManager.getManagedWorkspaceDirectory(),
         normalizedPath,
+        { treatAbsolutePathAsRootRelative: true },
       ) ??
       this.resolveFileWithinRoot(
         this.runtimeManager.getWorkspaceDirectory(),
         normalizedPath,
+        { treatAbsolutePathAsRootRelative: true },
       )
     );
   }
 
-  private resolveFileWithinRoot(rootDirectory: string, targetPath: string): string | null {
+  private resolveFileWithinRoot(
+    rootDirectory: string,
+    targetPath: string,
+    options: { treatAbsolutePathAsRootRelative?: boolean } = {},
+  ): string | null {
     const trimmedPath = targetPath.trim();
     if (!trimmedPath) {
       return null;
     }
 
-    const candidatePath = isAbsolute(trimmedPath)
+    const candidatePath = isAbsolute(trimmedPath) && !options.treatAbsolutePathAsRootRelative
       ? resolve(trimmedPath)
       : resolve(rootDirectory, trimmedPath.replace(/^[/\\]+/, ""));
     const relativePath = relative(rootDirectory, candidatePath);
@@ -1918,6 +1928,39 @@ export class DesktopService {
         ];
       }),
     );
+  }
+
+  private resolveSnapshotTabs(tabs: DesktopTab[]): DesktopTab[] {
+    return tabs.map((tab) => {
+      if (tab.kind !== "preview" || !tab.previewItem) {
+        return tab;
+      }
+
+      return {
+        ...tab,
+        previewItem: this.resolvePreviewItem(tab.previewItem),
+      };
+    });
+  }
+
+  private resolveSnapshotPanes(panes: DesktopPane[], tabs: DesktopTab[]): DesktopPane[] {
+    const resolvedTabsById = new Map(tabs.map((tab) => [tab.id, tab]));
+    return panes.map((pane) => ({
+      ...pane,
+      tabs: pane.tabs.map((tab) => {
+        const resolvedTab = resolvedTabsById.get(tab.id);
+        if (resolvedTab) {
+          return resolvedTab;
+        }
+        if (tab.kind !== "preview" || !tab.previewItem) {
+          return tab;
+        }
+        return {
+          ...tab,
+          previewItem: this.resolvePreviewItem(tab.previewItem),
+        };
+      }),
+    }));
   }
 
   private emitPageOpen(viewId: string): void {

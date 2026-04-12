@@ -28,6 +28,7 @@ function createRuntimeManagerStub(paths: {
     }),
     registerHostMcpServer: vi.fn(),
     unregisterHostMcpServer: vi.fn(),
+    setHostRpcMethodHandler: vi.fn(),
     dispose: vi.fn(),
     ensureRuntime: vi.fn(async () => ({
       state: "running",
@@ -141,6 +142,77 @@ describe("Desktop preview providers integration", () => {
           ),
         },
       });
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("resolves absolute host workspace preview files from the checkout root", async () => {
+    const reportsDirectory = resolve(workspaceDirectory, "reports");
+    const csvPath = resolve(reportsDirectory, "absolute-host-path.csv");
+    mkdirSync(reportsDirectory, { recursive: true });
+    writeFileSync(csvPath, "name,score\nAva,10\nLeo,8\n", "utf8");
+
+    const managedWorkspaceDirectory = resolve(sandboxDataDir, "managed-workspace");
+    mkdirSync(managedWorkspaceDirectory, { recursive: true });
+
+    const runtime = createRuntimeManagerStub({
+      workspaceDirectory,
+      managedWorkspaceDirectory,
+      runtimeDirectory,
+    });
+    const service = new DesktopService(runtime);
+
+    try {
+      await waitFor(() => {
+        const plugin = service
+          .getSnapshot()
+          .plugins.find((entry) => entry.id === "spreadsheet-preview");
+        expect(plugin).toBeTruthy();
+        expect(plugin?.runtime.activated).toBe(true);
+      });
+
+      const threadId = service.getSnapshot().threads[0]?.id;
+      expect(threadId).toBeTruthy();
+
+      service.openThreadPreviewItem(threadId, {
+        kind: "file",
+        source: "workspace",
+        path: csvPath,
+      });
+
+      const previewItem = await waitFor(() => {
+        const state = service.getSnapshot().threadPreviewStateById[threadId!];
+        expect(state).toBeTruthy();
+        expect(state.visible).toBe(true);
+        expect(state.items).toHaveLength(1);
+        return state.items[0]!;
+      });
+
+      expect(previewItem.target).toMatchObject({
+        kind: "file",
+        source: "workspace",
+        path: csvPath,
+      });
+      expect(previewItem.src).toBe(
+        `desktop-plugin://local${pathToFileURL(csvPath).pathname}`,
+      );
+      expect(previewItem.renderer).toMatchObject({
+        pluginId: "spreadsheet-preview",
+        providerId: "plugin:spreadsheet-preview:spreadsheet.table",
+      });
+
+      const snapshot = service.getSnapshot();
+      const previewTab = snapshot.tabs.find((tab) => tab.kind === "preview");
+      const previewPaneTab = snapshot.panes
+        .flatMap((pane) => pane.tabs)
+        .find((tab) => tab.kind === "preview");
+      expect(previewTab?.previewItem?.src).toBe(
+        `desktop-plugin://local${pathToFileURL(csvPath).pathname}`,
+      );
+      expect(previewPaneTab?.previewItem?.src).toBe(
+        `desktop-plugin://local${pathToFileURL(csvPath).pathname}`,
+      );
     } finally {
       service.dispose();
     }
