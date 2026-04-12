@@ -1099,6 +1099,9 @@ export class DesktopStore {
     }
 
     const activePaneId = this.getActivePaneId();
+    if (this.getTabsForPane(activePaneId).length === 0) {
+      return activePaneId;
+    }
     const existingAlternatePaneId = this.listPaneIds().find((paneId) => paneId !== activePaneId);
     if (existingAlternatePaneId) {
       return existingAlternatePaneId;

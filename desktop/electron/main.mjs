@@ -1310,6 +1310,16 @@ ipcMain.handle('desktop:download-file', async (_event, request) => {
   };
 });
 
+ipcMain.handle('desktop:list-workspace-entries', async (_event, targetPath) => {
+  await ensureBackend();
+  if (!directDesktopService) {
+    throw new Error('Workspace file browser requires the direct desktop service.');
+  }
+  return directDesktopService.listWorkspaceEntries(
+    typeof targetPath === 'string' ? targetPath : null,
+  );
+});
+
 ipcMain.handle('desktop:open-plugin-directory', async () => {
   const pluginDirectory = getDesktopPluginDirectory();
   ensureDirectory(pluginDirectory);

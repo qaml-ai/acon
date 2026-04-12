@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('desktopShell', {
   importLocalFiles: (paths) => ipcRenderer.invoke('desktop:import-local-files', paths),
   importFilePayloads: (payloads) => ipcRenderer.invoke('desktop:import-file-payloads', payloads),
   downloadFile: (request) => ipcRenderer.invoke('desktop:download-file', request),
+  listWorkspaceEntries: (path) => ipcRenderer.invoke('desktop:list-workspace-entries', path),
   resolveWebviewSrc: (entrypoint) =>
     ipcRenderer.invoke('desktop:resolve-webview-src', entrypoint),
   sendEvent: (event) => ipcRenderer.send('desktop:send', event),
