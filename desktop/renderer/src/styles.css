@@ -166,50 +166,25 @@ body {
 }
 
 .desktop-workbench-tabstrip {
-  position: relative;
   display: flex;
   min-width: 0;
   flex: 0 0 auto;
-  height: auto;
   overflow: hidden;
-  isolation: isolate;
   border-bottom: 1px solid color-mix(in oklab, var(--border) 62%, transparent);
-  background: color-mix(in oklab, var(--background) 96%, var(--muted) 4%);
-}
-
-.desktop-workbench-tabstrip::before,
-.desktop-workbench-tabstrip::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 1.25rem;
-  pointer-events: none;
-  z-index: 2;
-}
-
-.desktop-workbench-tabstrip::before {
-  left: 0;
-  background: linear-gradient(90deg, var(--background) 12%, transparent);
-}
-
-.desktop-workbench-tabstrip::after {
-  right: 0;
-  background: linear-gradient(270deg, var(--background) 12%, transparent);
+  background: var(--background);
 }
 
 .desktop-workbench-tablist {
   display: flex;
   min-width: 0;
   width: 100%;
-  height: auto;
-  align-items: flex-end;
-  gap: 0.35rem;
+  align-items: stretch;
+  gap: 0.25rem;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
-  padding: 0.4rem 0.45rem 0.12rem;
-  scroll-padding-inline: 0.4rem;
+  padding: 0.35rem 0.5rem 0;
+  scroll-padding-inline: 0.5rem;
 }
 
 .desktop-workbench-tab-drop-target {
@@ -233,116 +208,36 @@ body {
   display: flex;
   min-width: clamp(9.5rem, 13vw, 11rem);
   max-width: min(18rem, 27vw);
-  min-height: 2.35rem;
+  min-height: 2.1rem;
   flex: 0 0 clamp(10rem, 14vw, 14rem);
   align-items: center;
-  align-self: auto;
-  border: 1px solid color-mix(in oklab, var(--border) 62%, transparent);
-  border-bottom-color: transparent;
-  border-radius: 0.95rem 0.95rem 0.35rem 0.35rem;
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in oklab, var(--background) 84%, white 16%) 0%,
-      color-mix(in oklab, var(--background) 92%, var(--muted) 8%) 100%
-    );
+  margin-bottom: -1px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
   color: var(--muted-foreground);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 54%, transparent),
-    0 10px 24px -18px color-mix(in oklab, black 18%, transparent);
   transition:
-    transform 120ms ease,
     background-color 120ms ease,
     border-color 120ms ease,
-    color 120ms ease,
-    box-shadow 120ms ease;
-}
-
-.dark .desktop-workbench-tab {
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in oklab, var(--background) 76%, white 24%) 0%,
-      color-mix(in oklab, var(--background) 86%, var(--muted) 14%) 100%
-    );
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 10%, transparent),
-    0 12px 28px -20px color-mix(in oklab, black 64%, transparent);
-}
-
-.desktop-workbench-tab::before {
-  content: "";
-  position: absolute;
-  inset: 0.5rem auto 0.55rem 0.6rem;
-  width: 2px;
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--border) 18%, transparent);
-  transition: background-color 120ms ease, opacity 120ms ease;
-  opacity: 0;
+    color 120ms ease;
 }
 
 .desktop-workbench-tab:hover {
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in oklab, var(--background) 78%, white 22%) 0%,
-      color-mix(in oklab, var(--background) 88%, var(--muted) 12%) 100%
-    );
-  border-color: color-mix(in oklab, var(--border) 82%, transparent);
+  background: color-mix(in oklab, var(--background) 92%, var(--muted) 8%);
+  border-color: color-mix(in oklab, var(--border) 72%, transparent);
   color: var(--foreground);
-  transform: translateY(-1px);
-}
-
-.dark .desktop-workbench-tab:hover {
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in oklab, var(--background) 68%, white 32%) 0%,
-      color-mix(in oklab, var(--background) 80%, var(--muted) 20%) 100%
-    );
 }
 
 .desktop-workbench-tab.is-active {
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in oklab, var(--background) 97%, white 3%) 0%,
-      var(--background) 100%
-    );
-  border-color: color-mix(in oklab, var(--border) 88%, transparent);
+  background: var(--background);
+  border-color: color-mix(in oklab, var(--border) 82%, transparent);
+  border-bottom: 1px solid var(--background);
   color: var(--foreground);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 65%, transparent),
-    0 16px 28px -22px color-mix(in oklab, black 18%, transparent);
-  transform: translateY(-1px);
 }
 
 .desktop-workbench-tab.is-dragging {
   opacity: 0.55;
-}
-
-.dark .desktop-workbench-tab.is-active {
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in oklab, var(--background) 94%, white 6%) 0%,
-      color-mix(in oklab, var(--background) 98%, white 2%) 100%
-    );
-}
-
-.desktop-workbench-tab.is-active::after {
-  content: "";
-  position: absolute;
-  inset: auto 0.9rem 0.18rem;
-  height: 2px;
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--foreground) 86%, transparent);
-}
-
-.desktop-workbench-tab:hover::before,
-.desktop-workbench-tab.is-active::before {
-  background: color-mix(in oklab, var(--foreground) 14%, transparent);
-  opacity: 1;
 }
 
 .desktop-workbench-tab-button {
@@ -352,13 +247,13 @@ body {
   flex: 1 1 auto;
   align-items: center;
   gap: 0.6rem;
-  padding: 0 0.85rem 0 0.95rem;
+  padding: 0 0.8rem;
   text-align: left;
   outline: none;
 }
 
 .desktop-workbench-tab-button:focus-visible {
-  border-radius: 0.5rem;
+  border-radius: 4px;
   box-shadow: inset 0 0 0 1px var(--ring);
 }
 
@@ -392,9 +287,8 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 0.75rem;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1;
-  letter-spacing: -0.01em;
 }
 
 .desktop-workbench-tab-subtitle {
@@ -409,20 +303,18 @@ body {
 }
 
 .desktop-workbench-tab-close {
-  margin-right: 0.5rem;
+  margin-right: 0.45rem;
   display: flex;
   width: 1.15rem;
   height: 1.15rem;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  border-radius: 999px;
+  border-radius: 4px;
   color: var(--muted-foreground);
-  opacity: 0;
-  transform: scale(0.92);
+  opacity: 0.6;
   transition:
     opacity 120ms ease,
-    transform 120ms ease,
     background-color 120ms ease,
     color 120ms ease;
 }
@@ -431,7 +323,6 @@ body {
 .desktop-workbench-tab.is-active .desktop-workbench-tab-close,
 .desktop-workbench-tab-close:focus-visible {
   opacity: 1;
-  transform: scale(1);
 }
 
 .desktop-workbench-tab-close:hover,
