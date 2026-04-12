@@ -42,6 +42,7 @@ let startupProbeTimeout = null;
 let startupProbeRendererReady = null;
 let pendingPluginRefresh = null;
 let backendCleanupDone = false;
+const isMac = process.platform === 'darwin';
 
 async function showHostMcpPermissionDialog(request) {
   const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? undefined;
@@ -1032,8 +1033,14 @@ function createWindow() {
     minHeight: 720,
     backgroundColor: getWindowBackgroundColor(),
     show: !startupProbeEnabled,
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 18, y: 16 },
+    ...(isMac
+      ? {
+          titleBarStyle: 'hidden',
+          roundedCorners: true,
+        }
+      : {
+          titleBarStyle: 'hiddenInset',
+        }),
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),
       contextIsolation: true,
