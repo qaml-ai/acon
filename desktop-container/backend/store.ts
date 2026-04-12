@@ -7,6 +7,12 @@ import type {
   DesktopMessage,
   DesktopModel,
   DesktopModelOption,
+  DesktopPane,
+  DesktopPaneDropPlacement,
+  DesktopPaneLeaf,
+  DesktopPaneNode,
+  DesktopPaneSplit,
+  DesktopPaneSplitDirection,
   DesktopPreviewItem,
   DesktopPreviewTarget,
   DesktopProvider,
@@ -34,13 +40,18 @@ import {
 
 interface PersistedTab {
   id: string;
-  kind: 'thread' | 'workspace';
+  kind: 'thread' | 'workspace' | 'preview';
+  paneId: string;
   threadId: string | null;
-  viewId: string;
+  viewId: string | null;
+  target?: DesktopPreviewTarget;
 }
 
 interface PersistedState {
   tabs?: PersistedTab[];
+  paneLayout?: PersistedPaneNode | null;
+  activePaneId?: string | null;
+  activeTabIdByPane?: Record<string, string | null>;
   activeTabId?: string | null;
   activeThreadId: string | null;
   activeGroupId?: string | null;
@@ -78,6 +89,21 @@ interface PersistedThreadPreviewState {
   items: PersistedPreviewItem[];
 }
 
+interface PersistedPaneLeaf {
+  id: string;
+  kind: 'pane';
+}
+
+interface PersistedPaneSplit {
+  id: string;
+  kind: 'split';
+  direction: DesktopPaneSplitDirection;
+  children: PersistedPaneNode[];
+  sizes?: number[] | null;
+}
+
+type PersistedPaneNode = PersistedPaneLeaf | PersistedPaneSplit;
+
 type PersistedDesktopThread = Omit<DesktopThread, 'provider'> & {
   provider?: DesktopProvider;
 };
@@ -85,6 +111,8 @@ type PersistedDesktopThread = Omit<DesktopThread, 'provider'> & {
 const DEFAULT_THREAD_GROUP_TITLE = 'Default Group';
 const DEFAULT_NEW_THREAD_GROUP_TITLE = 'New group';
 const DEFAULT_THREAD_TITLE = 'New thread';
+const PRIMARY_PANE_ID = 'primary';
+const LEGACY_SECONDARY_PANE_ID = 'secondary';
 const backendDirectory = dirname(fileURLToPath(import.meta.url));
 const desktopDirectory = resolve(backendDirectory, '..');
 const DEFAULT_DATA_DIR = resolve(desktopDirectory, '.local');
@@ -115,6 +143,265 @@ function normalizePersistedId(value: unknown): string | null {
 
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizePaneId(value: unknown): string {
+  const normalized = normalizePersistedId(value);
+  return normalized ?? PRIMARY_PANE_ID;
+}
+
+function isPersistedPaneLeaf(node: PersistedPaneNode): node is PersistedPaneLeaf {
+  return node.kind === 'pane';
+}
+
+function createPaneLeaf(id: string = randomUUID()): PersistedPaneLeaf {
+  return {
+    id,
+    kind: 'pane',
+  };
+}
+
+function createDefaultPaneLayout(): PersistedPaneNode {
+  return createPaneLeaf(PRIMARY_PANE_ID);
+}
+
+function createSplitPaneLayout(
+  direction: DesktopPaneSplitDirection,
+  children: PersistedPaneNode[],
+  sizes?: number[] | null,
+): PersistedPaneSplit {
+  return {
+    id: randomUUID(),
+    kind: 'split',
+    direction,
+    children,
+    sizes:
+      Array.isArray(sizes) && sizes.length === children.length
+        ? sizes.map((size) => (typeof size === 'number' && Number.isFinite(size) ? size : 0))
+        : null,
+  };
+}
+
+function clonePaneNode(node: PersistedPaneNode): PersistedPaneNode {
+  if (isPersistedPaneLeaf(node)) {
+    return { ...node };
+  }
+
+  return {
+    ...node,
+    children: node.children.map((child) => clonePaneNode(child)),
+    sizes: node.sizes ? [...node.sizes] : null,
+  };
+}
+
+function listPaneIds(node: PersistedPaneNode | null | undefined): string[] {
+  if (!node) {
+    return [];
+  }
+
+  if (isPersistedPaneLeaf(node)) {
+    return [node.id];
+  }
+
+  return node.children.flatMap((child) => listPaneIds(child));
+}
+
+function findPaneNode(
+  node: PersistedPaneNode | null | undefined,
+  paneId: string,
+): PersistedPaneLeaf | null {
+  if (!node) {
+    return null;
+  }
+
+  if (isPersistedPaneLeaf(node)) {
+    return node.id === paneId ? node : null;
+  }
+
+  for (const child of node.children) {
+    const match = findPaneNode(child, paneId);
+    if (match) {
+      return match;
+    }
+  }
+
+  return null;
+}
+
+function getFirstPaneId(node: PersistedPaneNode | null | undefined): string | null {
+  return listPaneIds(node)[0] ?? null;
+}
+
+function appendPaneToLayout(
+  layout: PersistedPaneNode | null | undefined,
+  paneId: string,
+): PersistedPaneNode {
+  if (!layout) {
+    return createPaneLeaf(paneId);
+  }
+
+  if (findPaneNode(layout, paneId)) {
+    return layout;
+  }
+
+  return createSplitPaneLayout('horizontal', [layout, createPaneLeaf(paneId)], [50, 50]);
+}
+
+function normalizePaneSplitDirection(
+  value: unknown,
+): DesktopPaneSplitDirection | null {
+  return value === 'horizontal' || value === 'vertical' ? value : null;
+}
+
+function normalizePaneLayoutNode(value: unknown): PersistedPaneNode | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const node = value as {
+    id?: unknown;
+    kind?: unknown;
+    direction?: unknown;
+    children?: unknown;
+    sizes?: unknown;
+  };
+
+  if (node.kind === 'pane') {
+    const id = normalizePersistedId(node.id);
+    return id ? createPaneLeaf(id) : null;
+  }
+
+  if (node.kind !== 'split') {
+    return null;
+  }
+
+  const direction = normalizePaneSplitDirection(node.direction);
+  const children = Array.isArray(node.children)
+    ? node.children.flatMap((child) => {
+        const normalized = normalizePaneLayoutNode(child);
+        return normalized ? [normalized] : [];
+      })
+    : [];
+  if (!direction || children.length === 0) {
+    return null;
+  }
+
+  const sizes = Array.isArray(node.sizes)
+    ? node.sizes.flatMap((size) =>
+        typeof size === 'number' && Number.isFinite(size) ? [size] : [],
+      )
+    : null;
+
+  return {
+    id: normalizePersistedId(node.id) ?? randomUUID(),
+    kind: 'split',
+    direction,
+    children,
+    sizes: sizes && sizes.length === children.length ? sizes : null,
+  };
+}
+
+function ensurePaneLayout(
+  layout: PersistedPaneNode | null | undefined,
+  paneIds: Iterable<string>,
+): PersistedPaneNode {
+  let nextLayout = layout ? clonePaneNode(layout) : createDefaultPaneLayout();
+
+  for (const paneId of paneIds) {
+    nextLayout = appendPaneToLayout(nextLayout, paneId);
+  }
+
+  return nextLayout;
+}
+
+function splitPaneLayout(
+  node: PersistedPaneNode,
+  targetPaneId: string,
+  newPaneId: string,
+  placement: Exclude<DesktopPaneDropPlacement, 'center'>,
+): PersistedPaneNode {
+  if (isPersistedPaneLeaf(node)) {
+    if (node.id !== targetPaneId) {
+      return node;
+    }
+
+    const direction = placement === 'left' || placement === 'right' ? 'horizontal' : 'vertical';
+    const newPane = createPaneLeaf(newPaneId);
+    const children =
+      placement === 'left' || placement === 'top'
+        ? [newPane, node]
+        : [node, newPane];
+    return createSplitPaneLayout(direction, children, [50, 50]);
+  }
+
+  return {
+    ...node,
+    children: node.children.map((child) =>
+      splitPaneLayout(child, targetPaneId, newPaneId, placement),
+    ),
+  };
+}
+
+function prunePaneLayout(
+  node: PersistedPaneNode | null | undefined,
+  paneIds: ReadonlySet<string>,
+): PersistedPaneNode | null {
+  if (!node) {
+    return null;
+  }
+
+  if (isPersistedPaneLeaf(node)) {
+    return paneIds.has(node.id) ? node : null;
+  }
+
+  const children = node.children.flatMap((child) => {
+    const pruned = prunePaneLayout(child, paneIds);
+    return pruned ? [pruned] : [];
+  });
+
+  if (children.length === 0) {
+    return null;
+  }
+
+  if (children.length === 1) {
+    return children[0] ?? null;
+  }
+
+  return {
+    ...node,
+    children,
+    sizes: null,
+  };
+}
+
+function toDesktopPaneLayout(node: PersistedPaneNode): DesktopPaneNode {
+  if (isPersistedPaneLeaf(node)) {
+    const leaf: DesktopPaneLeaf = {
+      id: node.id,
+      kind: 'pane',
+    };
+    return leaf;
+  }
+
+  const split: DesktopPaneSplit = {
+    id: node.id,
+    kind: 'split',
+    direction: node.direction,
+    children: node.children.map((child) => toDesktopPaneLayout(child)),
+    sizes: node.sizes ? [...node.sizes] : null,
+  };
+  return split;
+}
+
+function getPreviewTabId(threadId: string, target: DesktopPreviewTarget): string {
+  return `preview:${threadId}:${getDesktopPreviewItemId(target)}`;
+}
+
+function getPreviewItemIdFromTab(tab: Pick<PersistedTab, 'kind' | 'target'>): string | null {
+  if (tab.kind !== 'preview' || !tab.target) {
+    return null;
+  }
+  return getDesktopPreviewItemId(tab.target);
 }
 
 function normalizeThread(value: unknown, defaultGroupId: string): DesktopThread | null {
@@ -388,23 +675,54 @@ function normalizeTab(value: unknown): PersistedTab | null {
   const tab = value as {
     id?: unknown;
     kind?: unknown;
+    paneId?: unknown;
     threadId?: unknown;
     viewId?: unknown;
+    target?: unknown;
   };
   const id = normalizePersistedId(tab.id);
-  const viewId = normalizePersistedId(tab.viewId);
-  if (!id || !viewId) {
+  if (!id) {
     return null;
   }
 
-  const kind = tab.kind === 'thread' ? 'thread' : tab.kind === 'workspace' ? 'workspace' : null;
+  const kind =
+    tab.kind === 'thread'
+      ? 'thread'
+      : tab.kind === 'workspace'
+        ? 'workspace'
+        : tab.kind === 'preview'
+          ? 'preview'
+          : null;
   if (!kind) {
+    return null;
+  }
+
+  if (kind === 'preview') {
+    const target = normalizePreviewTarget(tab.target);
+    const threadId = normalizePersistedId(tab.threadId);
+    if (!target || !threadId) {
+      return null;
+    }
+
+    return {
+      id,
+      kind,
+      paneId: normalizePaneId(tab.paneId),
+      threadId,
+      viewId: null,
+      target,
+    };
+  }
+
+  const viewId = normalizePersistedId(tab.viewId);
+  if (!viewId) {
     return null;
   }
 
   return {
     id,
     kind,
+    paneId: normalizePaneId(tab.paneId),
     threadId: normalizePersistedId(tab.threadId),
     viewId,
   };
@@ -483,14 +801,99 @@ export class DesktopStore {
           : null) ?? fallbackProvider;
       const activeGroupId =
         normalizePersistedId(parsed.activeGroupId) ?? threadGroups[0]?.id ?? null;
+      const threadPreviewStateById = Object.fromEntries(
+        Object.entries(
+          parsed.threadPreviewStateById ?? parsed.threadPanelStateById ?? {},
+        ).flatMap(([threadId, previewState]) => {
+          const normalized = normalizePreviewState(previewState);
+          return normalized ? [[threadId, normalized]] : [];
+        }),
+      );
+      const normalizedTabs = Array.isArray(parsed.tabs)
+        ? parsed.tabs.flatMap((tab) => {
+            const normalized = normalizeTab(tab);
+            return normalized ? [normalized] : [];
+          })
+        : [];
+      const legacyPreviewTabs = Object.entries(threadPreviewStateById).flatMap(
+        ([threadId, previewState]) =>
+          previewState.visible
+            ? previewState.items.map((item) => ({
+                id: getPreviewTabId(threadId, item.target),
+                kind: 'preview' as const,
+                paneId: LEGACY_SECONDARY_PANE_ID,
+                threadId,
+                viewId: null,
+                target: item.target,
+              }))
+            : [],
+      );
+      const tabs = [...normalizedTabs];
+      for (const previewTab of legacyPreviewTabs) {
+        if (!tabs.some((tab) => tab.id === previewTab.id)) {
+          tabs.push(previewTab);
+        }
+      }
+      const persistedPaneLayout = normalizePaneLayoutNode(parsed.paneLayout);
+      const paneIdsFromTabs = new Set(
+        tabs.map((tab) => normalizePaneId(tab.paneId)),
+      );
+      if (paneIdsFromTabs.size === 0) {
+        paneIdsFromTabs.add(PRIMARY_PANE_ID);
+      }
+      let paneLayout =
+        persistedPaneLayout ??
+        (paneIdsFromTabs.has(LEGACY_SECONDARY_PANE_ID)
+          ? createSplitPaneLayout(
+              'horizontal',
+              [createPaneLeaf(PRIMARY_PANE_ID), createPaneLeaf(LEGACY_SECONDARY_PANE_ID)],
+              [50, 50],
+            )
+          : createDefaultPaneLayout());
+      paneLayout = ensurePaneLayout(paneLayout, paneIdsFromTabs);
+      const paneIds = new Set(listPaneIds(paneLayout));
+      const activePaneId =
+        normalizePersistedId(parsed.activePaneId) && paneIds.has(normalizePersistedId(parsed.activePaneId)!)
+          ? normalizePersistedId(parsed.activePaneId)
+          : tabs.find((tab) => paneIds.has(tab.paneId))?.paneId ??
+            getFirstPaneId(paneLayout) ??
+            PRIMARY_PANE_ID;
+      const activeTabIdByPaneSource =
+        parsed.activeTabIdByPane && typeof parsed.activeTabIdByPane === 'object'
+          ? parsed.activeTabIdByPane
+          : {};
+      const activeTabIdByPane: Record<string, string | null> = Object.fromEntries(
+        Object.entries(activeTabIdByPaneSource).flatMap(([paneId, tabId]) => {
+          const normalizedTabId = normalizePersistedId(tabId);
+          return [[normalizePaneId(paneId), normalizedTabId]];
+        }),
+      );
+      if (!activeTabIdByPane[PRIMARY_PANE_ID]) {
+        activeTabIdByPane[PRIMARY_PANE_ID] = normalizePersistedId(parsed.activeTabId);
+      }
+      if (!activeTabIdByPane[LEGACY_SECONDARY_PANE_ID]) {
+        const activeLegacyPreviewTabId =
+          activeThreadId && threadPreviewStateById[activeThreadId]?.activeItemId
+            ? getPreviewTabId(
+                activeThreadId,
+                threadPreviewStateById[activeThreadId]!.items.find(
+                  (item) => item.id === threadPreviewStateById[activeThreadId]!.activeItemId,
+                )?.target ?? threadPreviewStateById[activeThreadId]!.items[0]!.target,
+              )
+            : null;
+        activeTabIdByPane[LEGACY_SECONDARY_PANE_ID] = activeLegacyPreviewTabId;
+      }
+      for (const paneId of paneIds) {
+        if (!(paneId in activeTabIdByPane)) {
+          activeTabIdByPane[paneId] = null;
+        }
+      }
 
       return {
-        tabs: Array.isArray(parsed.tabs)
-          ? parsed.tabs.flatMap((tab) => {
-              const normalized = normalizeTab(tab);
-              return normalized ? [normalized] : [];
-            })
-          : [],
+        tabs,
+        paneLayout,
+        activePaneId,
+        activeTabIdByPane,
         activeTabId: normalizePersistedId(parsed.activeTabId),
         activeThreadId,
         activeGroupId,
@@ -505,14 +908,7 @@ export class DesktopStore {
               requireDesktopProvider(activeThreadProvider).getDefaultModel(),
           ),
         },
-        threadPreviewStateById: Object.fromEntries(
-          Object.entries(
-            parsed.threadPreviewStateById ?? parsed.threadPanelStateById ?? {},
-          ).flatMap(([threadId, previewState]) => {
-            const normalized = normalizePreviewState(previewState);
-            return normalized ? [[threadId, normalized]] : [];
-          }),
-        ),
+        threadPreviewStateById,
         providerStateByThread,
         pluginEnabledById:
           parsed.pluginEnabledById && typeof parsed.pluginEnabledById === 'object'
@@ -531,6 +927,11 @@ export class DesktopStore {
       const defaultThreadGroup = createThreadGroup(DEFAULT_THREAD_GROUP_TITLE);
       return {
         tabs: [],
+        paneLayout: createDefaultPaneLayout(),
+        activePaneId: PRIMARY_PANE_ID,
+        activeTabIdByPane: {
+          [PRIMARY_PANE_ID]: null,
+        },
         activeTabId: null,
         activeThreadId: null,
         activeGroupId: defaultThreadGroup.id,
@@ -583,16 +984,160 @@ export class DesktopStore {
     return created.id;
   }
 
+  private getTabsForPane(paneId: string): PersistedTab[] {
+    return (this.state.tabs ?? []).filter((tab) => tab.paneId === paneId);
+  }
+
+  private getPaneLayout(): PersistedPaneNode {
+    const paneIds = new Set(
+      (this.state.tabs ?? []).map((tab) => normalizePaneId(tab.paneId)),
+    );
+    if (paneIds.size === 0) {
+      paneIds.add(PRIMARY_PANE_ID);
+    }
+
+    const layout = ensurePaneLayout(this.state.paneLayout, paneIds);
+    this.state.paneLayout = layout;
+    return layout;
+  }
+
+  private listPaneIds(): string[] {
+    return listPaneIds(this.getPaneLayout());
+  }
+
+  private pruneEmptyPanes(): void {
+    const paneIdsWithTabs = new Set(
+      (this.state.tabs ?? []).map((tab) => normalizePaneId(tab.paneId)),
+    );
+
+    if (paneIdsWithTabs.size === 0) {
+      this.state.paneLayout = createDefaultPaneLayout();
+      this.state.activePaneId = PRIMARY_PANE_ID;
+      this.state.activeTabIdByPane = {
+        [PRIMARY_PANE_ID]: null,
+      };
+      return;
+    }
+
+    const prunedLayout = prunePaneLayout(this.getPaneLayout(), paneIdsWithTabs);
+    this.state.paneLayout = ensurePaneLayout(prunedLayout, paneIdsWithTabs);
+    const nextPaneIds = new Set(listPaneIds(this.state.paneLayout));
+    this.state.activeTabIdByPane = Object.fromEntries(
+      Array.from(nextPaneIds, (paneId) => [
+        paneId,
+        normalizePersistedId(this.state.activeTabIdByPane?.[paneId]),
+      ]),
+    );
+
+    const activePaneId = normalizePersistedId(this.state.activePaneId);
+    if (!activePaneId || !nextPaneIds.has(activePaneId)) {
+      this.state.activePaneId = getFirstPaneId(this.state.paneLayout) ?? PRIMARY_PANE_ID;
+    }
+  }
+
+  private hasPane(paneId: string): boolean {
+    return findPaneNode(this.getPaneLayout(), paneId) !== null;
+  }
+
+  private getActivePaneId(): string {
+    const activePaneId = normalizePersistedId(this.state.activePaneId);
+    if (activePaneId && this.hasPane(activePaneId)) {
+      return activePaneId;
+    }
+
+    return getFirstPaneId(this.getPaneLayout()) ?? PRIMARY_PANE_ID;
+  }
+
+  private getActiveTabIdForPane(paneId: string): string | null {
+    return normalizePersistedId(this.state.activeTabIdByPane?.[paneId]);
+  }
+
+  private setActiveTabIdForPane(paneId: string, tabId: string | null): void {
+    this.state.activeTabIdByPane = {
+      ...(this.state.activeTabIdByPane ?? {}),
+      [paneId]: normalizePersistedId(tabId),
+    };
+  }
+
+  private getActiveTabForPane(paneId: string): PersistedTab | null {
+    const tabs = this.getTabsForPane(paneId);
+    const activeTabId = this.getActiveTabIdForPane(paneId);
+    return tabs.find((tab) => tab.id === activeTabId) ?? tabs[0] ?? null;
+  }
+
+  private getGlobalActiveTab(): PersistedTab | null {
+    return this.getActiveTabForPane(this.getActivePaneId());
+  }
+
+  private getPreferredPreviewPaneId(threadId: string): string {
+    const existingPreviewTab =
+      (this.state.tabs ?? []).find(
+        (tab) => tab.kind === 'preview' && tab.threadId === threadId,
+      ) ?? null;
+    if (existingPreviewTab) {
+      return existingPreviewTab.paneId;
+    }
+
+    const activePaneId = this.getActivePaneId();
+    const existingAlternatePaneId = this.listPaneIds().find((paneId) => paneId !== activePaneId);
+    if (existingAlternatePaneId) {
+      return existingAlternatePaneId;
+    }
+
+    const previewPaneId = randomUUID();
+    this.state.paneLayout = splitPaneLayout(
+      this.getPaneLayout(),
+      activePaneId,
+      previewPaneId,
+      'right',
+    );
+    this.setActiveTabIdForPane(previewPaneId, null);
+    return previewPaneId;
+  }
+
+  private reconcilePaneActivity(): void {
+    this.pruneEmptyPanes();
+    const tabsById = new Set((this.state.tabs ?? []).map((tab) => tab.id));
+    const paneIds = this.listPaneIds();
+    for (const paneId of paneIds) {
+      const paneTabs = this.getTabsForPane(paneId);
+      const activeTabId = this.getActiveTabIdForPane(paneId);
+      this.setActiveTabIdForPane(
+        paneId,
+        activeTabId && tabsById.has(activeTabId)
+          ? activeTabId
+          : paneTabs[0]?.id ?? null,
+      );
+    }
+    const activePaneId = this.getActivePaneId();
+    const activeTab = this.getActiveTabForPane(activePaneId);
+    if (activeTab) {
+      this.syncStateFromTab(activeTab);
+      return;
+    }
+
+    this.state.activePaneId = activePaneId;
+    this.state.activeTabId = null;
+    this.state.activeViewId = null;
+  }
+
   private syncStateFromTab(tab: PersistedTab | null): void {
     if (!tab) {
+      const activePaneId = this.getActivePaneId();
+      this.state.activePaneId = activePaneId;
+      for (const paneId of this.listPaneIds()) {
+        this.setActiveTabIdForPane(paneId, null);
+      }
       this.state.activeTabId = null;
       this.state.activeViewId = null;
       return;
     }
 
+    this.state.activePaneId = tab.paneId;
+    this.setActiveTabIdForPane(tab.paneId, tab.id);
     this.state.activeTabId = tab.id;
     this.state.activeViewId = tab.viewId;
-    if (tab.kind === 'thread' && tab.threadId) {
+    if (tab.threadId) {
       this.state.activeThreadId = tab.threadId;
       const thread = this.findThread(tab.threadId);
       if (thread) {
@@ -607,9 +1152,15 @@ export class DesktopStore {
     const existing = (this.state.tabs ?? []).find((current) =>
       current.kind === tab.kind &&
       current.threadId === tab.threadId &&
-      current.viewId === tab.viewId,
+      current.viewId === tab.viewId &&
+      (current.kind !== 'preview'
+        ? true
+        : getPreviewItemIdFromTab(current) === getPreviewItemIdFromTab(tab)),
     );
     if (existing) {
+      if (existing.kind === 'preview' && tab.target) {
+        existing.target = tab.target;
+      }
       return existing;
     }
 
@@ -627,13 +1178,16 @@ export class DesktopStore {
     const viewIds = new Set(views.map((view) => view.id));
     const threadIds = new Set(this.state.threads.map((thread) => thread.id));
     return (this.state.tabs ?? []).filter((tab) => {
-      if (!viewIds.has(tab.viewId)) {
-        return false;
-      }
       if (tab.kind === 'thread') {
-        return Boolean(tab.threadId && threadIds.has(tab.threadId));
+        return Boolean(tab.threadId && threadIds.has(tab.threadId) && tab.viewId && viewIds.has(tab.viewId));
       }
-      return true;
+      if (tab.kind === 'workspace') {
+        return Boolean(tab.viewId && viewIds.has(tab.viewId));
+      }
+      if (tab.kind === 'preview') {
+        return Boolean(tab.threadId && threadIds.has(tab.threadId) && tab.target);
+      }
+      return false;
     });
   }
 
@@ -643,12 +1197,11 @@ export class DesktopStore {
   ): DesktopTab[] {
     const viewById = new Map(views.map((view) => [view.id, view]));
     return tabs.reduce<DesktopTab[]>((result, tab) => {
-      const view = viewById.get(tab.viewId);
-      if (!view) {
-        return result;
-      }
-
       if (tab.kind === 'thread') {
+        const view = tab.viewId ? viewById.get(tab.viewId) : null;
+        if (!view) {
+          return result;
+        }
         const thread = this.findThread(tab.threadId);
         if (!thread) {
           return result;
@@ -656,6 +1209,7 @@ export class DesktopStore {
         result.push({
           id: tab.id,
           kind: 'thread' as const,
+          paneId: tab.paneId,
           threadId: thread.id,
           viewId: view.id,
           title: thread.title,
@@ -666,9 +1220,41 @@ export class DesktopStore {
         return result;
       }
 
+      if (tab.kind === 'preview') {
+        const thread = this.findThread(tab.threadId);
+        if (!thread || !tab.target) {
+          return result;
+        }
+        result.push({
+          id: tab.id,
+          kind: 'preview' as const,
+          paneId: tab.paneId,
+          threadId: thread.id,
+          viewId: null,
+          title: getDesktopPreviewItemTitle(tab.target),
+          subtitle: thread.title,
+          icon: tab.target.kind === 'url' ? 'globe' : 'file',
+          closable: true,
+          previewItem: {
+            id: getDesktopPreviewItemId(tab.target),
+            title: getDesktopPreviewItemTitle(tab.target),
+            target: tab.target,
+            src: null,
+            contentType: tab.target.kind === 'file' ? tab.target.contentType ?? null : null,
+            renderer: null,
+          },
+        });
+        return result;
+      }
+
+      const view = tab.viewId ? viewById.get(tab.viewId) : null;
+      if (!view) {
+        return result;
+      }
       result.push({
         id: tab.id,
         kind: 'workspace' as const,
+        paneId: tab.paneId,
         threadId: null,
         viewId: view.id,
         title: view.title,
@@ -683,11 +1269,7 @@ export class DesktopStore {
   private activateFallbackTab(views: DesktopView[]): void {
     const tabs = this.normalizeTabs(views);
     this.state.tabs = tabs;
-    const activeTab =
-      tabs.find((tab) => tab.id === this.state.activeTabId) ??
-      tabs[tabs.length - 1] ??
-      null;
-    this.syncStateFromTab(activeTab);
+    this.reconcilePaneActivity();
   }
 
   listThreads(): DesktopThread[] {
@@ -826,6 +1408,7 @@ export class DesktopStore {
 
     const tab = this.upsertTab({
       kind: 'thread',
+      paneId: this.getActivePaneId(),
       threadId,
       viewId,
     });
@@ -836,6 +1419,7 @@ export class DesktopStore {
   activateWorkspaceView(viewId: string): void {
     const tab = this.upsertTab({
       kind: 'workspace',
+      paneId: this.getActivePaneId(),
       threadId: null,
       viewId,
     });
@@ -852,22 +1436,175 @@ export class DesktopStore {
     this.persist();
   }
 
+  focusPane(paneId: string): void {
+    if (!this.hasPane(paneId)) {
+      throw new Error(`Pane ${paneId} does not exist`);
+    }
+
+    this.state.activePaneId = paneId;
+    const activeTab = this.getActiveTabForPane(paneId);
+    if (activeTab) {
+      this.syncStateFromTab(activeTab);
+    } else {
+      this.state.activeTabId = null;
+      this.state.activeViewId = null;
+    }
+    this.persist();
+  }
+
   closeTab(tabId: string, views: DesktopView[]): void {
     const tabs = this.normalizeTabs(views);
-    const index = tabs.findIndex((tab) => tab.id === tabId);
-    if (index === -1) {
+    const removedTab = tabs.find((tab) => tab.id === tabId) ?? null;
+    if (!removedTab) {
       throw new Error(`Tab ${tabId} does not exist`);
     }
 
-    const nextTabs = tabs.filter((tab) => tab.id !== tabId);
-    this.state.tabs = nextTabs;
-    if (this.state.activeTabId === tabId) {
-      const fallback = nextTabs[index] ?? nextTabs[index - 1] ?? nextTabs[0] ?? null;
-      this.syncStateFromTab(fallback);
-    } else {
-      this.state.activeTabId = normalizePersistedId(this.state.activeTabId);
+    this.state.tabs = tabs.filter((tab) => tab.id !== tabId);
+
+    if (removedTab.kind === 'preview' && removedTab.threadId && removedTab.target) {
+      const itemId = getDesktopPreviewItemId(removedTab.target);
+      const current = this.state.threadPreviewStateById?.[removedTab.threadId];
+      if (current) {
+        const items = current.items.filter((item) => item.id !== itemId);
+        this.state.threadPreviewStateById = {
+          ...(this.state.threadPreviewStateById ?? {}),
+          [removedTab.threadId]: {
+            visible: current.visible && items.length > 0,
+            activeItemId:
+              current.activeItemId === itemId
+                ? items[0]?.id ?? null
+                : current.activeItemId && items.some((item) => item.id === current.activeItemId)
+                  ? current.activeItemId
+                  : items[0]?.id ?? null,
+            items,
+          },
+        };
+      }
     }
+
+    this.reconcilePaneActivity();
     this.persist();
+  }
+
+  moveTab(
+    tabId: string,
+    targetPaneId: string,
+    targetIndex?: number,
+    placement: DesktopPaneDropPlacement = 'center',
+  ): void {
+    const tabs = [...(this.state.tabs ?? [])];
+    const movingTab = tabs.find((tab) => tab.id === tabId) ?? null;
+    if (!movingTab) {
+      throw new Error(`Tab ${tabId} does not exist`);
+    }
+
+    let destinationPaneId = targetPaneId;
+    if (placement !== 'center') {
+      if (!this.hasPane(targetPaneId)) {
+        throw new Error(`Pane ${targetPaneId} does not exist`);
+      }
+      destinationPaneId = randomUUID();
+      this.state.paneLayout = splitPaneLayout(
+        this.getPaneLayout(),
+        targetPaneId,
+        destinationPaneId,
+        placement,
+      );
+      this.setActiveTabIdForPane(destinationPaneId, null);
+    } else if (!this.hasPane(destinationPaneId)) {
+      this.state.paneLayout = appendPaneToLayout(this.getPaneLayout(), destinationPaneId);
+      this.setActiveTabIdForPane(destinationPaneId, null);
+    }
+
+    const sourcePaneId = movingTab.paneId;
+    const sourcePaneTabs = this.getTabsForPane(sourcePaneId);
+    const sourceIndex = sourcePaneTabs.findIndex((tab) => tab.id === tabId);
+    const destinationTabs = this.getTabsForPane(destinationPaneId).filter(
+      (tab) => tab.id !== tabId,
+    );
+    let insertionIndex =
+      typeof targetIndex === 'number' && Number.isFinite(targetIndex)
+        ? Math.trunc(targetIndex)
+        : destinationTabs.length;
+    if (sourcePaneId === destinationPaneId && sourceIndex !== -1 && sourceIndex < insertionIndex) {
+      insertionIndex -= 1;
+    }
+    insertionIndex = Math.max(0, Math.min(destinationTabs.length, insertionIndex));
+
+    const nextTabs = tabs.filter((tab) => tab.id !== tabId);
+    const movedTab: PersistedTab = {
+      ...movingTab,
+      paneId: destinationPaneId,
+    };
+    let destinationCount = 0;
+    let inserted = false;
+    const reorderedTabs = nextTabs.flatMap((tab) => {
+      if (tab.paneId !== destinationPaneId) {
+        return [tab];
+      }
+
+      if (!inserted && destinationCount === insertionIndex) {
+        inserted = true;
+        destinationCount += 1;
+        return [movedTab, tab];
+      }
+
+      destinationCount += 1;
+      return [tab];
+    });
+    if (!inserted) {
+      reorderedTabs.push(movedTab);
+    }
+
+    this.state.tabs = reorderedTabs;
+    this.syncStateFromTab(movedTab);
+    this.reconcilePaneActivity();
+    this.persist();
+  }
+
+  private syncPreviewTabs(threadId: string): void {
+    const previewState = this.state.threadPreviewStateById?.[threadId] ?? {
+      visible: false,
+      activeItemId: null,
+      items: [],
+    };
+    const currentTabs = this.state.tabs ?? [];
+    const previewTabs = currentTabs.filter(
+      (tab) => tab.kind === 'preview' && tab.threadId === threadId,
+    );
+    const preferredPaneId =
+      previewTabs[0]?.paneId ?? this.getPreferredPreviewPaneId(threadId);
+    const desiredItems = previewState.visible ? previewState.items : [];
+    const desiredTabs = desiredItems.map<PersistedTab>((item) => {
+      const existing =
+        previewTabs.find((tab) => getPreviewItemIdFromTab(tab) === item.id) ?? null;
+      return {
+        id: existing?.id ?? getPreviewTabId(threadId, item.target),
+        kind: 'preview',
+        paneId: existing?.paneId ?? preferredPaneId,
+        threadId,
+        viewId: null,
+        target: item.target,
+      };
+    });
+
+    this.state.tabs = [
+      ...currentTabs.filter(
+        (tab) => !(tab.kind === 'preview' && tab.threadId === threadId),
+      ),
+      ...desiredTabs,
+    ];
+
+    if (desiredTabs.length > 0) {
+      const activePreviewTab =
+        desiredTabs.find((tab) => getPreviewItemIdFromTab(tab) === previewState.activeItemId) ??
+        desiredTabs[0] ??
+        null;
+      this.syncStateFromTab(activePreviewTab);
+      return;
+    }
+
+    this.reconcilePaneActivity();
   }
 
   getThreadPreviewStateById(): Record<string, DesktopThreadPreviewState> {
@@ -921,6 +1658,7 @@ export class DesktopStore {
         items: dedupedItems,
       },
     };
+    this.syncPreviewTabs(threadId);
     this.persist();
   }
 
@@ -957,6 +1695,7 @@ export class DesktopStore {
         items,
       },
     };
+    this.syncPreviewTabs(threadId);
     this.persist();
   }
 
@@ -979,6 +1718,7 @@ export class DesktopStore {
         activeItemId: normalizedItemId,
       },
     };
+    this.syncPreviewTabs(threadId);
     this.persist();
   }
 
@@ -1009,6 +1749,7 @@ export class DesktopStore {
         items,
       },
     };
+    this.syncPreviewTabs(threadId);
     this.persist();
   }
 
@@ -1025,6 +1766,7 @@ export class DesktopStore {
         items: [],
       },
     };
+    this.syncPreviewTabs(threadId);
     this.persist();
   }
 
@@ -1046,6 +1788,7 @@ export class DesktopStore {
         visible: visible && current.items.length > 0,
       },
     };
+    this.syncPreviewTabs(threadId);
     this.persist();
   }
 
@@ -1402,6 +2145,33 @@ export class DesktopStore {
     this.persist();
   }
 
+  private buildDesktopPanes(tabs: DesktopTab[]): DesktopPane[] {
+    const activeTabIdByPane = this.state.activeTabIdByPane ?? {};
+    const panes = this.listPaneIds().map<DesktopPane>((paneId) => {
+      const paneTabs = tabs.filter((tab) => normalizePaneId(tab.paneId) === paneId);
+      const activeTabId = normalizePersistedId(activeTabIdByPane[paneId]);
+      return {
+        id: paneId,
+        activeTabId:
+          activeTabId && paneTabs.some((tab) => tab.id === activeTabId)
+            ? activeTabId
+            : paneTabs[0]?.id ?? null,
+        tabs: paneTabs,
+      };
+    });
+
+    if (panes.length === 0) {
+      return [];
+    }
+
+    const activePaneId = this.getActivePaneId();
+    if (!panes.some((pane) => pane.id === activePaneId)) {
+      this.state.activePaneId = panes[0]?.id ?? PRIMARY_PANE_ID;
+    }
+
+    return panes;
+  }
+
   buildSnapshot(
     runtimeStatus: DesktopRuntimeStatus,
     provider: DesktopProvider,
@@ -1415,13 +2185,17 @@ export class DesktopStore {
   ): DesktopSnapshot {
     const tabs = this.normalizeTabs(views);
     this.state.tabs = tabs;
-    if (!tabs.some((tab) => tab.id === this.state.activeTabId)) {
-      this.activateFallbackTab(views);
-    }
+    this.reconcilePaneActivity();
+    const desktopTabs = this.toDesktopTabs(this.state.tabs ?? [], views);
+    const panes = this.buildDesktopPanes(desktopTabs);
+    const paneLayout = toDesktopPaneLayout(this.getPaneLayout());
 
     return {
       threadGroups: this.listThreadGroups(),
-      tabs: this.toDesktopTabs(this.state.tabs ?? [], views),
+      tabs: desktopTabs,
+      panes,
+      paneLayout,
+      activePaneId: this.getActivePaneId(),
       activeTabId: this.getActiveTabId(),
       activeThreadId: this.state.activeThreadId,
       activeGroupId: this.getActiveGroupId(),

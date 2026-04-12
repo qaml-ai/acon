@@ -1227,9 +1227,14 @@ export class DesktopService {
         this.store.selectTab(event.tabId);
         this.emitSnapshot();
         const selectedTab = this.getSnapshot().tabs.find((tab) => tab.id === event.tabId);
-        if (selectedTab?.kind === "workspace") {
+        if (selectedTab?.kind === "workspace" && selectedTab.viewId) {
           this.emitPageOpen(selectedTab.viewId);
         }
+        return;
+      }
+      case "focus_pane": {
+        this.store.focusPane(event.paneId);
+        this.emitSnapshot();
         return;
       }
       case "close_tab": {
@@ -1237,6 +1242,16 @@ export class DesktopService {
           this.getExtensionActivationContext(),
         ).views;
         this.store.closeTab(event.tabId, views);
+        this.emitSnapshot();
+        return;
+      }
+      case "move_tab": {
+        this.store.moveTab(
+          event.tabId,
+          event.targetPaneId,
+          event.targetIndex,
+          event.placement,
+        );
         this.emitSnapshot();
         return;
       }

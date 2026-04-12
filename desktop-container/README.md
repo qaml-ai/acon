@@ -13,7 +13,7 @@ Current scope:
 - V2 desktop extension host with lightweight `camelai` manifest discovery plus runtime-first activation
 - repo-shipped plugin discovery from `desktop-container/plugins/` plus user plugin discovery from the desktop data directory under `plugins/`
 - Extension Lab can install a user plugin by copying a selected folder into the desktop data `plugins/` directory and refreshing the runtime catalog
-- shared desktop sidebar can open a dedicated thread preview pane beside chat
+- shared desktop sidebar can open thread-scoped preview tabs in a neighboring split pane beside chat
 
 Current limits:
 
@@ -77,7 +77,7 @@ Host MCP notes:
 - Persisted stdio MCP servers can attach `envSecretRefs`, and persisted remote HTTP MCP servers can attach `headerSecretRefs`, so secrets stay in the host vault and are only resolved at launch time.
 - The builtin `host-mcp-manager` plugin registers a host MCP server that can list, install, and remove persisted host MCP servers, prompt the user to store secrets in the host vault, install the repo-local `rest-api` stdio MCP server, install local plugin bundles from the managed guest workspace into the desktop user's plugin directory, and inspect plugin-declared `camelai.agentAssets`. Those bundled skills and MCP configs are reconciled declaratively into the Codex and Claude runtime homes when plugins are loaded or refreshed.
 - Repo-shipped builtin stdio servers should be launched through `desktop-container/bin/acon-mcp-builtin.mjs <name>` so persisted configs stay stable even if the underlying implementation files move.
-- The builtin `preview-control` plugin registers a host MCP server that can open, replace, clear, and hide/show thread preview items for workspace files and URLs in the right-side preview pane.
+- The builtin `preview-control` plugin registers a host MCP server that can open, replace, clear, and hide/show thread-scoped file and URL tabs in the split workbench layout.
 - Inside the container, `acon-mcp --help` shows the CLI surface.
 - `acon-mcp servers` lists the host MCP servers that the Electron app has registered for that backend session.
 - `acon-mcp tools <server-id>` lists the tools exposed by one registered host MCP server.
@@ -167,5 +167,5 @@ export ANTHROPIC_API_KEY=...
 - V2 plugin manifests can optionally declare `camelai.agentAssets` with `skills` and/or `mcpServers` relative paths. `skills` points at a directory of `SKILL.md` folders bundled in the plugin, and `mcpServers` points at a JSON file with an `mcpServers` object using the portable subset (`stdio` command/args/env/cwd or `streamable-http`/`sse` url/headers). These assets are reconciled declaratively on plugin load and refresh for the providers that currently consume plugin agent assets: Codex installs skills under `~/.codex/skills/` and writes namespaced `mcp_servers.*` entries into `~/.codex/config.toml`, while Claude installs skills under `~/.claude/skills/` and writes project-scoped `mcpServers` entries for `/workspace` in `~/.claude.json`.
 - `desktop-container/sdk/index.ts` contains the extension-facing V2 manifest and activation API types.
 - `desktop-container/electron/main.mjs` loads the desktop backend service directly into the Electron main process via `tsx`.
-- The shared desktop renderer (`desktop/renderer/src/App.tsx`) renders builtin and plugin-contributed workbench surfaces. Trusted builtin plugins can bind host-rendered components directly into the renderer tree through a namespaced registry, while plugin-contributed sidebar panels populate the left navigation around the workbench. Chat-owned preview tabs still live in a thread-scoped side pane that is separate from the main workbench tabs, and plugin-owned webviews can render `http:`, `https:`, `data:`, and plugin-local HTML entrypoints in a sandboxed iframe via the desktop file/webview bridge.
+- The shared desktop renderer (`desktop/renderer/src/App.tsx`) renders builtin and plugin-contributed workbench surfaces. Trusted builtin plugins can bind host-rendered components directly into the renderer tree through a namespaced registry, while plugin-contributed sidebar panels populate the left navigation around the workbench. Thread-scoped file and URL previews now participate in the same split-pane tab system as chat and workspace tabs, and plugin-owned webviews can render `http:`, `https:`, `data:`, and plugin-local HTML entrypoints in a sandboxed iframe via the desktop file/webview bridge.
 - `desktop-container/scripts/dev.mjs` reuses the existing desktop renderer and shared Electron shell, but writes state into a separate user-data directory so it does not collide with the older helper-based prototype.
