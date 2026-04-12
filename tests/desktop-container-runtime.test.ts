@@ -217,6 +217,36 @@ describe("ContainerRuntimeManager", () => {
     expect(containerfileSource).toContain("/usr/local/bin/opencode");
   });
 
+  it("vendors every wrapped node CLI into the shared npm prefix", () => {
+    const prepareScriptSource = readFileSync(
+      resolve(
+        process.cwd(),
+        "desktop-container/scripts/prepare-container-assets.mjs",
+      ),
+      "utf8",
+    );
+
+    expect(prepareScriptSource).toContain("cliPackageSpecs.codex");
+    expect(prepareScriptSource).toContain("cliPackageSpecs.claude");
+    expect(prepareScriptSource).toContain("cliPackageSpecs.pi");
+    expect(prepareScriptSource).toContain("cliPackageSpecs.piAcp");
+    expect(prepareScriptSource).toContain("cliPackageSpecs.opencode");
+    expect(prepareScriptSource).toContain('"--ignore-scripts"');
+    expect(prepareScriptSource).toContain("opencode-linux-arm64-musl");
+  });
+
+  it("passes the required empty MCP server list when opening ACP sessions", () => {
+    const daemonSource = readFileSync(
+      resolve(
+        process.cwd(),
+        "desktop-container/container-images/bridge/acon-agentd.mjs",
+      ),
+      "utf8",
+    );
+
+    expect(daemonSource.match(/mcpServers: \[\]/g)?.length).toBeGreaterThanOrEqual(3);
+  });
+
   it("preinstalls curated Python packages in the shared image definition", () => {
     const containerfileSource = readFileSync(
       resolve(

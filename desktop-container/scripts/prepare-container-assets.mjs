@@ -340,16 +340,24 @@ function installHostCliPrefix(destinationDirectory) {
     workingDirectory,
     "node_modules/@acon/host-rpc",
   );
+  const unusedLinuxMuslOpenCodePath = resolve(
+    workingDirectory,
+    "node_modules/opencode-linux-arm64-musl",
+  );
   const result = run("npm", [
     "install",
     "--prefix",
     workingDirectory,
     "--no-audit",
     "--no-fund",
+    "--ignore-scripts",
     "--os=linux",
     "--cpu=arm64",
     cliPackageSpecs.codex,
     cliPackageSpecs.claude,
+    cliPackageSpecs.pi,
+    cliPackageSpecs.piAcp,
+    cliPackageSpecs.opencode,
     bundledNodePackagePaths.hostRpc,
   ], {
     env: {
@@ -375,6 +383,7 @@ function installHostCliPrefix(destinationDirectory) {
       dereference: true,
     });
   }
+  rmSync(unusedLinuxMuslOpenCodePath, { force: true, recursive: true });
   rmSync(npmBinDirectory, { force: true, recursive: true });
   rmSync(npmCacheDirectory, { force: true, recursive: true });
   rmSync(destinationDirectory, { force: true, recursive: true });

@@ -1771,12 +1771,14 @@ async function ensureAcpProcess(session) {
           clearTimeout(pending.timer);
         }
         if (message.error) {
+          const errorMessage =
+            typeof message.error.message === "string"
+              ? message.error.message
+              : JSON.stringify(message.error);
+          const errorData =
+            message.error.data === undefined ? "" : ` ${JSON.stringify(message.error.data)}`;
           pending.reject(
-            new Error(
-              typeof message.error.message === "string"
-                ? message.error.message
-                : JSON.stringify(message.error),
-            ),
+            new Error(`${errorMessage}${errorData}`),
           );
         } else {
           pending.resolve(message.result ?? null);
@@ -1904,6 +1906,7 @@ async function ensureAcpSession(session) {
   if (!session.sessionId) {
     const result = await sendAcpRequest(session, "session/new", {
       cwd: workspaceRoot,
+      mcpServers: [],
     });
     session.sessionId = extractAcpSessionId(result);
     session.loadedSessionId = session.sessionId;
@@ -1913,6 +1916,7 @@ async function ensureAcpSession(session) {
       const result = await sendAcpRequest(session, "session/load", {
         sessionId: session.sessionId,
         cwd: workspaceRoot,
+        mcpServers: [],
       });
       session.loadedSessionId = session.sessionId;
       session.modelState = extractAcpModelState(session.provider, result);
@@ -1924,6 +1928,7 @@ async function ensureAcpSession(session) {
       );
       const result = await sendAcpRequest(session, "session/new", {
         cwd: workspaceRoot,
+        mcpServers: [],
       });
       session.sessionId = extractAcpSessionId(result);
       session.loadedSessionId = session.sessionId;
