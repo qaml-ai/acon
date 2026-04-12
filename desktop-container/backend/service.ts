@@ -2184,6 +2184,7 @@ export class DesktopService {
       await this.processThreadTurn(threadId, promptContent, nextActiveRun);
     } finally {
       this.activeThreadRuns.delete(threadId);
+      this.emitSnapshot();
       this.emitThreadUpdated(threadId, "session");
     }
   }

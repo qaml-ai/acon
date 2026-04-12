@@ -33,9 +33,12 @@ function createRuntimeManagerStub(
   const managedWorkspaceDirectory =
     options.managedWorkspaceDirectory ?? "/managed-workspace";
   const runtimeDirectory = options.runtimeDirectory ?? "/runtime";
+  const managedProjectsDirectory = `${managedWorkspaceDirectory}/projects`;
   const runtime: RuntimeManager = {
     getWorkspaceDirectory: () => "/workspace",
     getManagedWorkspaceDirectory: () => managedWorkspaceDirectory,
+    getManagedProjectsDirectory: () => managedProjectsDirectory,
+    ensureProjectDirectory: (projectSlug: string) => `${managedProjectsDirectory}/${projectSlug}`,
     getUserUploadsDirectory: () =>
       resolve(process.env.DESKTOP_DATA_DIR ?? tmpdir(), "transfers", "uploads"),
     getUserOutputsDirectory: () =>
@@ -414,6 +417,7 @@ describe("DesktopService", () => {
 
     await waitFor(() => expect(cancelPrompt).toHaveBeenCalledTimes(1));
     expect(cancelPrompt).toHaveBeenCalledWith({
+      cwd: "/managed-workspace/projects/default-project",
       provider: expect.objectContaining({ id: "claude" }),
       threadId,
       model: "sonnet",
@@ -538,7 +542,7 @@ describe("DesktopService", () => {
           icon: "MessagesSquare",
           pluginId: "chat",
           scope: "thread",
-          default: true,
+          isDefault: true,
           render: {
             kind: "host",
             component: "chat-thread",
@@ -551,6 +555,12 @@ describe("DesktopService", () => {
 
     const { runtime, pendingPrompts, streamPrompt } = createRuntimeManagerStub();
     const service = new DesktopService(runtime);
+    const threadId = service.getSnapshot().threads[0]?.id ?? "";
+
+    service.handleClientEvent({
+      type: "select_thread",
+      threadId,
+    });
 
     await waitFor(() => {
       const snapshot = service.getSnapshot();
@@ -561,8 +571,6 @@ describe("DesktopService", () => {
         ),
       ).toBe(true);
     });
-
-    const threadId = service.getSnapshot().threads[0]?.id ?? "";
 
     service.handleClientEvent({
       type: "send_message",
@@ -589,6 +597,71 @@ describe("DesktopService", () => {
         }),
       );
     });
+  });
+
+  it("emits a snapshot that clears the running state after a turn completes", async () => {
+    vi.spyOn(CamelAIExtensionHost.prototype, "getSnapshot").mockReturnValue({
+      views: [
+        {
+          id: "plugin:chat:chat.thread",
+          title: "Chat",
+          description: "Thread-focused chat workspace.",
+          icon: "MessagesSquare",
+          pluginId: "chat",
+          scope: "thread",
+          isDefault: true,
+          render: {
+            kind: "host",
+            component: "chat-thread",
+          },
+        },
+      ],
+      sidebarPanels: [],
+      plugins: [],
+    });
+
+    const { runtime, pendingPrompts, streamPrompt } = createRuntimeManagerStub();
+    const service = new DesktopService(runtime);
+    const threadId = service.getSnapshot().threads[0]?.id ?? "";
+    const snapshots: Extract<DesktopServerEvent, { type: "snapshot" }>[] = [];
+
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "snapshot") {
+        snapshots.push(event);
+      }
+    });
+
+    service.handleClientEvent({
+      type: "send_message",
+      threadId,
+      content: "wrap this up",
+    });
+    await waitFor(() => expect(streamPrompt).toHaveBeenCalledTimes(1));
+
+    await waitFor(() => {
+      expect(
+        snapshots.some(
+          (event) => event.snapshot.threadRuntimeById[threadId]?.isRunning === true,
+        ),
+      ).toBe(true);
+    });
+
+    pendingPrompts.shift()?.resolve({
+      finalText: "done reviewing",
+      model: "sonnet",
+      sessionId: "session-1",
+      stopReason: null,
+    });
+
+    await waitFor(() => {
+      expect(
+        snapshots.some(
+          (event) => event.snapshot.threadRuntimeById[threadId]?.isRunning === false,
+        ),
+      ).toBe(true);
+    });
+
+    unsubscribe();
   });
 
   it("emits permission requests for host MCP mutations and resolves approvals", async () => {
