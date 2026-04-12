@@ -1,6 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DesktopStore } from "./store";
 import { logDesktop } from "../../desktop/backend/log";
@@ -10,11 +10,13 @@ import type {
   DesktopPreviewItem,
   DesktopPreviewTarget,
   DesktopPermissionRequest,
+  DesktopPane,
   DesktopProvider,
   DesktopRuntimeStatus,
   DesktopSaveCustomOpenAiCompatibleProviderConfigInput,
   DesktopServerEvent,
   DesktopSnapshot,
+  DesktopTab,
   DesktopThread,
   DesktopThreadPreviewState,
   DesktopThreadRuntimeState,
@@ -1012,6 +1014,8 @@ export class DesktopService {
     snapshot.threadPreviewStateById = this.resolveThreadPreviewStates(
       snapshot.threadPreviewStateById,
     );
+    snapshot.tabs = this.resolveSnapshotTabs(snapshot.tabs);
+    snapshot.panes = this.resolveSnapshotPanes(snapshot.panes, snapshot.tabs);
     snapshot.threadRuntimeById = this.resolveThreadRuntimeStates(snapshot.threads);
     snapshot.pendingPermissionRequest =
       this.pendingPermissionRequests[0]?.request ?? null;
@@ -1791,16 +1795,7 @@ export class DesktopService {
     }
 
     if (target.source === "workspace") {
-      const normalizedPath = normalizeWorkspacePreviewPath(trimmedPath);
-      const workspaceRelativePath = normalizedPath.replace(/^\/+/, "");
-      const localPath = resolve(
-        this.runtimeManager.getManagedWorkspaceDirectory(),
-        workspaceRelativePath,
-      );
-      if (!existsSync(localPath) || !statSync(localPath).isFile()) {
-        return null;
-      }
-      return localPath;
+      return this.resolveWorkspacePreviewFilePath(trimmedPath);
     }
 
     const normalizedTransferPath =
@@ -1826,6 +1821,65 @@ export class DesktopService {
     }
 
     return null;
+  }
+
+  private resolveWorkspacePreviewFilePath(targetPath: string): string | null {
+    const trimmedPath = targetPath.trim();
+    if (!trimmedPath) {
+      return null;
+    }
+
+    const hostWorkspacePath = this.resolveFileWithinRoot(
+      this.runtimeManager.getWorkspaceDirectory(),
+      trimmedPath,
+    );
+    if (hostWorkspacePath) {
+      return hostWorkspacePath;
+    }
+
+    const normalizedPath = normalizeWorkspacePreviewPath(trimmedPath);
+    return (
+      this.resolveFileWithinRoot(
+        this.runtimeManager.getManagedWorkspaceDirectory(),
+        normalizedPath,
+        { treatAbsolutePathAsRootRelative: true },
+      ) ??
+      this.resolveFileWithinRoot(
+        this.runtimeManager.getWorkspaceDirectory(),
+        normalizedPath,
+        { treatAbsolutePathAsRootRelative: true },
+      )
+    );
+  }
+
+  private resolveFileWithinRoot(
+    rootDirectory: string,
+    targetPath: string,
+    options: { treatAbsolutePathAsRootRelative?: boolean } = {},
+  ): string | null {
+    const trimmedPath = targetPath.trim();
+    if (!trimmedPath) {
+      return null;
+    }
+
+    const candidatePath = isAbsolute(trimmedPath) && !options.treatAbsolutePathAsRootRelative
+      ? resolve(trimmedPath)
+      : resolve(rootDirectory, trimmedPath.replace(/^[/\\]+/, ""));
+    const relativePath = relative(rootDirectory, candidatePath);
+    const pathSeparator = process.platform === "win32" ? "\\" : "/";
+    if (
+      relativePath === ".." ||
+      relativePath.startsWith(`..${pathSeparator}`) ||
+      isAbsolute(relativePath)
+    ) {
+      return null;
+    }
+
+    if (!existsSync(candidatePath) || !statSync(candidatePath).isFile()) {
+      return null;
+    }
+
+    return candidatePath;
   }
 
   private resolvePreviewSource(target: DesktopPreviewTarget): string | null {
@@ -1874,6 +1928,39 @@ export class DesktopService {
         ];
       }),
     );
+  }
+
+  private resolveSnapshotTabs(tabs: DesktopTab[]): DesktopTab[] {
+    return tabs.map((tab) => {
+      if (tab.kind !== "preview" || !tab.previewItem) {
+        return tab;
+      }
+
+      return {
+        ...tab,
+        previewItem: this.resolvePreviewItem(tab.previewItem),
+      };
+    });
+  }
+
+  private resolveSnapshotPanes(panes: DesktopPane[], tabs: DesktopTab[]): DesktopPane[] {
+    const resolvedTabsById = new Map(tabs.map((tab) => [tab.id, tab]));
+    return panes.map((pane) => ({
+      ...pane,
+      tabs: pane.tabs.map((tab) => {
+        const resolvedTab = resolvedTabsById.get(tab.id);
+        if (resolvedTab) {
+          return resolvedTab;
+        }
+        if (tab.kind !== "preview" || !tab.previewItem) {
+          return tab;
+        }
+        return {
+          ...tab,
+          previewItem: this.resolvePreviewItem(tab.previewItem),
+        };
+      }),
+    }));
   }
 
   private emitPageOpen(viewId: string): void {
