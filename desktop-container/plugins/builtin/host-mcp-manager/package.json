@@ -1,0 +1,16 @@
+{
+  "name": "@camelai/host-mcp-manager",
+  "version": "0.1.0",
+  "type": "module",
+  "camelai": {
+    "id": "host-mcp-manager",
+    "name": "Host MCP Manager",
+    "description": "Registers a host-side MCP server that can install additional host MCP servers for the desktop app.",
+    "icon": "ServerCog",
+    "permissions": ["host-mcp", "host-plugins", "serve-mcp"],
+    "main": "./index.ts",
+    "agentAssets": {
+      "skills": "./agent-assets/skills"
+    }
+  }
+}
