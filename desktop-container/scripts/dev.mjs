@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
+import { resolveDesktopDevUserDataDir } from "../../desktop/electron/user-data-paths.mjs";
 
 const defaultRendererPort = Number.parseInt(
   process.env.DESKTOP_RENDERER_PORT || "4316",
@@ -10,8 +10,7 @@ const defaultRendererPort = Number.parseInt(
 );
 const repoRoot = resolve(import.meta.dirname, "..", "..");
 const electronUserDataDir =
-  process.env.DESKTOP_CONTAINER_USER_DATA_DIR ||
-  join(homedir(), "Library/Application Support", "camelAI Container");
+  process.env.DESKTOP_CONTAINER_USER_DATA_DIR || resolveDesktopDevUserDataDir();
 const electronDataDir = resolve(electronUserDataDir, "data");
 const electronRuntimeDir = resolve(electronUserDataDir, "runtime");
 const tailedChildren = [];
@@ -190,9 +189,6 @@ const electron = run(
   {
     DESKTOP_RENDERER_URL: rendererUrl,
     DESKTOP_STDERR_LOG_LEVEL: process.env.DESKTOP_STDERR_LOG_LEVEL || "info",
-    DESKTOP_USER_DATA_DIR: electronUserDataDir,
-    DESKTOP_DATA_DIR: electronDataDir,
-    DESKTOP_RUNTIME_DIR: electronRuntimeDir,
     DESKTOP_CONTAINER_WORKSPACE_DIR:
       process.env.DESKTOP_CONTAINER_WORKSPACE_DIR || repoRoot,
     NODE_OPTIONS: [

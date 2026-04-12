@@ -3,6 +3,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFil
 import { spawn } from 'node:child_process';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { resolveDesktopDevUserDataDir } from './user-data-paths.mjs';
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -20,6 +21,9 @@ protocol.registerSchemesAsPrivileged([
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const devRendererUrl = process.env.DESKTOP_RENDERER_URL;
 const repoRoot = resolve(__dirname, '../..');
+if (!app.isPackaged && devRendererUrl) {
+  app.setPath('userData', resolveDesktopDevUserDataDir());
+}
 let backendProcess = null;
 let directDesktopService = null;
 let unsubscribeDesktopService = null;
