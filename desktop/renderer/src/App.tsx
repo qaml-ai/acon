@@ -2521,6 +2521,7 @@ function PreviewWorkbenchTabPane({
 }
 
 export function App() {
+  const isMac = desktopShell?.platform === "darwin";
   const [snapshot, setSnapshot] = useState<DesktopSnapshot | null>(null);
   const [uiMessagesByThread, setUiMessagesByThread] = useState<
     Record<string, Message[]>
@@ -3535,7 +3536,12 @@ export function App() {
         </DialogContent>
       </Dialog>
 
-      <div className="desktop-shell text-foreground">
+      <div
+        className={cn(
+          "desktop-shell text-foreground",
+          isMac && "desktop-shell--macos",
+        )}
+      >
         <header className="desktop-titlebar desktop-drag">
           <div className="desktop-titlebar-inner">
             <div className="desktop-traffic-spacer" />
