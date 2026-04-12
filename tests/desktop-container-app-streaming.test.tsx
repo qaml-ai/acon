@@ -575,6 +575,77 @@ function createSnapshot(): DesktopSnapshot {
   } as DesktopSnapshot;
 }
 
+function createSplitPaneSnapshot(): DesktopSnapshot {
+  const snapshot = createSnapshot();
+  const workspaceTab = {
+    id: "tab-extension-lab",
+    kind: "workspace" as const,
+    paneId: "secondary",
+    threadId: null,
+    viewId: "plugin:extension-lab:extension-lab.home",
+    title: "Extension Lab",
+    subtitle: null,
+    icon: "Blocks",
+    closable: true,
+  };
+  snapshot.tabs = [
+    {
+      ...snapshot.tabs[0]!,
+      paneId: "primary",
+    },
+    workspaceTab,
+  ];
+  snapshot.panes = [
+    {
+      id: "primary",
+      activeTabId: "tab-thread-1",
+      tabs: [snapshot.tabs[0]!],
+    },
+    {
+      id: "secondary",
+      activeTabId: "tab-extension-lab",
+      tabs: [workspaceTab],
+    },
+  ];
+  snapshot.paneLayout = {
+    id: "root-pane-layout",
+    kind: "split",
+    direction: "horizontal",
+    children: [
+      { id: "primary", kind: "pane" },
+      { id: "secondary", kind: "pane" },
+    ],
+    sizes: null,
+  };
+  snapshot.activePaneId = "primary";
+  snapshot.activeTabId = "tab-thread-1";
+  snapshot.activeViewId = "plugin:chat:chat.thread";
+  return snapshot;
+}
+
+function createMockDataTransfer(): DataTransfer {
+  const values = new Map<string, string>();
+  return {
+    dropEffect: "none",
+    effectAllowed: "all",
+    files: [] as unknown as FileList,
+    items: [] as unknown as DataTransferItemList,
+    types: [],
+    clearData: vi.fn((format?: string) => {
+      if (format) {
+        values.delete(format);
+        return;
+      }
+      values.clear();
+    }),
+    getData: vi.fn((format: string) => values.get(format) ?? ""),
+    setData: vi.fn((format: string, value: string) => {
+      values.set(format, value);
+    }),
+    setDragImage: vi.fn(),
+  } as unknown as DataTransfer;
+}
+
 function createAcpRuntimeEvent(update: Record<string, unknown>): DesktopServerEvent {
   return {
     type: "runtime_event",
@@ -1126,6 +1197,58 @@ describe("desktop container renderer streaming", () => {
       "src",
       "https://example.com/preview",
     );
+  });
+
+  it("sends a center move_tab event when dropping a tab into another pane", async () => {
+    const snapshot = createSplitPaneSnapshot();
+    const { shell } = await renderAppWithShell(snapshot);
+
+    const draggedTab = screen
+      .getByRole("tab", { name: /Claude test thread/i })
+      .closest(".desktop-workbench-tab");
+    const targetZoneSelector = '[data-pane-id="secondary"][data-pane-zone="center"]';
+    expect(draggedTab).not.toBeNull();
+    const dataTransfer = createMockDataTransfer();
+
+    fireEvent.dragStart(draggedTab!, { dataTransfer });
+    const targetZone = document.querySelector<HTMLElement>(targetZoneSelector);
+    expect(targetZone).not.toBeNull();
+    fireEvent.dragOver(targetZone!, { dataTransfer });
+    fireEvent.drop(targetZone!, { dataTransfer });
+
+    expect(shell.sendEvent).toHaveBeenLastCalledWith({
+      type: "move_tab",
+      tabId: "tab-thread-1",
+      targetPaneId: "secondary",
+      targetIndex: 1,
+      placement: "center",
+    });
+  });
+
+  it("sends a split move_tab event when dropping on a pane edge", async () => {
+    const snapshot = createSplitPaneSnapshot();
+    const { shell } = await renderAppWithShell(snapshot);
+
+    const draggedTab = screen
+      .getByRole("tab", { name: /Claude test thread/i })
+      .closest(".desktop-workbench-tab");
+    const targetZoneSelector = '[data-pane-id="secondary"][data-pane-zone="left"]';
+    expect(draggedTab).not.toBeNull();
+    const dataTransfer = createMockDataTransfer();
+
+    fireEvent.dragStart(draggedTab!, { dataTransfer });
+    const targetZone = document.querySelector<HTMLElement>(targetZoneSelector);
+    expect(targetZone).not.toBeNull();
+    fireEvent.dragOver(targetZone!, { dataTransfer });
+    fireEvent.drop(targetZone!, { dataTransfer });
+
+    expect(shell.sendEvent).toHaveBeenLastCalledWith({
+      type: "move_tab",
+      tabId: "tab-thread-1",
+      targetPaneId: "secondary",
+      targetIndex: 1,
+      placement: "left",
+    });
   });
 
   it("renders a plugin-owned custom preview renderer for spreadsheet files", async () => {

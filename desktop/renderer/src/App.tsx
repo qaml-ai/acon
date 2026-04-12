@@ -1,14 +1,16 @@
 import {
+  Fragment,
   memo,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type ComponentType,
   type DragEvent,
+  type ReactNode,
 } from "react";
+import { Group, Panel, Separator } from "react-resizable-panels";
 import {
   Archive,
   ArrowLeft,
@@ -17,7 +19,6 @@ import {
   ExternalLink,
   Loader2,
   Pencil,
-  PanelRightClose,
   Trash2,
   X,
 } from "lucide-react";
@@ -33,7 +34,6 @@ import type { Attachment } from "@/components/attachment-list";
 import { ContentBlockRenderer } from "@/components/message-bubble";
 import { FileCard } from "@/components/file-card";
 import { FloatingTodoList, type TodoItem } from "@/components/floating-todo";
-import { useIsMobile } from "@/hooks/use-mobile";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -76,6 +76,9 @@ import type { ContentBlock, Message, PreviewTarget } from "@/types";
 import type {
   DesktopClientEvent,
   DesktopModel,
+  DesktopPane,
+  DesktopPaneDropPlacement,
+  DesktopPaneNode,
   DesktopModelSource,
   DesktopPreviewTarget,
   DesktopThreadPreviewState,
@@ -102,10 +105,7 @@ const desktopShell = window.desktopShell;
 const fallbackBackendUrl = "http://127.0.0.1:4315";
 const EMPTY_THREAD_DRAFT_KEY = "__no_thread__";
 const DESKTOP_WORKSPACE_ID = "desktop";
-const THREAD_PREVIEW_LAYOUT_STORAGE_KEY = "desktop-thread-preview-layout";
-const THREAD_PREVIEW_MIN_WIDTH = 320;
-const THREAD_PREVIEW_MAX_WIDTH_RATIO = 0.65;
-const THREAD_PREVIEW_DEFAULT_WIDTH = 480;
+const DESKTOP_TAB_MIME_TYPE = "application/x-acon-tab";
 const KANBAN_LANES = [
   {
     id: "drafts",
@@ -128,37 +128,6 @@ const KANBAN_LANES = [
     description: "Archived work you want to keep around.",
   },
 ] as const;
-
-function readStoredThreadPreviewWidth(): number {
-  try {
-    const raw = window.localStorage.getItem(THREAD_PREVIEW_LAYOUT_STORAGE_KEY);
-    if (!raw) {
-      return THREAD_PREVIEW_DEFAULT_WIDTH;
-    }
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const width = parsed.width;
-    return typeof width === "number" && Number.isFinite(width)
-      ? width
-      : THREAD_PREVIEW_DEFAULT_WIDTH;
-  } catch {
-    return THREAD_PREVIEW_DEFAULT_WIDTH;
-  }
-}
-
-function clampThreadPreviewWidth(width: number, containerWidth: number): number {
-  const maxWidth = Math.max(
-    THREAD_PREVIEW_MIN_WIDTH,
-    Math.floor(containerWidth * THREAD_PREVIEW_MAX_WIDTH_RATIO),
-  );
-  return Math.min(maxWidth, Math.max(THREAD_PREVIEW_MIN_WIDTH, Math.round(width)));
-}
-
-function persistThreadPreviewWidth(width: number) {
-  window.localStorage.setItem(
-    THREAD_PREVIEW_LAYOUT_STORAGE_KEY,
-    JSON.stringify({ width }),
-  );
-}
 
 type KanbanLaneId = (typeof KANBAN_LANES)[number]["id"];
 
@@ -241,6 +210,94 @@ function getView(
   }
 
   return snapshot.views.find((view) => view.id === viewId) ?? null;
+}
+
+function deriveDesktopPanes(snapshot: DesktopSnapshot | null): DesktopPane[] {
+  if (!snapshot) {
+    return [];
+  }
+
+  if (snapshot.panes && snapshot.panes.length > 0) {
+    return snapshot.panes;
+  }
+
+  const primaryTabs = snapshot.tabs.map((tab) => ({
+    ...tab,
+    paneId: tab.paneId ?? "primary",
+  }));
+  const activeThreadPreviewState =
+    (snapshot.activeThreadId
+      ? snapshot.threadPreviewStateById[snapshot.activeThreadId]
+      : null) ?? null;
+  const previewTabs =
+    activeThreadPreviewState?.visible && activeThreadPreviewState.items.length > 0
+      ? activeThreadPreviewState.items.map<DesktopTab>((item) => ({
+          id: `preview:${snapshot.activeThreadId}:${item.id}`,
+          kind: "preview",
+          paneId: "secondary",
+          threadId: snapshot.activeThreadId,
+          viewId: null,
+          title: item.title,
+          subtitle:
+            snapshot.threads.find((thread) => thread.id === snapshot.activeThreadId)?.title ??
+            null,
+          icon: item.target.kind === "url" ? "globe" : "file",
+          closable: true,
+          previewItem: item,
+        }))
+      : [];
+
+  const panes: DesktopPane[] = [];
+  if (primaryTabs.length > 0) {
+    panes.push({
+      id: "primary",
+      activeTabId: snapshot.activeTabId,
+      tabs: primaryTabs,
+    });
+  }
+  if (previewTabs.length > 0) {
+    panes.push({
+      id: "secondary",
+      activeTabId:
+        previewTabs.find((tab) => tab.previewItem?.id === activeThreadPreviewState?.activeItemId)
+          ?.id ?? previewTabs[0]?.id ?? null,
+      tabs: previewTabs,
+    });
+  }
+
+  return panes;
+}
+
+function deriveDesktopPaneLayout(snapshot: DesktopSnapshot | null): DesktopPaneNode | null {
+  if (!snapshot) {
+    return null;
+  }
+
+  if (snapshot.paneLayout) {
+    return snapshot.paneLayout;
+  }
+
+  const panes = deriveDesktopPanes(snapshot);
+  if (panes.length === 0) {
+    return null;
+  }
+  if (panes.length === 1) {
+    return {
+      id: panes[0]!.id,
+      kind: "pane",
+    };
+  }
+
+  return {
+    id: "root",
+    kind: "split",
+    direction: "horizontal",
+    children: panes.map((pane) => ({
+      id: pane.id,
+      kind: "pane" as const,
+    })),
+    sizes: null,
+  };
 }
 
 function isSupportedPluginWebviewEntrypoint(
@@ -2175,213 +2232,72 @@ function PreviewProviderPane({
   );
 }
 
-function ThreadPreviewPane({
-  threadId,
-  previewState,
-  onClear,
-  onCloseItem,
-  onSelectItem,
-  onSetVisible,
-}: {
-  threadId: string;
-  previewState: DesktopThreadPreviewState;
-  onClear: () => void;
-  onCloseItem: (itemId: string) => void;
-  onSelectItem: (itemId: string) => void;
-  onSetVisible: (visible: boolean) => void;
-}) {
-  const activeItem =
-    previewState.items.find((item) => item.id === previewState.activeItemId) ??
-    previewState.items[0] ??
-    null;
-  const activePreviewUrl = activeItem?.src ?? null;
-  const handleDownload = useCallback(async () => {
-    if (activeItem?.target.kind !== "file" || !desktopShell?.downloadFile) {
-      return;
-    }
-
-    try {
-      const result = await desktopShell.downloadFile({
-        source: activeItem.target.source,
-        path: activeItem.target.path,
-        filename: activeItem.target.filename ?? activeItem.title,
-      });
-      if (!result.canceled) {
-        toast.success("File saved.");
-      }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : String(error));
-    }
-  }, [activeItem]);
-
-  return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-      <div className="flex items-center justify-between gap-2 border-b border-border/70 px-3 py-3">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-medium">Preview</p>
-          <p className="truncate text-xs text-muted-foreground">
-            {previewState.items.length === 1
-              ? "1 item"
-              : `${previewState.items.length} items`}
-          </p>
-        </div>
-        <div className="flex items-center gap-1">
-          {activeItem?.target.kind === "file" && desktopShell?.downloadFile ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-label={`Download ${activeItem.title}`}
-              onClick={() => {
-                void handleDownload();
-              }}
-            >
-              <Download className="size-4" />
-              Save As
-            </Button>
-          ) : null}
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Clear preview items"
-            onClick={onClear}
-          >
-            <X className="size-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Hide preview pane"
-            onClick={() => onSetVisible(false)}
-          >
-            <PanelRightClose className="size-4" />
-          </Button>
-        </div>
-      </div>
-
-      <div className="min-w-0 border-b border-border/70 px-2 py-2">
-        <div className="flex gap-2 overflow-x-auto">
-          {previewState.items.map((item) => {
-            const isActive = item.id === activeItem?.id;
-            return (
-              <div
-                key={item.id}
-                className={cn(
-                  "group flex min-w-0 max-w-[220px] items-center gap-1 rounded-md border px-2 py-1.5 text-xs",
-                  isActive
-                    ? "border-border bg-background text-foreground"
-                    : "border-transparent bg-muted/40 text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <button
-                  type="button"
-                  className="min-w-0 flex-1 truncate text-left"
-                  onClick={() => onSelectItem(item.id)}
-                >
-                  {item.title}
-                </button>
-                <button
-                  type="button"
-                  className="shrink-0 rounded-sm p-0.5 opacity-60 hover:opacity-100"
-                  aria-label={`Close ${item.title}`}
-                  onClick={() => onCloseItem(item.id)}
-                >
-                  <X className="size-3.5" />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="min-h-0 min-w-0 flex-1 overflow-hidden bg-muted/10">
-        {!activeItem ? (
-          <div className="flex h-full items-center justify-center p-6">
-            <p className="text-sm text-muted-foreground">No preview selected.</p>
-          </div>
-        ) : activeItem.renderer ? (
-          <PreviewProviderPane item={activeItem} threadId={threadId} />
-        ) : activeItem.target.kind === "file" ? (
-          activePreviewUrl ? (
-            <FilePreviewContent
-              filename={activeItem.title}
-              previewUrl={activePreviewUrl}
-              contentType={activeItem.contentType ?? undefined}
-              layout="panel"
-            />
-          ) : (
-            <div className="flex h-full items-center justify-center p-6">
-              <Alert className="max-w-sm">
-                <AlertTitle>Preview unavailable</AlertTitle>
-                <AlertDescription>
-                  This file could not be read from the current desktop runtime.
-                </AlertDescription>
-              </Alert>
-            </div>
-          )
-        ) : activePreviewUrl ? (
-          (() => {
-            const targetUrl = activeItem.target.url;
-            return (
-              <div className="flex h-full flex-col">
-                <div className="flex items-center justify-between gap-3 border-b border-border/70 px-3 py-2">
-                  <p className="truncate text-xs text-muted-foreground">
-                    {targetUrl}
-                  </p>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      window.open(targetUrl, "_blank", "noopener,noreferrer");
-                    }}
-                  >
-                    <ExternalLink className="size-4" />
-                    Open
-                  </Button>
-                </div>
-                <iframe
-                  title={activeItem.title}
-                  src={activePreviewUrl}
-                  className="min-h-0 w-full flex-1 bg-white"
-                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-                  referrerPolicy="no-referrer"
-                />
-              </div>
-            );
-          })()
-        ) : (
-          <div className="flex h-full items-center justify-center p-6">
-            <Alert className="max-w-sm">
-              <AlertTitle>Preview unavailable</AlertTitle>
-              <AlertDescription>
-                This URL preview could not be opened.
-              </AlertDescription>
-            </Alert>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+type WorkbenchDropTarget = {
+  paneId: string;
+  index: number;
+  placement: DesktopPaneDropPlacement;
+};
 
 function WorkbenchTabStrip({
   activeTabId,
+  draggingTabId,
+  dropTarget,
   onCycleTabs,
   onCloseTab,
+  onDropTarget,
   onSelectTab,
+  onSetDropTarget,
+  onTabDragEnd,
+  onTabDragStart,
+  paneId,
   threadRuntimeById,
   tabs,
 }: {
   activeTabId: string | null;
+  draggingTabId: string | null;
+  dropTarget: WorkbenchDropTarget | null;
   onCycleTabs: (offset: -1 | 1) => void;
   onCloseTab: (tabId: string) => void;
+  onDropTarget: (target: WorkbenchDropTarget) => void;
   onSelectTab: (tabId: string) => void;
+  onSetDropTarget: (target: WorkbenchDropTarget | null) => void;
+  onTabDragEnd: () => void;
+  onTabDragStart: (tabId: string, event: DragEvent<HTMLElement>) => void;
+  paneId: string;
   threadRuntimeById: DesktopSnapshot["threadRuntimeById"];
   tabs: DesktopTab[];
 }) {
-  if (tabs.length === 0) {
-    return null;
-  }
+  const renderDropTarget = (index: number) => {
+    const target: WorkbenchDropTarget = {
+      paneId,
+      index,
+      placement: "center",
+    };
+    const isActive =
+      dropTarget?.paneId === paneId &&
+      dropTarget.placement === "center" &&
+      dropTarget.index === index;
+
+    return (
+      <div
+        key={`drop:${paneId}:${index}`}
+        data-pane-drop-target={paneId}
+        data-pane-drop-index={index}
+        className={cn("desktop-workbench-tab-drop-target", isActive && "is-active")}
+        onDragOver={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          event.dataTransfer.dropEffect = "move";
+          onSetDropTarget(target);
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onDropTarget(target);
+        }}
+      />
+    );
+  };
 
   return (
     <div className="desktop-workbench-tabstrip">
@@ -2389,8 +2305,14 @@ function WorkbenchTabStrip({
         role="tablist"
         aria-label="Open workbench tabs"
         className="desktop-workbench-tablist desktop-no-drag"
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+            onSetDropTarget(null);
+          }
+        }}
       >
-        {tabs.map((tab) => {
+        {renderDropTarget(0)}
+        {tabs.map((tab, index) => {
           const TabIcon = getDesktopIcon(tab.icon);
           const isActive = tab.id === activeTabId;
           const runtime = tab.threadId ? threadRuntimeById[tab.threadId] : null;
@@ -2400,69 +2322,78 @@ function WorkbenchTabStrip({
               : `Close ${tab.title} tab`;
 
           return (
-            <div
-              key={tab.id}
-              className={cn("desktop-workbench-tab group/tab", isActive && "is-active")}
-            >
-              <button
-                type="button"
-                role="tab"
-                aria-selected={isActive}
-                data-tab-id={tab.id}
-                tabIndex={isActive ? 0 : -1}
-                className="desktop-workbench-tab-button"
-                onClick={() => onSelectTab(tab.id)}
-                onKeyDown={(event) => {
-                  if (event.key === "ArrowRight") {
-                    event.preventDefault();
-                    onCycleTabs(1);
-                    return;
-                  }
-                  if (event.key === "ArrowLeft") {
-                    event.preventDefault();
-                    onCycleTabs(-1);
-                    return;
-                  }
-                  if (event.key === "Home") {
-                    event.preventDefault();
-                    const firstTabId = tabs[0]?.id ?? tab.id;
-                    onSelectTab(firstTabId);
-                    focusWorkbenchTab(firstTabId);
-                    return;
-                  }
-                  if (event.key === "End") {
-                    event.preventDefault();
-                    const lastTabId = tabs[tabs.length - 1]?.id ?? tab.id;
-                    onSelectTab(lastTabId);
-                    focusWorkbenchTab(lastTabId);
-                  }
-                }}
+            <Fragment key={tab.id}>
+              <div
+                draggable
+                className={cn(
+                  "desktop-workbench-tab group/tab",
+                  isActive && "is-active",
+                  draggingTabId === tab.id && "is-dragging",
+                )}
+                onDragStart={(event) => onTabDragStart(tab.id, event)}
+                onDragEnd={onTabDragEnd}
               >
-                <TabIcon className="desktop-workbench-tab-icon" />
-                <span className="desktop-workbench-tab-copy">
-                  <ThreadRuntimeIndicator runtime={runtime} className="desktop-workbench-tab-runtime" />
-                  <span className="desktop-workbench-tab-title">{tab.title}</span>
-                  {tab.subtitle ? (
-                    <span className="desktop-workbench-tab-subtitle">
-                      {tab.subtitle}
-                    </span>
-                  ) : null}
-                </span>
-              </button>
-              {tab.closable ? (
                 <button
                   type="button"
-                  aria-label={closeLabel}
-                  className="desktop-workbench-tab-close"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onCloseTab(tab.id);
+                  role="tab"
+                  aria-selected={isActive}
+                  data-tab-id={tab.id}
+                  tabIndex={isActive ? 0 : -1}
+                  className="desktop-workbench-tab-button"
+                  onClick={() => onSelectTab(tab.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "ArrowRight") {
+                      event.preventDefault();
+                      onCycleTabs(1);
+                      return;
+                    }
+                    if (event.key === "ArrowLeft") {
+                      event.preventDefault();
+                      onCycleTabs(-1);
+                      return;
+                    }
+                    if (event.key === "Home") {
+                      event.preventDefault();
+                      const firstTabId = tabs[0]?.id ?? tab.id;
+                      onSelectTab(firstTabId);
+                      focusWorkbenchTab(firstTabId);
+                      return;
+                    }
+                    if (event.key === "End") {
+                      event.preventDefault();
+                      const lastTabId = tabs[tabs.length - 1]?.id ?? tab.id;
+                      onSelectTab(lastTabId);
+                      focusWorkbenchTab(lastTabId);
+                    }
                   }}
                 >
-                  <X className="size-3" />
+                  <TabIcon className="desktop-workbench-tab-icon" />
+                  <span className="desktop-workbench-tab-copy">
+                    <ThreadRuntimeIndicator runtime={runtime} className="desktop-workbench-tab-runtime" />
+                    <span className="desktop-workbench-tab-title">{tab.title}</span>
+                    {tab.subtitle ? (
+                      <span className="desktop-workbench-tab-subtitle">
+                        {tab.subtitle}
+                      </span>
+                    ) : null}
+                  </span>
                 </button>
-              ) : null}
-            </div>
+                {tab.closable ? (
+                  <button
+                    type="button"
+                    aria-label={closeLabel}
+                    className="desktop-workbench-tab-close"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onCloseTab(tab.id);
+                    }}
+                  >
+                    <X className="size-3" />
+                  </button>
+                ) : null}
+              </div>
+              {renderDropTarget(index + 1)}
+            </Fragment>
           );
         })}
       </div>
@@ -2470,12 +2401,131 @@ function WorkbenchTabStrip({
   );
 }
 
+function PreviewWorkbenchTabPane({
+  item,
+  threadId,
+}: {
+  item: NonNullable<DesktopTab["previewItem"]>;
+  threadId: string;
+}) {
+  const handleDownload = useCallback(async () => {
+    if (item.target.kind !== "file" || !desktopShell?.downloadFile) {
+      return;
+    }
+
+    try {
+      const result = await desktopShell.downloadFile({
+        source: item.target.source,
+        path: item.target.path,
+        filename: item.target.filename ?? item.title,
+      });
+      if (!result.canceled) {
+        toast.success("File saved.");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    }
+  }, [item]);
+
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
+      {item.renderer ? (
+        <PreviewProviderPane item={item} threadId={threadId} />
+      ) : item.target.kind === "file" ? (
+        item.src ? (
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <div className="flex items-center justify-between gap-3 border-b border-border/70 px-3 py-2">
+              <div className="min-w-0">
+                <p className="truncate text-xs font-medium text-foreground">
+                  {item.title}
+                </p>
+                <p className="truncate text-xs text-muted-foreground">
+                  {item.target.path}
+                </p>
+              </div>
+              {desktopShell?.downloadFile ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    void handleDownload();
+                  }}
+                >
+                  <Download className="size-4" />
+                  Save As
+                </Button>
+              ) : null}
+            </div>
+            <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+              <FilePreviewContent
+                filename={item.title}
+                previewUrl={item.src}
+                contentType={item.contentType ?? undefined}
+                layout="panel"
+              />
+            </div>
+          </div>
+        ) : (
+          <div className="flex h-full items-center justify-center p-6">
+            <Alert className="max-w-sm">
+              <AlertTitle>Preview unavailable</AlertTitle>
+              <AlertDescription>
+                This file could not be read from the current desktop runtime.
+              </AlertDescription>
+            </Alert>
+          </div>
+        )
+      ) : item.src ? (
+        (() => {
+          const targetUrl = item.target.kind === "url" ? item.target.url : item.title;
+          return (
+            <div className="flex h-full flex-col">
+              <div className="flex items-center justify-between gap-3 border-b border-border/70 px-3 py-2">
+                <p className="truncate text-xs text-muted-foreground">
+                  {targetUrl}
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    window.open(targetUrl, "_blank", "noopener,noreferrer");
+                  }}
+                >
+                  <ExternalLink className="size-4" />
+                  Open
+                </Button>
+              </div>
+              <iframe
+                title={item.title}
+                src={item.src}
+                className="min-h-0 w-full flex-1 bg-white"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                referrerPolicy="no-referrer"
+              />
+            </div>
+          );
+        })()
+      ) : (
+        <div className="flex h-full items-center justify-center p-6">
+          <Alert className="max-w-sm">
+            <AlertTitle>Preview unavailable</AlertTitle>
+            <AlertDescription>
+              This URL preview could not be opened.
+            </AlertDescription>
+          </Alert>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function App() {
-  const isMobile = useIsMobile();
   const [snapshot, setSnapshot] = useState<DesktopSnapshot | null>(null);
   const [uiMessagesByThread, setUiMessagesByThread] = useState<
     Record<string, Message[]>
   >({});
+  const [activePaneId, setActivePaneId] = useState<string | null>(null);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [activeViewId, setActiveViewId] = useState<string | null>(null);
@@ -2493,21 +2543,12 @@ export function App() {
   const fallbackSocketRef = useRef<WebSocket | null>(null);
   const streamingMessageIdsRef = useRef<Record<string, string | null>>({});
   const reportedReadyRef = useRef(false);
-  const previewSplitContainerRef = useRef<HTMLDivElement | null>(null);
-  const threadPreviewResizeStateRef = useRef<{
-    startClientX: number;
-    startWidth: number;
-  } | null>(null);
-  const threadPreviewWidthRef = useRef<number>(readStoredThreadPreviewWidth());
-  const [isThreadPreviewResizing, setIsThreadPreviewResizing] = useState(false);
+  const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<WorkbenchDropTarget | null>(null);
 
   const activeThread = useMemo(
     () => getActiveThread(snapshot, activeThreadId),
     [snapshot, activeThreadId],
-  );
-  const activeView = useMemo(
-    () => getView(snapshot, activeViewId),
-    [snapshot, activeViewId],
   );
   const groupBeingEdited = useMemo(() => {
     if (!snapshot || groupEditor.mode !== "rename") {
@@ -2530,26 +2571,10 @@ export function App() {
 
     return snapshot.threads.filter((thread) => thread.groupId === groupBeingDeleted.id).length;
   }, [groupBeingDeleted, snapshot]);
-  const activeThreadPreviewState = useMemo(() => {
-    if (!snapshot || !activeThreadId) {
-      return null;
-    }
-
-    return (
-      snapshot.threadPreviewStateById[activeThreadId] ?? {
-        visible: false,
-        activeItemId: null,
-        items: [],
-      }
-    );
-  }, [snapshot, activeThreadId]);
   const rawMessages = useMemo(() => {
     if (!activeThreadId) return [];
     return uiMessagesByThread[activeThreadId] ?? [];
   }, [activeThreadId, uiMessagesByThread]);
-  const isStreaming = rawMessages.some(
-    (message) => message.role === "assistant" && message.isStreaming,
-  );
   useEffect(() => {
     let cancelled = false;
 
@@ -2576,14 +2601,18 @@ export function App() {
           }
           return merged;
         });
+        setActivePaneId(next.activePaneId ?? deriveDesktopPanes(next)[0]?.id ?? null);
         setActiveTabId(next.activeTabId);
         setActiveThreadId(next.activeThreadId ?? next.threads[0]?.id ?? null);
         setActiveViewId(
-          next.activeViewId ??
-            next.views.find((view) => view.isDefault)?.id ??
-            next.views[0]?.id ??
-            null,
+          next.activeViewId !== undefined
+            ? next.activeViewId
+            : next.views.find((view) => view.isDefault)?.id ??
+                next.views[0]?.id ??
+                null,
         );
+        setDraggingTabId(null);
+        setDropTarget(null);
       } catch {
         setConnectionState("closed");
       }
@@ -2614,6 +2643,9 @@ export function App() {
           }
           return merged;
         });
+        setActivePaneId(
+          event.snapshot.activePaneId ?? deriveDesktopPanes(event.snapshot)[0]?.id ?? null,
+        );
         setActiveTabId(event.snapshot.activeTabId);
         setActiveThreadId(
           event.snapshot.activeThreadId ??
@@ -2621,10 +2653,11 @@ export function App() {
             null,
         );
         setActiveViewId(
-          event.snapshot.activeViewId ??
-            event.snapshot.views.find((view) => view.isDefault)?.id ??
-            event.snapshot.views[0]?.id ??
-            null,
+          event.snapshot.activeViewId !== undefined
+            ? event.snapshot.activeViewId
+            : event.snapshot.views.find((view) => view.isDefault)?.id ??
+                event.snapshot.views[0]?.id ??
+                null,
         );
         setConnectionState("open");
         return;
@@ -2730,6 +2763,7 @@ export function App() {
       null;
     setShowSettings(false);
     setActiveTabId(null);
+    setActivePaneId(activePaneId ?? "primary");
     if (defaultThreadViewId) {
       setActiveViewId(defaultThreadViewId);
     }
@@ -2737,7 +2771,7 @@ export function App() {
       type: "create_thread",
       groupId,
     });
-  }, [sendEvent, snapshot?.views]);
+  }, [activePaneId, sendEvent, snapshot?.views]);
 
   const handleCreateGroup = useCallback((title?: string) => {
     sendEvent({ type: "create_group", title });
@@ -2802,12 +2836,13 @@ export function App() {
       null;
     setShowSettings(false);
     setActiveThreadId(threadId);
+    setActivePaneId(existingTab?.paneId ?? activePaneId ?? "primary");
     if (defaultThreadViewId) {
       setActiveViewId(defaultThreadViewId);
     }
     setActiveTabId(existingTab?.id ?? null);
     sendEvent({ type: "select_thread", threadId });
-  }, [sendEvent, snapshot?.tabs, snapshot?.views]);
+  }, [activePaneId, sendEvent, snapshot?.tabs, snapshot?.views]);
 
   const handleSelectView = useCallback((viewId: string) => {
     const existingTab =
@@ -2815,10 +2850,11 @@ export function App() {
         (tab) => tab.kind === "workspace" && tab.viewId === viewId,
       ) ?? null;
     setShowSettings(false);
+    setActivePaneId(existingTab?.paneId ?? activePaneId ?? "primary");
     setActiveViewId(viewId);
     setActiveTabId(existingTab?.id ?? null);
     sendEvent({ type: "select_view", viewId });
-  }, [sendEvent, snapshot?.tabs]);
+  }, [activePaneId, sendEvent, snapshot?.tabs]);
 
   const handleSelectTab = useCallback((tabId: string) => {
     const tab = snapshot?.tabs.find((entry) => entry.id === tabId) ?? null;
@@ -2827,13 +2863,19 @@ export function App() {
     }
 
     setShowSettings(false);
+    setActivePaneId(tab.paneId ?? "primary");
     setActiveTabId(tab.id);
     setActiveViewId(tab.viewId);
-    if (tab.kind === "thread" && tab.threadId) {
+    if (tab.threadId) {
       setActiveThreadId(tab.threadId);
     }
     sendEvent({ type: "select_tab", tabId });
   }, [sendEvent, snapshot?.tabs]);
+
+  const handleFocusPane = useCallback((paneId: string) => {
+    setActivePaneId(paneId);
+    sendEvent({ type: "focus_pane", paneId });
+  }, [sendEvent]);
 
   const handleCloseTab = useCallback((tabId: string) => {
     const tabs = snapshot?.tabs ?? [];
@@ -2845,9 +2887,10 @@ export function App() {
     const nextTabs = tabs.filter((tab) => tab.id !== tabId);
     if (activeTabId === tabId) {
       const fallback = nextTabs[index] ?? nextTabs[index - 1] ?? nextTabs[0] ?? null;
+      setActivePaneId(fallback?.paneId ?? activePaneId ?? "primary");
       setActiveTabId(fallback?.id ?? null);
       setActiveViewId(fallback?.viewId ?? null);
-      if (fallback?.kind === "thread" && fallback.threadId) {
+      if (fallback?.threadId) {
         setActiveThreadId(fallback.threadId);
       }
       if (fallback?.id) {
@@ -2855,7 +2898,36 @@ export function App() {
       }
     }
     sendEvent({ type: "close_tab", tabId });
-  }, [activeTabId, sendEvent, snapshot?.tabs]);
+  }, [activePaneId, activeTabId, sendEvent, snapshot?.tabs]);
+
+  const handleTabDragStart = useCallback((tabId: string, event: DragEvent<HTMLElement>) => {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData(DESKTOP_TAB_MIME_TYPE, tabId);
+    setDraggingTabId(tabId);
+    setDropTarget(null);
+  }, []);
+
+  const handleTabDragEnd = useCallback(() => {
+    setDraggingTabId(null);
+    setDropTarget(null);
+  }, []);
+
+  const handleDropTarget = useCallback((target: WorkbenchDropTarget) => {
+    const tabId = draggingTabId;
+    if (!tabId) {
+      return;
+    }
+
+    sendEvent({
+      type: "move_tab",
+      tabId,
+      targetPaneId: target.paneId,
+      targetIndex: target.index,
+      placement: target.placement,
+    });
+    setDraggingTabId(null);
+    setDropTarget(null);
+  }, [draggingTabId, sendEvent]);
 
   const handleCycleTabs = useCallback((offset: -1 | 1) => {
     const tabs = snapshot?.tabs ?? [];
@@ -2900,8 +2972,6 @@ export function App() {
     }
     sendEvent({ type: "set_provider", provider });
   }, [sendEvent, snapshot?.availableProviders]);
-
-  const initialDraft = composerDraftsRef.current[getDraftKey(activeThreadId)] ?? "";
 
   const handleDraftChange = useCallback((threadId: string | null, draft: string) => {
     composerDraftsRef.current[getDraftKey(threadId)] = draft;
@@ -2964,42 +3034,6 @@ export function App() {
     sendEvent({
       type: "preview_clear",
       threadId: activeThreadId,
-    });
-  }, [activeThreadId, sendEvent]);
-
-  const handleSelectPreviewItem = useCallback((itemId: string) => {
-    if (!activeThreadId) {
-      return;
-    }
-
-    sendEvent({
-      type: "preview_select_item",
-      threadId: activeThreadId,
-      itemId,
-    });
-  }, [activeThreadId, sendEvent]);
-
-  const handleClosePreviewItem = useCallback((itemId: string) => {
-    if (!activeThreadId) {
-      return;
-    }
-
-    sendEvent({
-      type: "preview_close_item",
-      threadId: activeThreadId,
-      itemId,
-    });
-  }, [activeThreadId, sendEvent]);
-
-  const handleSetPreviewVisible = useCallback((visible: boolean) => {
-    if (!activeThreadId) {
-      return;
-    }
-
-    sendEvent({
-      type: "preview_set_visibility",
-      threadId: activeThreadId,
-      visible,
     });
   }, [activeThreadId, sendEvent]);
 
@@ -3106,101 +3140,291 @@ export function App() {
     };
   }, [activeTabId, handleCloseTab, handleCycleTabs, handleSelectTab, snapshot?.tabs]);
 
-  const activeSurfaceProps = snapshot && activeView ? {
-    snapshot,
-    surface: activeView,
+  const paneModels = useMemo(() => {
+    const panes = deriveDesktopPanes(snapshot).map((pane) => ({
+      ...pane,
+      tabs: pane.tabs.map((tab) => ({
+        ...tab,
+        paneId: tab.paneId ?? pane.id,
+      })),
+    }));
+    if (panes.length === 0) {
+      return [];
+    }
+
+    const resolvedActivePaneId =
+      activePaneId ?? snapshot?.activePaneId ?? panes[0]?.id ?? null;
+
+    return panes.map((pane) => {
+      const activeId =
+        pane.id === resolvedActivePaneId &&
+        activeTabId &&
+        pane.tabs.some((tab) => tab.id === activeTabId)
+          ? activeTabId
+          : pane.activeTabId && pane.tabs.some((tab) => tab.id === pane.activeTabId)
+            ? pane.activeTabId
+            : pane.tabs[0]?.id ?? null;
+      return {
+        ...pane,
+        activeTabId: activeId,
+      };
+    });
+  }, [activePaneId, activeTabId, snapshot]);
+  const paneLayout = useMemo(
+    () => deriveDesktopPaneLayout(snapshot),
+    [snapshot],
+  );
+  const paneById = useMemo(
+    () => new Map(paneModels.map((pane) => [pane.id, pane])),
+    [paneModels],
+  );
+
+  const handleCycleTabsInPane = useCallback((paneId: string, offset: -1 | 1) => {
+    const pane = paneModels.find((entry) => entry.id === paneId) ?? null;
+    const tabs = pane?.tabs ?? [];
+    if (!pane || tabs.length < 2) {
+      return;
+    }
+
+    const currentIndex = tabs.findIndex((tab) => tab.id === pane.activeTabId);
+    const baseIndex = currentIndex === -1 ? 0 : currentIndex;
+    const nextIndex = (baseIndex + offset + tabs.length) % tabs.length;
+    const nextTab = tabs[nextIndex];
+    if (!nextTab) {
+      return;
+    }
+
+    handleSelectTab(nextTab.id);
+    focusWorkbenchTab(nextTab.id);
+  }, [handleSelectTab, paneModels]);
+
+  const buildSurfacePropsForTab = useCallback((tab: DesktopTab) => {
+    if (!snapshot || tab.kind === "preview" || !tab.viewId) {
+      return null;
+    }
+
+    const surface = getView(snapshot, tab.viewId);
+    if (!surface) {
+      return null;
+    }
+
+    const tabThreadId = tab.kind === "thread" ? tab.threadId : activeThreadId;
+    const tabRawMessages = tab.kind === "thread" && tab.threadId
+      ? uiMessagesByThread[tab.threadId] ?? []
+      : rawMessages;
+    const tabInitialDraft = composerDraftsRef.current[getDraftKey(tabThreadId)] ?? "";
+    const tabIsStreaming = tabRawMessages.some(
+      (message) => message.role === "assistant" && message.isStreaming,
+    );
+
+    return {
+      snapshot,
+      surface,
+      activeThreadId: tabThreadId,
+      rawMessages: tabRawMessages,
+      initialDraft: tabInitialDraft,
+      isStreaming: tabIsStreaming,
+      onDraftChange: handleDraftChange,
+      onSetProvider: handleSetProvider,
+      onSetModel: handleSetModel,
+      onSetModelSource: handleSetModelSource,
+      onStopThread: handleStopThread,
+      onSubmitMessage: handleSubmitMessage,
+      onRequestCreateGroup: handleRequestCreateGroup,
+      onRequestDeleteGroup: handleRequestDeleteGroup,
+      onRequestRenameGroup: handleRequestRenameGroup,
+      onSendEvent: sendEvent,
+      onOpenPreviewTarget: handleOpenPreviewTarget,
+      onSetPreviewTargets: handleSetPreviewTargets,
+      onClearPreviewTargets: handleClearPreviewTargets,
+    };
+  }, [
     activeThreadId,
+    handleClearPreviewTargets,
+    handleDraftChange,
+    handleOpenPreviewTarget,
+    handleRequestCreateGroup,
+    handleRequestDeleteGroup,
+    handleRequestRenameGroup,
+    handleSetModel,
+    handleSetModelSource,
+    handleSetPreviewTargets,
+    handleSetProvider,
+    handleStopThread,
+    handleSubmitMessage,
     rawMessages,
-    initialDraft,
-    isStreaming,
-    onDraftChange: handleDraftChange,
-    onSetProvider: handleSetProvider,
-    onSetModel: handleSetModel,
-    onSetModelSource: handleSetModelSource,
-    onStopThread: handleStopThread,
-    onSubmitMessage: handleSubmitMessage,
-    onRequestCreateGroup: handleRequestCreateGroup,
-    onRequestDeleteGroup: handleRequestDeleteGroup,
-    onRequestRenameGroup: handleRequestRenameGroup,
-    onSendEvent: sendEvent,
-    onOpenPreviewTarget: handleOpenPreviewTarget,
-    onSetPreviewTargets: handleSetPreviewTargets,
-    onClearPreviewTargets: handleClearPreviewTargets,
-  } : null;
-  const hasActiveThreadPreview =
-    !!activeThreadPreviewState?.visible && activeThreadPreviewState.items.length > 0;
+    sendEvent,
+    snapshot,
+    uiMessagesByThread,
+  ]);
 
-  useEffect(() => {
-    if (!hasActiveThreadPreview || isMobile) {
-      return;
-    }
+  const renderWorkbenchPane = useCallback((pane: DesktopPane) => {
+    const activeTab =
+      pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? pane.tabs[0] ?? null;
+    const surfaceProps = activeTab ? buildSurfacePropsForTab(activeTab) : null;
+    const paneContent = !activeTab ? (
+      <div className="flex flex-1 items-center justify-center p-6">
+        <Alert className="max-w-xl">
+          <AlertTitle>No active view</AlertTitle>
+          <AlertDescription>
+            No workbench view is available yet. Install or activate a builtin extension that contributes one.
+          </AlertDescription>
+        </Alert>
+      </div>
+    ) : activeTab.kind === "preview" && activeTab.previewItem && activeTab.threadId ? (
+      <PreviewWorkbenchTabPane item={activeTab.previewItem} threadId={activeTab.threadId} />
+    ) : surfaceProps ? (
+      <WorkbenchSurfacePane {...surfaceProps} />
+    ) : (
+      <div className="flex flex-1 items-center justify-center p-6">
+        <Alert className="max-w-xl">
+          <AlertTitle>Unavailable tab</AlertTitle>
+          <AlertDescription>
+            This workbench tab could not be resolved from the current desktop snapshot.
+          </AlertDescription>
+        </Alert>
+      </div>
+    );
+    const paneDropTargetActive =
+      draggingTabId !== null &&
+      dropTarget?.paneId === pane.id &&
+      (dropTarget.placement !== "center" || pane.tabs.length === 0);
+    const paneBodyDropTargets: DesktopPaneDropPlacement[] = [
+      "center",
+      "left",
+      "right",
+      "top",
+      "bottom",
+    ];
 
-    const containerNode = previewSplitContainerRef.current;
-    if (!containerNode) {
-      return;
-    }
+    return (
+      <div
+        key={pane.id}
+        data-pane-id={pane.id}
+        className="desktop-workbench-pane"
+        onMouseDownCapture={() => {
+          if (activePaneId !== pane.id) {
+            handleFocusPane(pane.id);
+          }
+        }}
+      >
+        <WorkbenchTabStrip
+          activeTabId={pane.activeTabId}
+          draggingTabId={draggingTabId}
+          dropTarget={dropTarget}
+          onCycleTabs={(offset) => handleCycleTabsInPane(pane.id, offset)}
+          onCloseTab={handleCloseTab}
+          onDropTarget={handleDropTarget}
+          onSelectTab={handleSelectTab}
+          onSetDropTarget={setDropTarget}
+          onTabDragEnd={handleTabDragEnd}
+          onTabDragStart={handleTabDragStart}
+          paneId={pane.id}
+          threadRuntimeById={snapshot?.threadRuntimeById ?? {}}
+          tabs={pane.tabs}
+        />
+        <div
+          className="desktop-workbench-pane-body"
+          onDragLeave={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setDropTarget(null);
+            }
+          }}
+        >
+          {paneContent}
+          {draggingTabId ? (
+            <div className="desktop-pane-drop-zones">
+              {paneBodyDropTargets.map((placement) => {
+                const target: WorkbenchDropTarget = {
+                  paneId: pane.id,
+                  index: pane.tabs.length,
+                  placement,
+                };
 
-    const applyPreviewWidth = () => {
-      const nextWidth = clampThreadPreviewWidth(
-        threadPreviewWidthRef.current,
-        containerNode.clientWidth,
-      );
-      threadPreviewWidthRef.current = nextWidth;
-      containerNode.style.setProperty("--thread-preview-width", `${nextWidth}px`);
-    };
+                return (
+                  <div
+                    key={`${pane.id}:${placement}`}
+                    data-pane-id={pane.id}
+                    data-pane-zone={placement}
+                    className={cn(
+                      "desktop-pane-drop-zone",
+                      `is-${placement}`,
+                      dropTarget?.paneId === pane.id &&
+                        dropTarget.placement === placement &&
+                        "is-active",
+                    )}
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      event.dataTransfer.dropEffect = "move";
+                      setDropTarget(target);
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      handleDropTarget(target);
+                    }}
+                  />
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
+        {paneDropTargetActive ? (
+          <div
+            className={cn(
+              "desktop-pane-drop-indicator",
+              `is-${dropTarget?.placement ?? "center"}`,
+            )}
+          />
+        ) : null}
+      </div>
+    );
+  }, [
+    activePaneId,
+    buildSurfacePropsForTab,
+    handleCloseTab,
+    handleCycleTabsInPane,
+    handleDropTarget,
+    handleFocusPane,
+    handleSelectTab,
+    handleTabDragEnd,
+    handleTabDragStart,
+    draggingTabId,
+    dropTarget,
+    snapshot?.threadRuntimeById,
+  ]);
 
-    applyPreviewWidth();
-
-    const resizeObserver = new ResizeObserver(applyPreviewWidth);
-    resizeObserver.observe(containerNode);
-
-    return () => {
-      resizeObserver.disconnect();
-    };
-  }, [hasActiveThreadPreview, isMobile]);
-
-  useEffect(() => {
-    if (!isThreadPreviewResizing) {
-      return;
-    }
-
-    const handlePointerMove = (event: PointerEvent) => {
-      const resizeState = threadPreviewResizeStateRef.current;
-      const containerNode = previewSplitContainerRef.current;
-      if (!resizeState || !containerNode) {
-        return;
+  const renderPaneNode = useCallback((node: DesktopPaneNode): ReactNode => {
+    if (node.kind === "pane") {
+      const pane = paneById.get(node.id);
+      if (!pane) {
+        return null;
       }
 
-      const nextWidth = clampThreadPreviewWidth(
-        resizeState.startWidth - (event.clientX - resizeState.startClientX),
-        containerNode.clientWidth,
-      );
-      threadPreviewWidthRef.current = nextWidth;
-      containerNode.style.setProperty("--thread-preview-width", `${nextWidth}px`);
-    };
+      return renderWorkbenchPane(pane);
+    }
 
-    const stopResize = () => {
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      threadPreviewResizeStateRef.current = null;
-      setIsThreadPreviewResizing(false);
-      persistThreadPreviewWidth(threadPreviewWidthRef.current);
-    };
-
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", stopResize);
-    window.addEventListener("pointercancel", stopResize);
-
-    return () => {
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", stopResize);
-      window.removeEventListener("pointercancel", stopResize);
-    };
-  }, [isThreadPreviewResizing]);
+    return (
+      <Group
+        key={node.id}
+        orientation={node.direction}
+        className="desktop-pane-group"
+      >
+        {node.children.flatMap((child, index) => [
+          index > 0 ? (
+            <Separator
+              key={`${node.id}:separator:${child.id}`}
+              className="desktop-pane-resize-handle"
+            />
+          ) : null,
+          <Panel key={child.id} className="flex h-full min-h-0 min-w-0">
+            {renderPaneNode(child)}
+          </Panel>,
+        ])}
+      </Group>
+    );
+  }, [paneById, renderWorkbenchPane]);
 
   const handleSubmitGroupEditor = useCallback(() => {
     const title = groupEditor.title.trim();
@@ -3315,14 +3539,6 @@ export function App() {
         <header className="desktop-titlebar desktop-drag">
           <div className="desktop-titlebar-inner">
             <div className="desktop-traffic-spacer" />
-            <WorkbenchTabStrip
-              activeTabId={activeTabId}
-              onCycleTabs={handleCycleTabs}
-              onCloseTab={handleCloseTab}
-              onSelectTab={handleSelectTab}
-              threadRuntimeById={snapshot?.threadRuntimeById ?? {}}
-              tabs={snapshot?.tabs ?? []}
-            />
           </div>
           {shouldShowRuntimeNotice(snapshot) ? (
             <div className="desktop-no-drag border-t border-border/50 px-4 py-2">
@@ -3364,82 +3580,10 @@ export function App() {
               <div className="flex flex-1 min-h-0 flex-col">
                 {showSettings ? (
                   <SettingsPage />
-                ) : activeSurfaceProps ? (
-                  hasActiveThreadPreview ? (
-                    isMobile ? (
-                      <div className="flex min-h-0 flex-1 flex-col">
-                        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                          <WorkbenchSurfacePane {...activeSurfaceProps} />
-                        </div>
-
-                        <aside className="flex min-h-[320px] w-full min-w-0 border-t border-border/60 bg-muted/10">
-                          <ThreadPreviewPane
-                            threadId={activeThreadId!}
-                            previewState={activeThreadPreviewState}
-                            onClear={handleClearPreviewTargets}
-                            onCloseItem={handleClosePreviewItem}
-                            onSelectItem={handleSelectPreviewItem}
-                            onSetVisible={handleSetPreviewVisible}
-                          />
-                        </aside>
-                      </div>
-                    ) : (
-                      <div
-                        ref={previewSplitContainerRef}
-                        className="flex min-h-0 flex-1"
-                        style={
-                          {
-                            "--thread-preview-width": `${threadPreviewWidthRef.current}px`,
-                          } as CSSProperties
-                        }
-                      >
-                        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                            <WorkbenchSurfacePane {...activeSurfaceProps} />
-                          </div>
-                        </div>
-
-                        <div
-                          role="separator"
-                          aria-label="Resize preview pane"
-                          aria-orientation="vertical"
-                          className="group relative flex w-2 shrink-0 cursor-col-resize items-stretch bg-transparent transition-colors hover:bg-border/20"
-                          onPointerDown={(event) => {
-                            const containerNode = previewSplitContainerRef.current;
-                            if (!containerNode) {
-                              return;
-                            }
-                            event.preventDefault();
-                            threadPreviewResizeStateRef.current = {
-                              startClientX: event.clientX,
-                              startWidth: threadPreviewWidthRef.current,
-                            };
-                            setIsThreadPreviewResizing(true);
-                          }}
-                        >
-                          <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border/70 transition-colors group-hover:bg-border" />
-                        </div>
-
-                        <aside
-                          className="flex h-full min-h-0 min-w-0 shrink-0 border-l border-border/60 bg-muted/10"
-                          style={{ width: "var(--thread-preview-width)" }}
-                        >
-                          <ThreadPreviewPane
-                            threadId={activeThreadId!}
-                            previewState={activeThreadPreviewState}
-                            onClear={handleClearPreviewTargets}
-                            onCloseItem={handleClosePreviewItem}
-                            onSelectItem={handleSelectPreviewItem}
-                            onSetVisible={handleSetPreviewVisible}
-                          />
-                        </aside>
-                      </div>
-                    )
-                  ) : (
-                    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                      <WorkbenchSurfacePane {...activeSurfaceProps} />
-                    </div>
-                  )
+                ) : paneModels.length > 0 && paneLayout ? (
+                  <div className="desktop-workbench-layout">
+                    {renderPaneNode(paneLayout)}
+                  </div>
                 ) : (
                   <div className="flex flex-1 items-center justify-center p-6">
                     <Alert className="max-w-xl">

@@ -141,7 +141,7 @@ const extension: CamelAIExtensionModule = {
           "open_preview",
           {
             description:
-              "Open or focus a file or URL in the desktop app thread preview pane. Omits threadId to target the active thread.",
+              "Open or focus a thread-scoped file or URL tab in the desktop app workbench. Omits threadId to target the active thread.",
             inputSchema: previewSelectionInputSchema,
             outputSchema: previewStateSchema,
           },
@@ -155,7 +155,7 @@ const extension: CamelAIExtensionModule = {
               content: [
                 {
                   type: "text",
-                  text: `Opened preview item in thread ${structuredContent.threadId}.`,
+                  text: `Opened preview tab in thread ${structuredContent.threadId}.`,
                 },
               ],
               structuredContent,
@@ -167,7 +167,7 @@ const extension: CamelAIExtensionModule = {
           "set_preview_items",
           {
             description:
-              "Replace the desktop app thread preview tabs with a set of file or URL items. Omits threadId to target the active thread.",
+              "Replace the desktop app thread-scoped preview tabs with a set of file or URL items. Omits threadId to target the active thread.",
             inputSchema: previewSetItemsInputSchema,
             outputSchema: previewStateSchema,
           },
@@ -203,7 +203,7 @@ const extension: CamelAIExtensionModule = {
           "clear_preview",
           {
             description:
-              "Clear all preview tabs from the desktop app thread preview pane. Omits threadId to target the active thread.",
+              "Clear all thread-scoped preview tabs from the desktop app workbench. Omits threadId to target the active thread.",
             inputSchema: previewClearInputSchema,
             outputSchema: previewStateSchema,
           },
@@ -226,7 +226,7 @@ const extension: CamelAIExtensionModule = {
           "set_preview_visibility",
           {
             description:
-              "Show or hide the desktop app thread preview pane without changing the current preview items. Omits threadId to target the active thread.",
+              "Show or hide the desktop app split preview tabs without changing the current preview items. Omits threadId to target the active thread.",
             inputSchema: previewVisibilityInputSchema,
             outputSchema: previewStateSchema,
           },
@@ -240,7 +240,7 @@ const extension: CamelAIExtensionModule = {
               content: [
                 {
                   type: "text",
-                  text: `${visible ? "Showed" : "Hid"} the preview pane for thread ${structuredContent.threadId}.`,
+                  text: `${visible ? "Showed" : "Hid"} the preview tabs for thread ${structuredContent.threadId}.`,
                 },
               ],
               structuredContent,

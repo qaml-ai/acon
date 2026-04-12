@@ -28,8 +28,8 @@ Core areas:
 - Prefer `desktop/renderer/` and `src/` for desktop UI changes.
 - Keep chat as a builtin trusted plugin surface rendered inside the workbench host tree, not as a webview.
 - Use plugin-contributed sidebar panels for extensible left-nav sections such as recent chats or workflow boards.
-- Keep thread preview items in the dedicated right-side preview pane instead of the main workbench tab strip.
-- Use the builtin `preview-control` extension when host MCP or plugin code needs to open or manage thread preview items for files or URLs.
+- Treat thread preview items as regular workbench tabs that can open in a neighboring split pane beside chat.
+- Use the builtin `preview-control` extension when host MCP or plugin code needs to open or manage thread-scoped file or URL tabs.
 - When running a web server inside the guest container, bind it to `0.0.0.0` instead of `localhost`.
 - When opening a preview URL for a guest web server, use the current container IP instead of `localhost`.
 - User plugins are installed into the desktop data directory under `plugins/`, and the builtin Extension Lab view is the primary install/manage entrypoint for them.

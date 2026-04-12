@@ -208,15 +208,46 @@ export interface DesktopThreadPreviewState {
   items: DesktopPreviewItem[];
 }
 
+export interface DesktopPane {
+  id: string;
+  activeTabId: string | null;
+  tabs: DesktopTab[];
+}
+
+export type DesktopPaneSplitDirection = "horizontal" | "vertical";
+export type DesktopPaneDropPlacement =
+  | "center"
+  | "left"
+  | "right"
+  | "top"
+  | "bottom";
+
+export interface DesktopPaneLeaf {
+  id: string;
+  kind: "pane";
+}
+
+export interface DesktopPaneSplit {
+  id: string;
+  kind: "split";
+  direction: DesktopPaneSplitDirection;
+  children: DesktopPaneNode[];
+  sizes?: number[] | null;
+}
+
+export type DesktopPaneNode = DesktopPaneLeaf | DesktopPaneSplit;
+
 export interface DesktopTab {
   id: string;
-  kind: "thread" | "workspace";
+  kind: "thread" | "workspace" | "preview";
+  paneId?: string | null;
   threadId: string | null;
-  viewId: string;
+  viewId: string | null;
   title: string;
   subtitle: string | null;
   icon: string | null;
   closable: boolean;
+  previewItem?: DesktopPreviewItem | null;
 }
 
 export interface DesktopProviderOption {
@@ -384,6 +415,9 @@ export interface DesktopSnapshot {
   threads: DesktopThread[];
   messagesByThread: Record<string, DesktopMessage[]>;
   tabs: DesktopTab[];
+  panes?: DesktopPane[];
+  paneLayout?: DesktopPaneNode | null;
+  activePaneId?: string | null;
   activeTabId: string | null;
   activeThreadId: string | null;
   activeGroupId: string | null;
@@ -458,8 +492,19 @@ export type DesktopClientEvent =
       tabId: string;
     }
   | {
+      type: "focus_pane";
+      paneId: string;
+    }
+  | {
       type: "close_tab";
       tabId: string;
+    }
+  | {
+      type: "move_tab";
+      tabId: string;
+      targetPaneId: string;
+      targetIndex?: number;
+      placement?: DesktopPaneDropPlacement;
     }
   | {
       type: "preview_open_item";
