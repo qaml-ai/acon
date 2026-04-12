@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -20,6 +20,7 @@ import type {
   DesktopThread,
   DesktopThreadPreviewState,
   DesktopThreadRuntimeState,
+  DesktopWorkspaceListing,
 } from "../../desktop/shared/protocol";
 import {
   getDesktopPreviewItemId,
@@ -1026,6 +1027,51 @@ export class DesktopService {
     return this.resolvePreviewSource(target);
   }
 
+  listWorkspaceEntries(targetPath?: string | null): DesktopWorkspaceListing {
+    const directoryPath = this.resolveWorkspaceDirectoryPath(targetPath);
+    if (!directoryPath) {
+      throw new Error("Workspace directory could not be resolved.");
+    }
+
+    const workspaceRoot = this.runtimeManager.getWorkspaceDirectory();
+    const entries = readdirSync(directoryPath, { withFileTypes: true })
+      .map((entry) => {
+        const entryPath = resolve(directoryPath, entry.name);
+        const relativePath = relative(workspaceRoot, entryPath).replaceAll("\\", "/");
+        const normalizedPath = relativePath ? `/${relativePath}` : "/";
+
+        return {
+          path: normalizedPath,
+          name: entry.name,
+          type: entry.isDirectory()
+            ? "directory"
+            : entry.isFile()
+              ? "file"
+              : entry.isSymbolicLink()
+                ? "symlink"
+                : "other",
+        };
+      })
+      .sort((left, right) => {
+        if (left.type === right.type) {
+          return left.name.localeCompare(right.name);
+        }
+        if (left.type === "directory") {
+          return -1;
+        }
+        if (right.type === "directory") {
+          return 1;
+        }
+        return left.name.localeCompare(right.name);
+      });
+
+    const relativeDirectoryPath = relative(workspaceRoot, directoryPath).replaceAll("\\", "/");
+    return {
+      path: relativeDirectoryPath ? `/${relativeDirectoryPath}` : "/",
+      entries,
+    };
+  }
+
   private resolveThreadRuntimeStates(
     threads: DesktopThread[],
   ): Record<string, DesktopThreadRuntimeState> {
@@ -1850,6 +1896,31 @@ export class DesktopService {
         { treatAbsolutePathAsRootRelative: true },
       )
     );
+  }
+
+  private resolveWorkspaceDirectoryPath(targetPath?: string | null): string | null {
+    const workspaceRoot = this.runtimeManager.getWorkspaceDirectory();
+    const trimmedPath = targetPath?.trim();
+    if (!trimmedPath || trimmedPath === "/") {
+      return workspaceRoot;
+    }
+
+    const candidatePath = resolve(workspaceRoot, trimmedPath.replace(/^[/\\]+/, ""));
+    const relativePath = relative(workspaceRoot, candidatePath);
+    const pathSeparator = process.platform === "win32" ? "\\" : "/";
+    if (
+      relativePath === ".." ||
+      relativePath.startsWith(`..${pathSeparator}`) ||
+      isAbsolute(relativePath)
+    ) {
+      return null;
+    }
+
+    if (!existsSync(candidatePath) || !statSync(candidatePath).isDirectory()) {
+      return null;
+    }
+
+    return candidatePath;
   }
 
   private resolveFileWithinRoot(

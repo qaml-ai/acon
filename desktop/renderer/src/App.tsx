@@ -15,10 +15,16 @@ import {
   Archive,
   ArrowLeft,
   ArrowRight,
+  ChevronDown,
+  ChevronRight,
   Download,
   ExternalLink,
+  File,
+  Folder,
+  FolderOpen,
   Loader2,
   Pencil,
+  Plus,
   Trash2,
   X,
 } from "lucide-react";
@@ -90,6 +96,8 @@ import type {
   DesktopThread,
   DesktopThreadGroup,
   DesktopView,
+  DesktopWorkspaceEntry,
+  DesktopWorkspaceListing,
 } from "../../shared/protocol";
 import {
   applyRuntimeEventToMessages,
@@ -2244,6 +2252,7 @@ function WorkbenchTabStrip({
   dropTarget,
   onCycleTabs,
   onCloseTab,
+  onCreateTab,
   onDropTarget,
   onSelectTab,
   onSetDropTarget,
@@ -2258,6 +2267,7 @@ function WorkbenchTabStrip({
   dropTarget: WorkbenchDropTarget | null;
   onCycleTabs: (offset: -1 | 1) => void;
   onCloseTab: (tabId: string) => void;
+  onCreateTab: () => void;
   onDropTarget: (target: WorkbenchDropTarget) => void;
   onSelectTab: (tabId: string) => void;
   onSetDropTarget: (target: WorkbenchDropTarget | null) => void;
@@ -2396,6 +2406,186 @@ function WorkbenchTabStrip({
             </Fragment>
           );
         })}
+      </div>
+      <button
+        type="button"
+        aria-label="New tab"
+        className="desktop-workbench-new-tab desktop-no-drag"
+        onClick={onCreateTab}
+      >
+        <Plus className="size-3.5" />
+      </button>
+    </div>
+  );
+}
+
+function EmptyWorkbenchPane({
+  activeThreadId,
+  onFocusPane,
+  onOpenWorkspaceFile,
+  paneId,
+}: {
+  activeThreadId: string | null;
+  onFocusPane: (paneId: string) => void;
+  onOpenWorkspaceFile: (paneId: string, entry: DesktopWorkspaceEntry) => void;
+  paneId: string;
+}) {
+  const [listingsByPath, setListingsByPath] = useState<Record<string, DesktopWorkspaceListing>>({});
+  const [expandedPaths, setExpandedPaths] = useState<Record<string, boolean>>({ "/": true });
+  const [loadingPaths, setLoadingPaths] = useState<Record<string, boolean>>({});
+  const [errorByPath, setErrorByPath] = useState<Record<string, string>>({});
+
+  const loadDirectory = useCallback(async (path: string) => {
+    if (!desktopShell?.listWorkspaceEntries) {
+      setErrorByPath((current) => ({
+        ...current,
+        [path]: "Workspace browsing is unavailable in this build.",
+      }));
+      return;
+    }
+
+    setLoadingPaths((current) => ({ ...current, [path]: true }));
+    setErrorByPath((current) => {
+      if (!(path in current)) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[path];
+      return next;
+    });
+
+    try {
+      const listing = await desktopShell.listWorkspaceEntries(path === "/" ? null : path);
+      setListingsByPath((current) => ({
+        ...current,
+        [listing.path]: listing,
+      }));
+    } catch (error) {
+      setErrorByPath((current) => ({
+        ...current,
+        [path]:
+          error instanceof Error
+            ? error.message
+            : "Workspace files could not be loaded.",
+      }));
+    } finally {
+      setLoadingPaths((current) => ({
+        ...current,
+        [path]: false,
+      }));
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadDirectory("/");
+  }, [loadDirectory]);
+
+  const toggleDirectory = useCallback((path: string) => {
+    setExpandedPaths((current) => ({
+      ...current,
+      [path]: !current[path],
+    }));
+
+    if (!listingsByPath[path] && !loadingPaths[path]) {
+      void loadDirectory(path);
+    }
+  }, [listingsByPath, loadDirectory, loadingPaths]);
+
+  const handleOpenEntry = useCallback((entry: DesktopWorkspaceEntry) => {
+    onFocusPane(paneId);
+    if (!activeThreadId) {
+      toast.error("Open a chat tab before opening workspace previews.");
+      return;
+    }
+    onOpenWorkspaceFile(paneId, entry);
+  }, [activeThreadId, onFocusPane, onOpenWorkspaceFile, paneId]);
+
+  const renderEntries = useCallback((path: string, depth: number): ReactNode => {
+    const listing = listingsByPath[path];
+    if (!listing) {
+      if (loadingPaths[path]) {
+        return (
+          <div className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" />
+            <span>Loading files…</span>
+          </div>
+        );
+      }
+      if (errorByPath[path]) {
+        return (
+          <div className="px-3 py-2 text-sm text-destructive">
+            {errorByPath[path]}
+          </div>
+        );
+      }
+      return null;
+    }
+
+    if (listing.entries.length === 0) {
+      return (
+        <div className="px-3 py-2 text-sm text-muted-foreground">
+          This directory is empty.
+        </div>
+      );
+    }
+
+    return listing.entries.map((entry) => {
+      const isDirectory = entry.type === "directory";
+      const isExpanded = expandedPaths[entry.path] === true;
+      const EntryIcon = isDirectory ? (isExpanded ? FolderOpen : Folder) : File;
+
+      return (
+        <Fragment key={entry.path}>
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-muted/60"
+            style={{ paddingLeft: `${depth * 14 + 12}px` }}
+            onClick={() => {
+              if (isDirectory) {
+                toggleDirectory(entry.path);
+                return;
+              }
+              handleOpenEntry(entry);
+            }}
+          >
+            {isDirectory ? (
+              isExpanded ? (
+                <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
+              ) : (
+                <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+              )
+            ) : (
+              <span className="size-4 shrink-0" />
+            )}
+            <EntryIcon className="size-4 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 truncate">{entry.name}</span>
+          </button>
+          {isDirectory && isExpanded ? renderEntries(entry.path, depth + 1) : null}
+        </Fragment>
+      );
+    });
+  }, [errorByPath, expandedPaths, handleOpenEntry, listingsByPath, loadingPaths, toggleDirectory]);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-medium text-foreground">Workspace files</h2>
+          <p className="text-sm text-muted-foreground">
+            Click a file to open it in a preview tab.
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => void loadDirectory("/")}
+        >
+          Refresh
+        </Button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto rounded-md border border-border/70 bg-muted/20 py-2">
+        {renderEntries("/", 0)}
       </div>
     </div>
   );
@@ -2756,22 +2946,29 @@ export function App() {
     socket.send(JSON.stringify(event));
   }, []);
 
-  const handleCreateThread = useCallback((groupId?: string) => {
+  const handleCreateThreadInPane = useCallback((paneId: string, groupId?: string) => {
     const defaultThreadViewId =
       snapshot?.views.find((view) => view.scope === "thread" && view.isDefault)?.id ??
       snapshot?.views.find((view) => view.scope === "thread")?.id ??
       null;
     setShowSettings(false);
     setActiveTabId(null);
-    setActivePaneId(activePaneId ?? "primary");
+    setActivePaneId(paneId);
     if (defaultThreadViewId) {
       setActiveViewId(defaultThreadViewId);
+    }
+    if (activePaneId !== paneId) {
+      sendEvent({ type: "focus_pane", paneId });
     }
     sendEvent({
       type: "create_thread",
       groupId,
     });
   }, [activePaneId, sendEvent, snapshot?.views]);
+
+  const handleCreateThread = useCallback((groupId?: string) => {
+    handleCreateThreadInPane(activePaneId ?? "primary", groupId);
+  }, [activePaneId, handleCreateThreadInPane]);
 
   const handleCreateGroup = useCallback((title?: string) => {
     sendEvent({ type: "create_group", title });
@@ -3004,6 +3201,23 @@ export function App() {
       item: toDesktopPreviewTarget(target),
     });
   }, [activeThreadId, sendEvent]);
+
+  const handleOpenPreviewTargetInPane = useCallback((paneId: string, target: PreviewTarget) => {
+    if (!activeThreadId) {
+      return;
+    }
+
+    setShowSettings(false);
+    if (activePaneId !== paneId) {
+      setActivePaneId(paneId);
+      sendEvent({ type: "focus_pane", paneId });
+    }
+    sendEvent({
+      type: "preview_open_item",
+      threadId: activeThreadId,
+      item: toDesktopPreviewTarget(target),
+    });
+  }, [activePaneId, activeThreadId, sendEvent]);
 
   const handleSetPreviewTargets = useCallback((
     targets: PreviewTarget[],
@@ -3263,14 +3477,20 @@ export function App() {
       pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? pane.tabs[0] ?? null;
     const surfaceProps = activeTab ? buildSurfacePropsForTab(activeTab) : null;
     const paneContent = !activeTab ? (
-      <div className="flex flex-1 items-center justify-center p-6">
-        <Alert className="max-w-xl">
-          <AlertTitle>No active view</AlertTitle>
-          <AlertDescription>
-            No workbench view is available yet. Install or activate a builtin extension that contributes one.
-          </AlertDescription>
-        </Alert>
-      </div>
+      <EmptyWorkbenchPane
+        activeThreadId={activeThreadId}
+        onFocusPane={handleFocusPane}
+        onOpenWorkspaceFile={(paneId, entry) => {
+          handleOpenPreviewTargetInPane(paneId, {
+            kind: "file",
+            source: "workspace",
+            workspaceId: DESKTOP_WORKSPACE_ID,
+            path: entry.path,
+            filename: entry.name,
+          });
+        }}
+        paneId={pane.id}
+      />
     ) : activeTab.kind === "preview" && activeTab.previewItem && activeTab.threadId ? (
       <PreviewWorkbenchTabPane item={activeTab.previewItem} threadId={activeTab.threadId} />
     ) : surfaceProps ? (
@@ -3314,6 +3534,7 @@ export function App() {
           dropTarget={dropTarget}
           onCycleTabs={(offset) => handleCycleTabsInPane(pane.id, offset)}
           onCloseTab={handleCloseTab}
+          onCreateTab={() => handleCreateThreadInPane(pane.id)}
           onDropTarget={handleDropTarget}
           onSelectTab={handleSelectTab}
           onSetDropTarget={setDropTarget}
@@ -3383,12 +3604,14 @@ export function App() {
       </div>
     );
   }, [
+    activeThreadId,
     activePaneId,
     buildSurfacePropsForTab,
     handleCloseTab,
     handleCycleTabsInPane,
     handleDropTarget,
     handleFocusPane,
+    handleOpenPreviewTargetInPane,
     handleSelectTab,
     handleTabDragEnd,
     handleTabDragStart,
