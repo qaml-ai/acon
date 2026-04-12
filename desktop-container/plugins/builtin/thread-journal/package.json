@@ -1,0 +1,12 @@
+{
+  "name": "@camelai/thread-journal",
+  "version": "0.1.0",
+  "type": "module",
+  "camelai": {
+    "id": "thread-journal",
+    "name": "Thread Journal",
+    "description": "Tracks thread-level extension state through runtime hooks.",
+    "icon": "BookOpen",
+    "main": "./index.ts"
+  }
+}

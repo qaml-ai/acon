@@ -6,6 +6,7 @@ import type {
   DesktopPluginInstallResult,
   DesktopServerEvent,
   DesktopSnapshot,
+  DesktopWorkspaceListing,
 } from '../../shared/protocol';
 import type { PreviewTarget } from '../../../src/types';
 
@@ -49,6 +50,7 @@ interface DesktopShellApi {
     canceled: boolean;
     destinationPath: string | null;
   }>;
+  listWorkspaceEntries?: (path?: string | null) => Promise<DesktopWorkspaceListing>;
   resolvePreviewSrc?: (target: PreviewTarget) => Promise<string | null>;
   installPlugin?: () => Promise<DesktopPluginInstallResult>;
   openPluginDirectory?: () => Promise<string>;

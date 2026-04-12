@@ -1,0 +1,55 @@
+# Document / Office
+openpyxl
+xlsxwriter
+python-docx
+python-pptx
+odfpy
+
+# PDF
+pdfplumber
+pdfminer.six
+pypdf
+pypdfium2
+pikepdf
+pdf2image
+img2pdf
+reportlab
+pycairo
+rlPyCairo
+camelot-py
+tabula-py
+
+# AI / ML
+onnxruntime
+magika
+opencv-python
+
+# Data / Visualization
+numpy
+pandas
+matplotlib
+seaborn
+sympy
+graphviz
+pyarrow
+
+# Web / Parsing
+beautifulsoup4
+lxml
+requests
+markitdown
+markdownify
+
+# Image / Media
+pillow
+imageio
+imageio-ffmpeg
+wand
+freetype-py
+
+# OCR
+pytesseract
+
+# LibreOffice bridge
+pyoo
+unoserver

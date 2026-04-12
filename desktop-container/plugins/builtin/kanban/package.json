@@ -1,0 +1,13 @@
+{
+  "name": "@camelai/kanban",
+  "version": "0.1.0",
+  "type": "module",
+  "camelai": {
+    "id": "kanban",
+    "name": "Kanban",
+    "description": "Provides a board view for organizing local chat threads.",
+    "icon": "KanbanSquare",
+    "disableable": false,
+    "main": "./index.ts"
+  }
+}
