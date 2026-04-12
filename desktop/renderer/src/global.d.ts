@@ -1,5 +1,7 @@
 import type {
   DesktopClientEvent,
+  DesktopCustomOpenAiCompatibleProviderConfig,
+  DesktopSaveCustomOpenAiCompatibleProviderConfigInput,
   DesktopShellCommand,
   DesktopPluginInstallResult,
   DesktopServerEvent,
@@ -51,6 +53,13 @@ interface DesktopShellApi {
   installPlugin?: () => Promise<DesktopPluginInstallResult>;
   openPluginDirectory?: () => Promise<string>;
   resolveWebviewSrc?: (entrypoint: string) => Promise<string>;
+  getCustomOpenAiCompatibleProviderConfig?: () => Promise<
+    DesktopCustomOpenAiCompatibleProviderConfig | null
+  >;
+  saveCustomOpenAiCompatibleProviderConfig?: (
+    config: DesktopSaveCustomOpenAiCompatibleProviderConfigInput,
+  ) => Promise<DesktopCustomOpenAiCompatibleProviderConfig>;
+  clearCustomOpenAiCompatibleProviderConfig?: () => Promise<void>;
   sendEvent: (event: DesktopClientEvent) => void;
   reportReady: (payload: {
     activeThreadId: string | null;

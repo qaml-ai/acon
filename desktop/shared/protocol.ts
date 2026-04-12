@@ -236,6 +236,43 @@ export interface DesktopAuthState {
   label: string;
 }
 
+export type DesktopCustomOpenAiCompatibleMaxTokensField =
+  | "max_completion_tokens"
+  | "max_tokens";
+
+export interface DesktopCustomOpenAiCompatibleProviderConfig {
+  label: string | null;
+  baseUrl: string;
+  modelId: string;
+  modelName: string | null;
+  headers: Record<string, string>;
+  reasoning: boolean;
+  imageInput: boolean;
+  contextWindow: number | null;
+  maxTokens: number | null;
+  supportsDeveloperRole: boolean | null;
+  supportsReasoningEffort: boolean | null;
+  maxTokensField: DesktopCustomOpenAiCompatibleMaxTokensField | null;
+  hasApiKey: boolean;
+  version: string;
+}
+
+export interface DesktopSaveCustomOpenAiCompatibleProviderConfigInput {
+  label?: string | null;
+  baseUrl: string;
+  modelId: string;
+  modelName?: string | null;
+  headers?: Record<string, string> | null;
+  reasoning?: boolean;
+  imageInput?: boolean;
+  contextWindow?: number | null;
+  maxTokens?: number | null;
+  supportsDeveloperRole?: boolean | null;
+  supportsReasoningEffort?: boolean | null;
+  maxTokensField?: DesktopCustomOpenAiCompatibleMaxTokensField | null;
+  apiKey?: string | null;
+}
+
 export interface DesktopThreadGroup {
   id: string;
   title: string;
