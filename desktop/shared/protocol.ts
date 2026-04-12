@@ -340,6 +340,17 @@ export interface DesktopThreadRuntimeState {
   stopRequested: boolean;
 }
 
+export interface DesktopWorkspaceEntry {
+  path: string;
+  name: string;
+  type: "file" | "directory" | "symlink" | "other";
+}
+
+export interface DesktopWorkspaceListing {
+  path: string;
+  entries: DesktopWorkspaceEntry[];
+}
+
 export interface DesktopMessage {
   id: string;
   threadId: string;

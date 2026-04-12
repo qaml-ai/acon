@@ -1,0 +1,80 @@
+import type {
+  DesktopAuthState,
+  DesktopModel,
+  DesktopModelOption,
+  DesktopModelSourceOption,
+} from "../../desktop/shared/protocol";
+import { claudeProvider as legacyClaudeProvider } from "../../desktop/backend/anthropic";
+import type { DesktopProviderDefinition } from "./provider-types";
+
+const DEFAULT_CLAUDE_IMAGE =
+  process.env.DESKTOP_CONTAINER_AGENT_IMAGE?.trim() ||
+  process.env.DESKTOP_CONTAINER_ACPX_IMAGE?.trim() ||
+  process.env.DESKTOP_CONTAINER_CLAUDE_IMAGE?.trim() ||
+  process.env.DESKTOP_CONTAINER_CODEX_IMAGE?.trim() ||
+  "acon-desktop-acpx:0.1";
+const DEFAULT_CLAUDE_MODEL = "sonnet";
+const DEFAULT_CLAUDE_MODEL_SOURCE = "default";
+const CLAUDE_MODELS = [
+  {
+    id: "sonnet",
+    label: "Claude Sonnet",
+    provider: "claude",
+  },
+  {
+    id: "opus",
+    label: "Claude Opus",
+    provider: "claude",
+  },
+] as const satisfies DesktopModelOption[];
+
+function getAvailableClaudeModels(): DesktopModelOption[] {
+  return [...CLAUDE_MODELS];
+}
+
+function getAvailableClaudeModelSources(): DesktopModelSourceOption[] {
+  return [
+    {
+      id: DEFAULT_CLAUDE_MODEL_SOURCE,
+      label: "Default",
+      provider: "claude",
+    },
+  ];
+}
+
+function getClaudeAuthState(): DesktopAuthState {
+  return legacyClaudeProvider.getAuthState();
+}
+
+export const claudeProvider: DesktopProviderDefinition = {
+  id: "claude",
+  label: "Claude",
+  transport: "container-agentd",
+  option: {
+    id: "claude",
+    label: "Claude",
+  },
+  getDefaultModel() {
+    return DEFAULT_CLAUDE_MODEL;
+  },
+  getAvailableModels: getAvailableClaudeModels,
+  normalizeModel(value) {
+    const normalized = value?.trim();
+    return CLAUDE_MODELS.some((option) => option.id === normalized)
+      ? (normalized as DesktopModel)
+      : DEFAULT_CLAUDE_MODEL;
+  },
+  getDefaultModelSource() {
+    return DEFAULT_CLAUDE_MODEL_SOURCE;
+  },
+  getAvailableModelSources: getAvailableClaudeModelSources,
+  normalizeModelSource() {
+    return DEFAULT_CLAUDE_MODEL_SOURCE;
+  },
+  getAuthState() {
+    return getClaudeAuthState();
+  },
+  getImageName() {
+    return DEFAULT_CLAUDE_IMAGE;
+  },
+};

@@ -192,6 +192,8 @@ body {
   display: flex;
   min-width: 0;
   flex: 0 0 auto;
+  align-items: flex-end;
+  gap: 0.25rem;
   overflow: hidden;
   border-bottom: 1px solid color-mix(in oklab, var(--border) 62%, transparent);
   background: var(--background);
@@ -200,7 +202,7 @@ body {
 .desktop-workbench-tablist {
   display: flex;
   min-width: 0;
-  width: 100%;
+  flex: 1 1 auto;
   align-items: stretch;
   gap: 0.25rem;
   overflow-x: auto;
@@ -355,6 +357,28 @@ body {
   outline: none;
 }
 
+.desktop-workbench-new-tab {
+  display: flex;
+  width: 1.75rem;
+  height: 1.75rem;
+  margin: 0 0.45rem 0.2rem 0;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: var(--muted-foreground);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.desktop-workbench-new-tab:hover,
+.desktop-workbench-new-tab:focus-visible {
+  background: color-mix(in oklab, var(--foreground) 10%, transparent);
+  color: var(--foreground);
+  outline: none;
+}
+
 .desktop-workbench-layout {
   display: flex;
   min-width: 0;
@@ -378,7 +402,6 @@ body {
   display: flex;
   min-width: 0;
   min-height: 0;
-  height: 100%;
   flex: 1 1 auto;
   flex-direction: column;
   overflow: hidden;
@@ -390,7 +413,15 @@ body {
   display: flex;
   min-width: 0;
   min-height: 0;
-  height: 100%;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.desktop-workbench-pane-surface {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
   flex: 1 1 auto;
   flex-direction: column;
   overflow: hidden;

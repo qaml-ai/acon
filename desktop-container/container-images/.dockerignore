@@ -1,0 +1,1 @@
+# Apple `container build` expects a .dockerignore file at the build-context root.
