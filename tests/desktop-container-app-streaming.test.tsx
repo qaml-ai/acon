@@ -308,6 +308,14 @@ function createSnapshot(): DesktopSnapshot {
         provider: "claude",
       },
     ],
+    modelSource: "default",
+    availableModelSources: [
+      {
+        id: "default",
+        label: "Default",
+        provider: "claude",
+      },
+    ],
     auth: {
       provider: "claude",
       available: true,

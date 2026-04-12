@@ -2,6 +2,7 @@ import type {
   DesktopAuthState,
   DesktopModel,
   DesktopModelOption,
+  DesktopModelSourceOption,
 } from "../../desktop/shared/protocol";
 import { claudeProvider as legacyClaudeProvider } from "../../desktop/backend/anthropic";
 import type { DesktopProviderDefinition } from "./provider-types";
@@ -13,6 +14,7 @@ const DEFAULT_CLAUDE_IMAGE =
   process.env.DESKTOP_CONTAINER_CODEX_IMAGE?.trim() ||
   "acon-desktop-acpx:0.1";
 const DEFAULT_CLAUDE_MODEL = "sonnet";
+const DEFAULT_CLAUDE_MODEL_SOURCE = "default";
 const CLAUDE_MODELS = [
   {
     id: "sonnet",
@@ -28,6 +30,16 @@ const CLAUDE_MODELS = [
 
 function getAvailableClaudeModels(): DesktopModelOption[] {
   return [...CLAUDE_MODELS];
+}
+
+function getAvailableClaudeModelSources(): DesktopModelSourceOption[] {
+  return [
+    {
+      id: DEFAULT_CLAUDE_MODEL_SOURCE,
+      label: "Default",
+      provider: "claude",
+    },
+  ];
 }
 
 function getClaudeAuthState(): DesktopAuthState {
@@ -51,6 +63,13 @@ export const claudeProvider: DesktopProviderDefinition = {
     return CLAUDE_MODELS.some((option) => option.id === normalized)
       ? (normalized as DesktopModel)
       : DEFAULT_CLAUDE_MODEL;
+  },
+  getDefaultModelSource() {
+    return DEFAULT_CLAUDE_MODEL_SOURCE;
+  },
+  getAvailableModelSources: getAvailableClaudeModelSources,
+  normalizeModelSource() {
+    return DEFAULT_CLAUDE_MODEL_SOURCE;
   },
   getAuthState() {
     return getClaudeAuthState();

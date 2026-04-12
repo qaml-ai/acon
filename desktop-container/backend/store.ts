@@ -7,6 +7,8 @@ import type {
   DesktopMessage,
   DesktopModel,
   DesktopModelOption,
+  DesktopModelSource,
+  DesktopModelSourceOption,
   DesktopPreviewItem,
   DesktopPreviewTarget,
   DesktopProvider,
@@ -47,6 +49,7 @@ interface PersistedState {
   activeViewId?: string | null;
   provider: DesktopProvider;
   modelsByProvider: Partial<Record<DesktopProvider, DesktopModel>>;
+  modelSourcesByProvider?: Partial<Record<DesktopProvider, DesktopModelSource>>;
   threadPreviewStateById?: Record<string, PersistedThreadPreviewState>;
   providerStateByThread?: Partial<
     Record<
@@ -447,6 +450,7 @@ export class DesktopStore {
           : undefined;
       const modelsByProvider = parsed.modelsByProvider ?? {};
       const persistedProviderModel = modelsByProvider[fallbackProvider];
+      const modelSourcesByProvider = parsed.modelSourcesByProvider ?? {};
       const providerStateByThread = parsed.providerStateByThread ?? {};
       const activeViewId =
         normalizePersistedId(parsed.activeViewId) ??
@@ -481,6 +485,12 @@ export class DesktopStore {
         (activeThreadId
           ? threads.find((thread) => thread.id === activeThreadId)?.provider
           : null) ?? fallbackProvider;
+      const activeThreadProviderAdapter = requireDesktopProvider(activeThreadProvider);
+      const persistedActiveProviderModel =
+        modelsByProvider[activeThreadProvider] ??
+        persistedProviderModel ??
+        legacyModel ??
+        activeThreadProviderAdapter.getDefaultModel();
       const activeGroupId =
         normalizePersistedId(parsed.activeGroupId) ?? threadGroups[0]?.id ?? null;
 
@@ -498,11 +508,16 @@ export class DesktopStore {
         provider: activeThreadProvider,
         modelsByProvider: {
           ...modelsByProvider,
-          [activeThreadProvider]: requireDesktopProvider(activeThreadProvider).normalizeModel(
-            modelsByProvider[activeThreadProvider] ??
-              persistedProviderModel ??
-              legacyModel ??
-              requireDesktopProvider(activeThreadProvider).getDefaultModel(),
+          [activeThreadProvider]: activeThreadProviderAdapter.normalizeModel(
+            persistedActiveProviderModel,
+          ),
+        },
+        modelSourcesByProvider: {
+          ...modelSourcesByProvider,
+          [activeThreadProvider]: activeThreadProviderAdapter.normalizeModelSource(
+            modelSourcesByProvider[activeThreadProvider] ??
+              persistedActiveProviderModel ??
+              activeThreadProviderAdapter.getDefaultModelSource(),
           ),
         },
         threadPreviewStateById: Object.fromEntries(
@@ -538,6 +553,9 @@ export class DesktopStore {
         provider,
         modelsByProvider: {
           [provider]: requireDesktopProvider(provider).getDefaultModel(),
+        },
+        modelSourcesByProvider: {
+          [provider]: requireDesktopProvider(provider).getDefaultModelSource(),
         },
         threadPreviewStateById: {},
         providerStateByThread: {},
@@ -1054,6 +1072,15 @@ export class DesktopStore {
       this.state.modelsByProvider[provider] =
         requireDesktopProvider(provider).getDefaultModel();
     }
+    if (!this.state.modelSourcesByProvider?.[provider]) {
+      this.state.modelSourcesByProvider = {
+        ...(this.state.modelSourcesByProvider ?? {}),
+        [provider]: requireDesktopProvider(provider).normalizeModelSource(
+          this.state.modelsByProvider[provider] ??
+            requireDesktopProvider(provider).getDefaultModelSource(),
+        ),
+      };
+    }
   }
 
   getModel(provider = this.state.provider): DesktopModel {
@@ -1066,6 +1093,23 @@ export class DesktopStore {
   setModel(model: DesktopModel, provider = this.state.provider): void {
     this.state.modelsByProvider[provider] =
       requireDesktopProvider(provider).normalizeModel(model);
+    this.persist();
+  }
+
+  getModelSource(provider = this.state.provider): DesktopModelSource {
+    const adapter = requireDesktopProvider(provider);
+    return adapter.normalizeModelSource(
+      this.state.modelSourcesByProvider?.[provider] ??
+        this.state.modelsByProvider[provider] ??
+        adapter.getDefaultModelSource(),
+    );
+  }
+
+  setModelSource(modelSource: DesktopModelSource, provider = this.state.provider): void {
+    this.state.modelSourcesByProvider = {
+      ...(this.state.modelSourcesByProvider ?? {}),
+      [provider]: requireDesktopProvider(provider).normalizeModelSource(modelSource),
+    };
     this.persist();
   }
 
@@ -1408,6 +1452,8 @@ export class DesktopStore {
     availableProviders: DesktopProviderOption[],
     model: DesktopModel,
     availableModels: DesktopModelOption[],
+    modelSource: DesktopModelSource,
+    availableModelSources: DesktopModelSourceOption[],
     auth: DesktopAuthState,
     views: DesktopView[],
     sidebarPanels: DesktopSidebarPanel[],
@@ -1434,6 +1480,8 @@ export class DesktopStore {
       availableProviders,
       model,
       availableModels,
+      modelSource,
+      availableModelSources,
       auth,
       runtimeStatus,
       views,

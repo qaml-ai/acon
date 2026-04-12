@@ -10,13 +10,14 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 
-export type AgentAssetProvider = "codex" | "claude";
+export type AgentAssetProvider = "codex" | "claude" | "pi" | "opencode";
 
 const VALID_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 const CODEX_MCP_BLOCK_PREFIX = "# >>> acon managed agent assets:";
 const CODEX_MCP_BLOCK_SUFFIX = "# <<< acon managed agent assets:";
 const CLAUDE_PROJECT_PATH = "/workspace";
 const AGENT_ASSET_LEDGER_FILENAME = "plugin-agent-assets-ledger.json";
+const AGENT_ASSET_PROVIDERS = ["codex", "claude", "pi", "opencode"] as const;
 
 export interface PluginAgentSkillAssetRecord {
   id: string;
@@ -100,6 +101,8 @@ interface RemovePluginAgentAssetsResult {
 interface PluginAgentAssetsLedgerRecord {
   codex: string[];
   claude: string[];
+  pi: string[];
+  opencode: string[];
 }
 
 function isDirectory(path: string): boolean {
@@ -394,6 +397,41 @@ function getClaudeSkillDirectory(runtimeDirectory: string): string {
   return resolve(getClaudeConfigDir(runtimeDirectory), "skills");
 }
 
+function getPiSkillDirectory(runtimeDirectory: string): string {
+  return resolve(getProviderHome(runtimeDirectory, "pi"), ".pi", "agent", "skills");
+}
+
+function getOpenCodeSkillDirectory(runtimeDirectory: string): string {
+  return resolve(
+    getProviderHome(runtimeDirectory, "opencode"),
+    ".config",
+    "opencode",
+    "skills",
+  );
+}
+
+function getProviderSkillDirectory(
+  runtimeDirectory: string,
+  provider: AgentAssetProvider,
+): string {
+  switch (provider) {
+    case "codex":
+      return getCodexSkillDirectory(runtimeDirectory);
+    case "claude":
+      return getClaudeSkillDirectory(runtimeDirectory);
+    case "pi":
+      return getPiSkillDirectory(runtimeDirectory);
+    case "opencode":
+      return getOpenCodeSkillDirectory(runtimeDirectory);
+  }
+}
+
+function providerSupportsMcpAssetSync(
+  provider: AgentAssetProvider,
+): provider is "codex" | "claude" {
+  return provider === "codex" || provider === "claude";
+}
+
 function getCodexConfigPath(runtimeDirectory: string): string {
   return resolve(getCodexHome(runtimeDirectory), "config.toml");
 }
@@ -416,10 +454,7 @@ function getInstalledSkillDirectory(
   pluginId: string,
   skillId: string,
 ): string {
-  const skillRoot =
-    provider === "codex"
-      ? getCodexSkillDirectory(runtimeDirectory)
-      : getClaudeSkillDirectory(runtimeDirectory);
+  const skillRoot = getProviderSkillDirectory(runtimeDirectory, provider);
   return resolve(skillRoot, getInstalledSkillDirectoryName(pluginId, skillId));
 }
 
@@ -428,10 +463,7 @@ function listInstalledSkillIds(
   provider: AgentAssetProvider,
   pluginId: string,
 ): string[] {
-  const skillRoot =
-    provider === "codex"
-      ? getCodexSkillDirectory(runtimeDirectory)
-      : getClaudeSkillDirectory(runtimeDirectory);
+  const skillRoot = getProviderSkillDirectory(runtimeDirectory, provider);
   if (!isDirectory(skillRoot)) {
     return [];
   }
@@ -469,6 +501,8 @@ function readAgentAssetsLedger(runtimeDirectory: string): PluginAgentAssetsLedge
     return {
       codex: [],
       claude: [],
+      pi: [],
+      opencode: [],
     };
   }
 
@@ -481,11 +515,19 @@ function readAgentAssetsLedger(runtimeDirectory: string): PluginAgentAssetsLedge
       claude: Array.isArray(parsed.claude)
         ? parsed.claude.filter((entry): entry is string => typeof entry === "string")
         : [],
+      pi: Array.isArray(parsed.pi)
+        ? parsed.pi.filter((entry): entry is string => typeof entry === "string")
+        : [],
+      opencode: Array.isArray(parsed.opencode)
+        ? parsed.opencode.filter((entry): entry is string => typeof entry === "string")
+        : [],
     };
   } catch {
     return {
       codex: [],
       claude: [],
+      pi: [],
+      opencode: [],
     };
   }
 }
@@ -502,6 +544,10 @@ function writeAgentAssetsLedger(
       {
         codex: [...new Set(ledger.codex)].sort((left, right) => left.localeCompare(right)),
         claude: [...new Set(ledger.claude)].sort((left, right) => left.localeCompare(right)),
+        pi: [...new Set(ledger.pi)].sort((left, right) => left.localeCompare(right)),
+        opencode: [...new Set(ledger.opencode)].sort((left, right) =>
+          left.localeCompare(right),
+        ),
       },
       null,
       2,
@@ -779,7 +825,7 @@ export function getInstalledPluginAgentAssetsStatus(options: {
   runtimeDirectory: string;
   pluginId: string;
 }): InstalledPluginAgentAssetsStatus[] {
-  return (["codex", "claude"] as const).map((provider) => ({
+  return AGENT_ASSET_PROVIDERS.map((provider) => ({
     provider,
     installedSkillIds: listInstalledSkillIds(
       options.runtimeDirectory,
@@ -789,7 +835,9 @@ export function getInstalledPluginAgentAssetsStatus(options: {
     installedMcpServerIds:
       provider === "codex"
         ? listInstalledCodexMcpServerIds(options.runtimeDirectory, options.pluginId)
-        : listInstalledClaudeMcpServerIds(options.runtimeDirectory, options.pluginId),
+        : provider === "claude"
+          ? listInstalledClaudeMcpServerIds(options.runtimeDirectory, options.pluginId)
+          : [],
   }));
 }
 
@@ -836,7 +884,8 @@ function applyPluginAgentAssets(options: {
     : [];
 
   const installedMcpServers = installMcpServers
-    ? (
+    ? providerSupportsMcpAssetSync(options.provider)
+      ? (
         options.provider === "codex"
           ? upsertCodexManagedMcpBlock(
               options.runtimeDirectory,
@@ -849,9 +898,10 @@ function applyPluginAgentAssets(options: {
               options.agentAssets.mcpServers,
             )
       ).map((targetId) => ({
-        id: targetId.replace(`plugin.${options.pluginId}.`, ""),
-        targetId,
-      }))
+          id: targetId.replace(`plugin.${options.pluginId}.`, ""),
+          targetId,
+        }))
+      : []
     : [];
 
   const result = {
@@ -900,7 +950,9 @@ function removePluginAgentAssets(options: {
   const removedMcpServerIds =
     options.provider === "codex"
       ? removeCodexManagedMcpBlock(options.runtimeDirectory, options.pluginId)
-      : removeClaudeManagedMcpServers(options.runtimeDirectory, options.pluginId);
+      : options.provider === "claude"
+        ? removeClaudeManagedMcpServers(options.runtimeDirectory, options.pluginId)
+        : [];
 
   const result = {
     pluginId: options.pluginId,
@@ -940,7 +992,7 @@ export function reconcilePluginAgentAssets(options: {
   const desiredPluginIds = new Set(desiredPlugins.map((plugin) => plugin.pluginId));
   const ledger = readAgentAssetsLedger(options.runtimeDirectory);
 
-  for (const provider of ["codex", "claude"] as const) {
+  for (const provider of AGENT_ASSET_PROVIDERS) {
     for (const plugin of desiredPlugins) {
       applyPluginAgentAssets({
         runtimeDirectory: options.runtimeDirectory,

@@ -247,6 +247,36 @@ describe("ContainerRuntimeManager", () => {
     expect(daemonSource.match(/mcpServers: \[\]/g)?.length).toBeGreaterThanOrEqual(3);
   });
 
+  it("does not call unsupported Pi ACP model-switch methods", () => {
+    const daemonSource = readFileSync(
+      resolve(
+        process.cwd(),
+        "desktop-container/container-images/bridge/acon-agentd.mjs",
+      ),
+      "utf8",
+    );
+
+    expect(daemonSource).toContain("Pi ACP does not expose runtime model switching");
+    expect(daemonSource).not.toContain('"session/unstable_set_model"');
+    expect(daemonSource).not.toContain('"session/unstable_set_session_model"');
+  });
+
+  it("synchronizes host Pi and OpenCode auth/config files into guest provider homes", () => {
+    const daemonSource = readFileSync(
+      resolve(
+        process.cwd(),
+        "desktop-container/container-images/bridge/acon-agentd.mjs",
+      ),
+      "utf8",
+    );
+
+    expect(daemonSource).toContain("function syncSeedFile(seedPath, targetPath)");
+    expect(daemonSource).toContain('syncSeedFile("/seed-pi/agent/auth.json"');
+    expect(daemonSource).toContain('syncSeedFile("/seed-pi/agent/models.json"');
+    expect(daemonSource).toContain('syncSeedFile("/seed-opencode-data/auth.json"');
+    expect(daemonSource).toContain('syncSeedFile("/seed-opencode-config/opencode.json"');
+  });
+
   it("preinstalls curated Python packages in the shared image definition", () => {
     const containerfileSource = readFileSync(
       resolve(

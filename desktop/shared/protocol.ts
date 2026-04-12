@@ -2,6 +2,7 @@ import type { ContentBlock } from "../../src/types";
 
 export type DesktopProvider = "claude" | "codex" | "pi" | "opencode";
 export type DesktopModel = string;
+export type DesktopModelSource = string;
 export type DesktopAuthSource = "provider-account" | "api-key" | "missing";
 export type DesktopHarness = "opencode" | "claude-code" | "codex" | "pi";
 
@@ -229,6 +230,12 @@ export interface DesktopModelOption {
   provider: DesktopProvider;
 }
 
+export interface DesktopModelSourceOption {
+  id: DesktopModelSource;
+  label: string;
+  provider: DesktopProvider;
+}
+
 export interface DesktopAuthState {
   provider: DesktopProvider;
   available: boolean;
@@ -349,6 +356,8 @@ export interface DesktopSnapshot {
   availableProviders: DesktopProviderOption[];
   model: DesktopModel;
   availableModels: DesktopModelOption[];
+  modelSource: DesktopModelSource;
+  availableModelSources: DesktopModelSourceOption[];
   auth: DesktopAuthState;
   runtimeStatus: DesktopRuntimeStatus;
   views: DesktopView[];
@@ -470,6 +479,10 @@ export type DesktopClientEvent =
   | {
       type: "set_model";
       model: DesktopModel;
+    }
+  | {
+      type: "set_model_source";
+      modelSource: DesktopModelSource;
     }
   | {
       type: "refresh_plugins";

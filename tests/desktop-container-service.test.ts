@@ -29,6 +29,7 @@ function createRuntimeManagerStub(
 
   const registerHostMcpServer = vi.fn();
   const unregisterHostMcpServer = vi.fn();
+  const setHostRpcMethodHandler = vi.fn();
   const managedWorkspaceDirectory =
     options.managedWorkspaceDirectory ?? "/managed-workspace";
   const runtimeDirectory = options.runtimeDirectory ?? "/runtime";
@@ -48,6 +49,7 @@ function createRuntimeManagerStub(
     }),
     registerHostMcpServer,
     unregisterHostMcpServer,
+    setHostRpcMethodHandler,
     dispose: () => {},
     ensureRuntime: vi.fn(async () => ({
       state: "running",
@@ -68,6 +70,7 @@ function createRuntimeManagerStub(
     cancelPrompt: runtime.cancelPrompt as ReturnType<typeof vi.fn>,
     registerHostMcpServer,
     unregisterHostMcpServer,
+    setHostRpcMethodHandler,
   };
 }
 
@@ -677,7 +680,7 @@ describe("DesktopService", () => {
     expect(CamelAIExtensionHost.prototype.refresh).toHaveBeenCalled();
   });
 
-  it("reconciles declarative plugin agent assets for both providers on startup", async () => {
+  it("reconciles declarative plugin agent skill assets for every provider on startup", async () => {
     const pluginDirectory = resolve(sandboxDataDir, "plugins", "declarative-assets-plugin");
     mkdirSync(resolve(pluginDirectory, "agent-assets", "skills", "authoring"), {
       recursive: true,
@@ -784,6 +787,36 @@ describe("DesktopService", () => {
             "claude",
             "home",
             ".claude",
+            "skills",
+            "declarative-assets-plugin--authoring",
+            "SKILL.md",
+          ),
+        ),
+      ).toBe(true);
+      expect(
+        existsSync(
+          resolve(
+            runtimeDirectory,
+            "providers",
+            "pi",
+            "home",
+            ".pi",
+            "agent",
+            "skills",
+            "declarative-assets-plugin--authoring",
+            "SKILL.md",
+          ),
+        ),
+      ).toBe(true);
+      expect(
+        existsSync(
+          resolve(
+            runtimeDirectory,
+            "providers",
+            "opencode",
+            "home",
+            ".config",
+            "opencode",
             "skills",
             "declarative-assets-plugin--authoring",
             "SKILL.md",
@@ -915,6 +948,36 @@ describe("DesktopService", () => {
           ),
         ),
       ).toBe(true);
+      expect(
+        existsSync(
+          resolve(
+            runtimeDirectory,
+            "providers",
+            "pi",
+            "home",
+            ".pi",
+            "agent",
+            "skills",
+            "toggle-assets-plugin--research",
+            "SKILL.md",
+          ),
+        ),
+      ).toBe(true);
+      expect(
+        existsSync(
+          resolve(
+            runtimeDirectory,
+            "providers",
+            "opencode",
+            "home",
+            ".config",
+            "opencode",
+            "skills",
+            "toggle-assets-plugin--research",
+            "SKILL.md",
+          ),
+        ),
+      ).toBe(true);
     });
 
     pluginEnabled = false;
@@ -971,6 +1034,34 @@ describe("DesktopService", () => {
           "claude",
           "home",
           ".claude",
+          "skills",
+          "toggle-assets-plugin--research",
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      existsSync(
+        resolve(
+          runtimeDirectory,
+          "providers",
+          "pi",
+          "home",
+          ".pi",
+          "agent",
+          "skills",
+          "toggle-assets-plugin--research",
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      existsSync(
+        resolve(
+          runtimeDirectory,
+          "providers",
+          "opencode",
+          "home",
+          ".config",
+          "opencode",
           "skills",
           "toggle-assets-plugin--research",
         ),

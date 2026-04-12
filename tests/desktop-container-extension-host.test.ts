@@ -669,6 +669,16 @@ describe("CamelAIExtensionHost", () => {
             installedSkillIds: [],
             installedMcpServerIds: [],
           },
+          {
+            provider: "pi",
+            installedSkillIds: [],
+            installedMcpServerIds: [],
+          },
+          {
+            provider: "opencode",
+            installedSkillIds: [],
+            installedMcpServerIds: [],
+          },
         ],
       },
     ]);

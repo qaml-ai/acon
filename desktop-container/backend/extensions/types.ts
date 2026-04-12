@@ -495,7 +495,11 @@ export interface CamelAIInstallWorkspacePluginOptions {
   path: string;
 }
 
-export type CamelAIPluginAgentAssetProvider = "codex" | "claude";
+export type CamelAIPluginAgentAssetProvider =
+  | "codex"
+  | "claude"
+  | "pi"
+  | "opencode";
 
 export interface CamelAIPluginAgentSkillAssetRecord {
   id: string;

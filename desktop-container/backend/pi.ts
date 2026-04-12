@@ -1,8 +1,11 @@
 import {
   DEFAULT_ACP_MODEL,
+  DEFAULT_ACP_MODEL_SOURCE,
   getAcpProviderModels,
+  getAcpProviderModelSources,
   getPiAuthState,
   normalizeAcpProviderModel,
+  normalizeAcpProviderModelSource,
 } from "./acp-provider-shared";
 import type { DesktopProviderDefinition } from "./provider-types";
 
@@ -16,11 +19,11 @@ const DEFAULT_PI_IMAGE =
 
 export const piProvider: DesktopProviderDefinition = {
   id: "pi",
-  label: "PI",
+  label: "Pi",
   transport: "container-agentd",
   option: {
     id: "pi",
-    label: "PI",
+    label: "Pi",
   },
   getDefaultModel() {
     return DEFAULT_ACP_MODEL;
@@ -31,8 +34,17 @@ export const piProvider: DesktopProviderDefinition = {
   normalizeModel(value) {
     return normalizeAcpProviderModel(value);
   },
-  getAuthState(model) {
-    return getPiAuthState(model);
+  getDefaultModelSource() {
+    return DEFAULT_ACP_MODEL_SOURCE;
+  },
+  getAvailableModelSources() {
+    return getAcpProviderModelSources("pi");
+  },
+  normalizeModelSource(value) {
+    return normalizeAcpProviderModelSource(value);
+  },
+  getAuthState(modelSource) {
+    return getPiAuthState(modelSource);
   },
   getImageName() {
     return DEFAULT_PI_IMAGE;
