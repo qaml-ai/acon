@@ -138,9 +138,9 @@ function ChatRecentThreadsSidebarPanel({
 
   return (
     <SidebarGroup>
-      <SidebarGroupLabel>Chats</SidebarGroupLabel>
+      <SidebarGroupLabel>Projects</SidebarGroupLabel>
       <SidebarGroupAction
-        aria-label="Create new group"
+        aria-label="Create new project"
         onClick={onRequestCreateGroup}
       >
         <Plus />
@@ -204,7 +204,7 @@ function ChatRecentThreadsSidebarPanel({
                     >
                       <Pencil />
                     </Button>
-                    {group.id !== groups[0]?.id ? (
+                    {group.id !== snapshot?.defaultGroupId ? (
                       <Button
                         size="icon-xs"
                         variant="ghost"
@@ -230,7 +230,7 @@ function ChatRecentThreadsSidebarPanel({
                         className="w-full rounded-md border border-dashed border-sidebar-border/70 px-3 py-2 text-left text-xs text-muted-foreground hover:bg-sidebar-accent/40"
                         onClick={() => onCreateThread(group.id)}
                       >
-                        Create the first chat in this group.
+                        Create the first chat in this project.
                       </button>
                     ) : (
                       <SidebarMenu>

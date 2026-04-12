@@ -314,6 +314,7 @@ export interface DesktopSaveCustomOpenAiCompatibleProviderConfigInput {
 export interface DesktopThreadGroup {
   id: string;
   title: string;
+  slug: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -421,6 +422,7 @@ export interface DesktopSnapshot {
   activeTabId: string | null;
   activeThreadId: string | null;
   activeGroupId: string | null;
+  defaultGroupId: string | null;
   activeViewId: string | null;
   threadPreviewStateById: Record<string, DesktopThreadPreviewState>;
   threadRuntimeById: Record<string, DesktopThreadRuntimeState>;

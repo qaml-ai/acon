@@ -191,11 +191,16 @@ function getActiveThreadGroup(
 
   const activeGroupId = snapshot.activeGroupId;
   if (!activeGroupId) {
-    return snapshot.threadGroups[0] ?? null;
+    return (
+      snapshot.threadGroups.find((group) => group.id === snapshot.defaultGroupId) ??
+      snapshot.threadGroups[0] ??
+      null
+    );
   }
 
   return (
     snapshot.threadGroups.find((group) => group.id === activeGroupId) ??
+    snapshot.threadGroups.find((group) => group.id === snapshot.defaultGroupId) ??
     snapshot.threadGroups[0] ??
     null
   );
@@ -1374,8 +1379,8 @@ function KanbanBoardPane({
           <div className="space-y-1">
             <h2 className="font-heading text-lg font-semibold">Kanban</h2>
             <p className="max-w-3xl text-sm text-muted-foreground">
-              Organize the current session group as drafts, active work,
-              review-ready sessions, and finished archives.
+              Organize the current project as drafts, active work,
+              review-ready chats, and finished archives.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -1389,7 +1394,7 @@ function KanbanBoardPane({
               }}
             >
               <SelectTrigger className="w-[220px] bg-background">
-                <SelectValue placeholder="Select group" />
+                <SelectValue placeholder="Select project" />
               </SelectTrigger>
               <SelectContent>
                 {snapshot.threadGroups.map((group) => (
@@ -1404,7 +1409,7 @@ function KanbanBoardPane({
               variant="outline"
               onClick={onRequestCreateGroup}
             >
-              New Group
+              New Project
             </Button>
             {activeGroup ? (
               <Button
@@ -1413,17 +1418,17 @@ function KanbanBoardPane({
                 onClick={() => onRequestRenameGroup(activeGroup.id)}
               >
                 <Pencil className="size-3.5" />
-                Rename Group
+                Rename Project
               </Button>
             ) : null}
-            {activeGroup && activeGroup.id !== snapshot.threadGroups[0]?.id ? (
+            {activeGroup && activeGroup.id !== snapshot.defaultGroupId ? (
               <Button
                 size="sm"
                 variant="outline"
                 onClick={() => onRequestDeleteGroup(activeGroup.id)}
               >
                 <Trash2 className="size-3.5" />
-                Delete Group
+                Delete Project
               </Button>
             ) : null}
             <Button size="sm" onClick={handleCreateDraft}>
@@ -3468,12 +3473,12 @@ export function App() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {groupEditor.mode === "create" ? "Create Group" : "Rename Group"}
+              {groupEditor.mode === "create" ? "Create Project" : "Rename Project"}
             </DialogTitle>
             <DialogDescription>
               {groupEditor.mode === "create"
-                ? "Name the new group."
-                : "Choose a new name for this group."}
+                ? "Name the new project."
+                : "Choose a new name for this project."}
             </DialogDescription>
           </DialogHeader>
           <Input
@@ -3489,7 +3494,7 @@ export function App() {
                 handleSubmitGroupEditor();
               }
             }}
-            placeholder="Group name"
+            placeholder="Project name"
           />
           <DialogFooter>
             <Button
@@ -3517,10 +3522,10 @@ export function App() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete Group</DialogTitle>
+            <DialogTitle>Delete Project</DialogTitle>
             <DialogDescription>
               {groupBeingDeleted
-                ? `Delete "${groupBeingDeleted.title}"? ${deletedGroupThreadCount > 0 ? `Its ${deletedGroupThreadCount} chat${deletedGroupThreadCount === 1 ? "" : "s"} will be moved to ${snapshot?.threadGroups[0]?.title ?? "the default group"}.` : "This cannot be undone."}`
+                ? `Delete "${groupBeingDeleted.title}"? ${deletedGroupThreadCount > 0 ? `Its ${deletedGroupThreadCount} chat${deletedGroupThreadCount === 1 ? "" : "s"} will be moved to ${snapshot?.threadGroups.find((group) => group.id === snapshot.defaultGroupId)?.title ?? "the default project"}.` : "This cannot be undone."}`
                 : "This cannot be undone."}
             </DialogDescription>
           </DialogHeader>
