@@ -111,8 +111,8 @@ type PersistedDesktopThread = Omit<DesktopThread, 'provider'> & {
   provider?: DesktopProvider;
 };
 
-const DEFAULT_THREAD_GROUP_TITLE = 'Default Group';
-const DEFAULT_NEW_THREAD_GROUP_TITLE = 'New group';
+const DEFAULT_THREAD_GROUP_TITLE = 'Default Project';
+const DEFAULT_NEW_THREAD_GROUP_TITLE = 'New project';
 const DEFAULT_THREAD_TITLE = 'New thread';
 const PRIMARY_PANE_ID = 'primary';
 const LEGACY_SECONDARY_PANE_ID = 'secondary';
@@ -126,6 +126,31 @@ function ensureDir(path: string): void {
 
 function now(): number {
   return Date.now();
+}
+
+function slugifyProjectTitle(title: string): string {
+  const normalized = title
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return normalized || 'project';
+}
+
+function ensureUniqueProjectSlug(
+  baseSlug: string,
+  existingSlugs: Iterable<string>,
+): string {
+  const taken = new Set(existingSlugs);
+  if (!taken.has(baseSlug)) {
+    return baseSlug;
+  }
+
+  let suffix = 2;
+  while (taken.has(`${baseSlug}-${suffix}`)) {
+    suffix += 1;
+  }
+  return `${baseSlug}-${suffix}`;
 }
 
 function deriveThreadTitle(content: string): string {
@@ -479,17 +504,23 @@ function normalizeThread(value: unknown, defaultGroupId: string): DesktopThread 
 
 function createThreadGroup(
   title = DEFAULT_NEW_THREAD_GROUP_TITLE,
+  existingSlugs: Iterable<string> = [],
 ): DesktopThreadGroup {
   const timestamp = now();
+  const normalizedTitle = title.trim() || DEFAULT_THREAD_GROUP_TITLE;
   return {
     id: randomUUID(),
-    title: title.trim() || DEFAULT_THREAD_GROUP_TITLE,
+    title: normalizedTitle,
+    slug: ensureUniqueProjectSlug(slugifyProjectTitle(normalizedTitle), existingSlugs),
     createdAt: timestamp,
     updatedAt: timestamp,
   };
 }
 
-function normalizeThreadGroup(value: unknown): DesktopThreadGroup | null {
+function normalizeThreadGroup(
+  value: unknown,
+  existingSlugs: Iterable<string> = [],
+): DesktopThreadGroup | null {
   if (!value || typeof value !== 'object') {
     return null;
   }
@@ -497,6 +528,7 @@ function normalizeThreadGroup(value: unknown): DesktopThreadGroup | null {
   const group = value as {
     id?: unknown;
     title?: unknown;
+    slug?: unknown;
     createdAt?: unknown;
     updatedAt?: unknown;
   };
@@ -513,13 +545,19 @@ function normalizeThreadGroup(value: unknown): DesktopThreadGroup | null {
     typeof group.updatedAt === 'number' && Number.isFinite(group.updatedAt)
       ? group.updatedAt
       : createdAt;
+  const title =
+    typeof group.title === 'string' && group.title.trim().length > 0
+      ? group.title.trim()
+      : DEFAULT_THREAD_GROUP_TITLE;
+  const requestedSlug =
+    typeof group.slug === 'string' && group.slug.trim().length > 0
+      ? slugifyProjectTitle(group.slug)
+      : slugifyProjectTitle(title);
 
   return {
     id,
-    title:
-      typeof group.title === 'string' && group.title.trim().length > 0
-        ? group.title.trim()
-        : DEFAULT_THREAD_GROUP_TITLE,
+    title,
+    slug: ensureUniqueProjectSlug(requestedSlug, existingSlugs),
     createdAt,
     updatedAt,
   };
@@ -775,10 +813,15 @@ export class DesktopStore {
       const activeViewId =
         normalizePersistedId(parsed.activeViewId) ??
         normalizePersistedId(parsed.activePluginPageId);
+      const seenProjectSlugs = new Set<string>();
       const persistedThreadGroups = Array.isArray(parsed.threadGroups)
         ? parsed.threadGroups.flatMap((group) => {
-            const normalized = normalizeThreadGroup(group);
-            return normalized ? [normalized] : [];
+            const normalized = normalizeThreadGroup(group, seenProjectSlugs);
+            if (!normalized) {
+              return [];
+            }
+            seenProjectSlugs.add(normalized.slug);
+            return [normalized];
           })
         : [];
       const threadGroups = persistedThreadGroups.length > 0
@@ -1320,7 +1363,10 @@ export class DesktopStore {
   }
 
   createThreadGroup(title = DEFAULT_NEW_THREAD_GROUP_TITLE): DesktopThreadGroup {
-    const group = createThreadGroup(title);
+    const group = createThreadGroup(
+      title,
+      (this.state.threadGroups ?? []).map((entry) => entry.slug),
+    );
     this.state.threadGroups = [...(this.state.threadGroups ?? []), group];
     this.state.activeGroupId = group.id;
     this.persist();
@@ -1330,12 +1376,12 @@ export class DesktopStore {
   updateThreadGroup(groupId: string, title: string): DesktopThreadGroup {
     const group = this.findThreadGroup(groupId);
     if (!group) {
-      throw new Error(`Thread group ${groupId} does not exist`);
+      throw new Error(`Project ${groupId} does not exist`);
     }
 
     const normalizedTitle = title.trim();
     if (!normalizedTitle) {
-      throw new Error("Thread group title cannot be empty");
+      throw new Error("Project title cannot be empty");
     }
 
     group.title = normalizedTitle;
@@ -1347,12 +1393,12 @@ export class DesktopStore {
   deleteThreadGroup(groupId: string): void {
     const group = this.findThreadGroup(groupId);
     if (!group) {
-      throw new Error(`Thread group ${groupId} does not exist`);
+      throw new Error(`Project ${groupId} does not exist`);
     }
 
     const defaultGroupId = this.getDefaultThreadGroupId();
     if (group.id === defaultGroupId) {
-      throw new Error("Default group cannot be deleted");
+      throw new Error("Default project cannot be deleted");
     }
 
     const timestamp = now();
@@ -1377,7 +1423,7 @@ export class DesktopStore {
   setActiveGroup(groupId: string): void {
     const group = this.findThreadGroup(groupId);
     if (!group) {
-      throw new Error(`Thread group ${groupId} does not exist`);
+      throw new Error(`Project ${groupId} does not exist`);
     }
 
     this.state.activeGroupId = group.id;
@@ -2062,7 +2108,7 @@ export class DesktopStore {
     const normalizedProvider = requireDesktopProvider(options.provider ?? this.state.provider).id;
     const resolvedGroupId = this.findThreadGroup(options.groupId)?.id;
     if (!resolvedGroupId) {
-      throw new Error(`Thread group ${options.groupId} does not exist`);
+      throw new Error(`Project ${options.groupId} does not exist`);
     }
     const timestamp = now();
     const thread: DesktopThread = {
@@ -2279,6 +2325,7 @@ export class DesktopStore {
       activeTabId: this.getActiveTabId(),
       activeThreadId: this.state.activeThreadId,
       activeGroupId: this.getActiveGroupId(),
+      defaultGroupId: this.state.threadGroups?.[0]?.id ?? null,
       activeViewId: this.getActiveViewId(),
       threadPreviewStateById: this.getThreadPreviewStateById(),
       threadRuntimeById: {},

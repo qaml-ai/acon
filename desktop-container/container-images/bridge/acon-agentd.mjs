@@ -92,6 +92,7 @@ This environment is for \`acon\`, the standalone camelAI desktop app.
  *   provider: "claude";
  *   sessionName: string;
  *   model: string;
+ *   cwd: string;
  *   sessionId: string;
  *   hasStarted: boolean;
  *   toolUseCache: Record<string, {
@@ -109,6 +110,7 @@ This environment is for \`acon\`, the standalone camelAI desktop app.
  *   provider: "codex";
  *   sessionName: string;
  *   model: string;
+ *   cwd: string;
  *   threadId: string | null;
  *   serverGeneration: number;
  *   activeTurnId: string | null;
@@ -160,6 +162,7 @@ This environment is for \`acon\`, the standalone camelAI desktop app.
  *   provider: "pi" | "opencode";
  *   sessionName: string;
  *   model: string;
+ *   cwd: string;
  *   sessionId: string | null;
  *   loadedSessionId: string | null;
  *   process: AcpProcessState | null;
@@ -503,6 +506,14 @@ function ensureString(value, fieldName) {
     throw new Error(`${fieldName} must be a non-empty string.`);
   }
   return value.trim();
+}
+
+function resolveSessionCwd(value) {
+  const normalized = maybeString(value);
+  if (!normalized) {
+    return workspaceRoot;
+  }
+  return normalized.startsWith("/") ? normalized : resolve(workspaceRoot, normalized);
 }
 
 function ensureProviderId(value) {
@@ -1572,11 +1583,12 @@ function handleCodexNotification(message) {
   }
 }
 
-function createClaudeSession(sessionName, model, sessionId = null, hasStarted = false) {
+function createClaudeSession(sessionName, model, cwd, sessionId = null, hasStarted = false) {
   return {
     provider: "claude",
     sessionName,
     model,
+    cwd,
     sessionId: sessionId ?? randomUUID(),
     hasStarted,
     toolUseCache: {},
@@ -1585,11 +1597,12 @@ function createClaudeSession(sessionName, model, sessionId = null, hasStarted = 
   };
 }
 
-function createCodexSession(sessionName, model, threadId = null) {
+function createCodexSession(sessionName, model, cwd, threadId = null) {
   return {
     provider: "codex",
     sessionName,
     model,
+    cwd,
     threadId,
     serverGeneration: -1,
     activeTurnId: null,
@@ -1598,11 +1611,12 @@ function createCodexSession(sessionName, model, threadId = null) {
   };
 }
 
-function createAcpSession(provider, sessionName, model, sessionId = null) {
+function createAcpSession(provider, sessionName, model, cwd, sessionId = null) {
   return {
     provider,
     sessionName,
     model,
+    cwd,
     sessionId,
     loadedSessionId: null,
     process: null,
@@ -1927,7 +1941,7 @@ async function ensureAcpProcess(session) {
 
   const { command, args } = getAcpCommand(session.provider);
   const child = spawn(command, args, {
-    cwd: workspaceRoot,
+    cwd: session.cwd,
     env: getProviderEnv(session.provider, session.model),
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -2120,7 +2134,7 @@ async function ensureAcpSession(session) {
   await ensureAcpProcess(session);
   if (!session.sessionId) {
     const result = await sendAcpRequest(session, "session/new", {
-      cwd: workspaceRoot,
+      cwd: session.cwd,
       mcpServers: [],
     });
     session.sessionId = extractAcpSessionId(result);
@@ -2131,7 +2145,7 @@ async function ensureAcpSession(session) {
     try {
       const result = await sendAcpRequest(session, "session/load", {
         sessionId: session.sessionId,
-        cwd: workspaceRoot,
+        cwd: session.cwd,
         mcpServers: [],
       });
       session.loadedSessionId = session.sessionId;
@@ -2144,7 +2158,7 @@ async function ensureAcpSession(session) {
         }`,
       );
       const result = await sendAcpRequest(session, "session/new", {
-        cwd: workspaceRoot,
+        cwd: session.cwd,
         mcpServers: [],
       });
       session.sessionId = extractAcpSessionId(result);
@@ -2220,7 +2234,7 @@ async function ensureCodexSession(session) {
     await codexAppServer.request("thread/resume", {
       threadId: session.threadId,
       model: session.model,
-      cwd: workspaceRoot,
+      cwd: session.cwd,
       approvalPolicy: "never",
       sandbox: "danger-full-access",
     });
@@ -2230,7 +2244,7 @@ async function ensureCodexSession(session) {
 
   const result = await codexAppServer.request("thread/start", {
     model: session.model,
-    cwd: workspaceRoot,
+    cwd: session.cwd,
     approvalPolicy: "never",
     sandbox: "danger-full-access",
     experimentalRawEvents: false,
@@ -2260,6 +2274,7 @@ async function ensureSession(params) {
   const provider = ensureProviderId(params.provider);
   const sessionName = ensureString(params.sessionName, "session.ensure sessionName");
   const model = ensureString(params.model, "session.ensure model");
+  const cwd = resolveSessionCwd(params.cwd);
   const sessionId =
     typeof params.sessionId === "string" && params.sessionId.trim()
       ? params.sessionId.trim()
@@ -2281,17 +2296,22 @@ async function ensureSession(params) {
   if (!session) {
     session =
       provider === "codex"
-        ? createCodexSession(sessionName, model, sessionId)
+        ? createCodexSession(sessionName, model, cwd, sessionId)
         : provider === "claude"
-          ? createClaudeSession(sessionName, model, sessionId, Boolean(sessionId))
-          : createAcpSession(provider, sessionName, model, sessionId);
+          ? createClaudeSession(sessionName, model, cwd, sessionId, Boolean(sessionId))
+          : createAcpSession(provider, sessionName, model, cwd, sessionId);
     sessions.set(key, session);
   }
   const previousModel = session.model;
+  const previousCwd = session.cwd;
   session.model = model;
+  session.cwd = cwd;
 
   if (provider === "codex") {
     const codexSession = /** @type {CodexSessionState} */ (session);
+    if (previousCwd !== cwd) {
+      codexSession.serverGeneration = -1;
+    }
     if (sessionId && codexSession.threadId !== sessionId) {
       if (codexSession.activePrompt) {
         throw new Error(`Codex session ${sessionName} cannot switch thread ids while prompting.`);
@@ -2308,9 +2328,9 @@ async function ensureSession(params) {
   if (provider === "claude") {
     ensureProviderHomes("claude");
     const claudeSession = /** @type {ClaudeSessionState} */ (session);
-    if (claudeSession.process && previousModel !== model) {
+    if (claudeSession.process && (previousModel !== model || previousCwd !== cwd)) {
       if (claudeSession.activePrompt) {
-        throw new Error(`Claude session ${sessionName} cannot switch models while prompting.`);
+        throw new Error(`Claude session ${sessionName} cannot switch models or projects while prompting.`);
       }
       resetClaudeProcess(claudeSession);
     }
@@ -2328,6 +2348,13 @@ async function ensureSession(params) {
   }
 
   const acpSession = /** @type {AcpSessionState} */ (session);
+  if (previousCwd !== cwd) {
+    if (acpSession.activePrompt) {
+      throw new Error(`${provider} session ${sessionName} cannot switch projects while prompting.`);
+    }
+    resetAcpProcess(acpSession);
+    acpSession.loadedSessionId = null;
+  }
   if (sessionId && acpSession.sessionId !== sessionId) {
     if (acpSession.activePrompt) {
       throw new Error(`${provider} session ${sessionName} cannot switch session ids while prompting.`);
@@ -2600,7 +2627,7 @@ async function ensureClaudeProcess(session) {
 
   const { command, args } = createClaudeArgs(session);
   const child = spawn(command, args, {
-    cwd: workspaceRoot,
+    cwd: session.cwd,
     env: getProviderEnv("claude", session.model),
     stdio: ["pipe", "pipe", "pipe"],
   });

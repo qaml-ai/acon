@@ -16,7 +16,7 @@ import {
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import type { DesktopRuntimeStatus } from "../../desktop/shared/protocol";
 import { logDesktop } from "../../desktop/backend/log";
 import { getHostClaudeCredentialsJson } from "../../desktop/backend/anthropic";
@@ -61,6 +61,8 @@ const FORWARDED_PROVIDER_ENV_VARS = [
 export interface RuntimeManager {
   getWorkspaceDirectory(): string;
   getManagedWorkspaceDirectory(): string;
+  getManagedProjectsDirectory(): string;
+  ensureProjectDirectory(projectSlug: string): string;
   getUserUploadsDirectory(): string;
   getUserOutputsDirectory(): string;
   getRuntimeDirectory(): string;
@@ -86,6 +88,7 @@ export interface RuntimeManager {
 export interface EnsureContainerSessionOptions {
   provider: DesktopProviderDefinition;
   threadId: string;
+  cwd?: string;
   model: string;
   sessionId?: string | null;
   processEnv?: CamelAIResolvedProcessEnvMap;
@@ -100,12 +103,14 @@ export interface EnsureContainerSessionResult {
 export interface CancelContainerPromptOptions {
   provider: DesktopProviderDefinition;
   threadId: string;
+  cwd?: string;
   model: string;
 }
 
 export interface StreamContainerPromptOptions {
   provider: DesktopProviderDefinition;
   threadId: string;
+  cwd?: string;
   content: string;
   model: string;
   sessionId?: string | null;
@@ -339,6 +344,25 @@ export class ContainerRuntimeManager implements RuntimeManager {
 
   getManagedWorkspaceDirectory(): string {
     return this.ensureManagedWorkspaceInitialized().rootPath;
+  }
+
+  getManagedProjectsDirectory(): string {
+    const directory = resolve(this.ensureManagedWorkspaceInitialized().rootPath, "projects");
+    mkdirSync(directory, { recursive: true });
+    chmodSync(directory, 0o777);
+    return directory;
+  }
+
+  ensureProjectDirectory(projectSlug: string): string {
+    const normalizedSlug = projectSlug.trim();
+    if (!normalizedSlug) {
+      return this.ensureManagedWorkspaceInitialized().rootPath;
+    }
+
+    const directory = resolve(this.getManagedProjectsDirectory(), normalizedSlug);
+    mkdirSync(directory, { recursive: true });
+    chmodSync(directory, 0o777);
+    return directory;
   }
 
   getUserUploadsDirectory(): string {
@@ -646,6 +670,25 @@ export class ContainerRuntimeManager implements RuntimeManager {
       metadataPath: resolve(workspaceRoot, "metadata.json"),
     };
     return this.managedWorkspaceState;
+  }
+
+  private resolveContainerWorkspacePath(hostPath: string | null | undefined): string | null {
+    const normalizedPath = hostPath?.trim();
+    if (!normalizedPath) {
+      return null;
+    }
+
+    const managedWorkspaceRoot = this.ensureManagedWorkspaceInitialized().rootPath;
+    const workspaceRelativePath = relative(managedWorkspaceRoot, normalizedPath);
+    if (
+      workspaceRelativePath.startsWith("..") ||
+      workspaceRelativePath === ".." ||
+      workspaceRelativePath.includes(`..${process.platform === "win32" ? "\\" : "/"}`)
+    ) {
+      return null;
+    }
+
+    return workspaceRelativePath ? resolve("/workspace", workspaceRelativePath) : "/workspace";
   }
 
   private writeManagedWorkspaceMetadata(
@@ -1583,6 +1626,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
   private async ensurePromptSession(
     provider: DesktopProviderDefinition,
     threadId: string,
+    cwd: string | undefined,
     model: string,
     processEnv: CamelAIResolvedProcessEnvMap,
     sessionId?: string | null,
@@ -1592,6 +1636,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
       return await this.ensurePromptSessionOnce(
         provider,
         threadId,
+        cwd,
         model,
         processEnv,
         sessionId,
@@ -1606,6 +1651,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
       return await this.ensurePromptSessionOnce(
         provider,
         threadId,
+        cwd,
         model,
         processEnv,
         sessionId,
@@ -1617,15 +1663,18 @@ export class ContainerRuntimeManager implements RuntimeManager {
   async cancelPrompt({
     provider,
     threadId,
+    cwd,
     model,
   }: CancelContainerPromptOptions): Promise<void> {
     await this.ensureRuntime(provider);
     await this.ensureContainerSystemStarted();
     const state = this.getSharedContainerState();
     const sessionName = `${provider.id}-${threadId}`;
+    const containerCwd = this.resolveContainerWorkspacePath(cwd);
     await this.callProviderDaemon(state, "session.cancel", {
       provider: provider.id,
       sessionName,
+      cwd: containerCwd,
       model,
     }, {
       timeoutMs: parseTimeoutMs(
@@ -1638,6 +1687,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
   private async ensurePromptSessionOnce(
     provider: DesktopProviderDefinition,
     threadId: string,
+    cwd: string | undefined,
     model: string,
     processEnv: CamelAIResolvedProcessEnvMap,
     sessionId?: string | null,
@@ -1646,7 +1696,8 @@ export class ContainerRuntimeManager implements RuntimeManager {
     await this.ensureContainerSystemStarted();
     const state = this.getSharedContainerState();
     const sessionName = `${provider.id}-${threadId}`;
-    const sessionKey = `${model}:${sessionId?.trim() || ""}:${serializeProcessEnv(processEnv)}`;
+    const containerCwd = this.resolveContainerWorkspacePath(cwd);
+    const sessionKey = `${containerCwd ?? ""}:${model}:${sessionId?.trim() || ""}:${serializeProcessEnv(processEnv)}`;
     if (state.ensuredSessions.get(sessionName) === sessionKey) {
       return {
         sessionId: sessionId?.trim() || null,
@@ -1657,6 +1708,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
     const result = await this.callProviderDaemon(state, "session.ensure", {
       provider: provider.id,
       sessionName,
+      cwd: containerCwd,
       model,
       processEnv,
       sessionId: sessionId ?? null,
@@ -1712,6 +1764,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
   async streamPrompt({
     provider,
     threadId,
+    cwd,
     content,
     model,
     sessionId,
@@ -1725,6 +1778,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
     await this.ensurePromptSession(
       provider,
       threadId,
+      cwd,
       model,
       processEnv,
       sessionId,
@@ -1751,6 +1805,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
       await this.ensurePromptSessionOnce(
         provider,
         threadId,
+        cwd,
         model,
         processEnv,
         sessionId,
@@ -1772,6 +1827,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
   async ensureSession({
     provider,
     threadId,
+    cwd,
     model,
     sessionId,
     processEnv = {},
@@ -1781,6 +1837,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
     return this.ensurePromptSession(
       provider,
       threadId,
+      cwd,
       model,
       processEnv,
       sessionId,

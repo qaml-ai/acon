@@ -20,6 +20,7 @@ import type {
   DesktopThread,
   DesktopThreadPreviewState,
   DesktopThreadRuntimeState,
+  DesktopWorkspaceEntry,
   DesktopWorkspaceListing,
 } from "../../desktop/shared/protocol";
 import {
@@ -448,7 +449,7 @@ export class DesktopService {
       : this.store.getProvider();
     const groupId = options?.groupId ?? this.store.getActiveGroupId();
     if (!groupId) {
-      throw new Error("No active thread group is available.");
+      throw new Error("No active project is available.");
     }
     const thread = this.store.createThread({
       title: options?.title,
@@ -471,7 +472,8 @@ export class DesktopService {
   }
 
   createGroup(title?: string): void {
-    this.store.createThreadGroup(title);
+    const group = this.store.createThreadGroup(title);
+    this.runtimeManager.ensureProjectDirectory(group.slug);
     this.emitSnapshot();
   }
 
@@ -1035,7 +1037,7 @@ export class DesktopService {
 
     const workspaceRoot = this.runtimeManager.getWorkspaceDirectory();
     const entries = readdirSync(directoryPath, { withFileTypes: true })
-      .map((entry) => {
+      .map<DesktopWorkspaceEntry>((entry) => {
         const entryPath = resolve(directoryPath, entry.name);
         const relativePath = relative(workspaceRoot, entryPath).replaceAll("\\", "/");
         const normalizedPath = relativePath ? `/${relativePath}` : "/";
@@ -1357,7 +1359,8 @@ export class DesktopService {
 
     const model = this.getCurrentModelPreference(provider);
     const sessionId = this.store.getProviderSessionId(activeThreadId, provider.id);
-    const discoveryKey = `${provider.id}:${activeThreadId}:${model}:${sessionId ?? ""}`;
+    const cwd = this.getProjectDirectoryForThreadId(activeThreadId);
+    const discoveryKey = `${provider.id}:${activeThreadId}:${cwd}:${model}:${sessionId ?? ""}`;
     const inFlight = this.acpModelDiscoveryPromises.get(discoveryKey);
     if (inFlight) {
       return;
@@ -1369,6 +1372,7 @@ export class DesktopService {
         const result = await this.runtimeManager.ensureSession({
           provider,
           threadId: activeThreadId,
+          cwd,
           model,
           sessionId,
           processEnv: this.getResolvedProviderProcessEnv(provider.id),
@@ -1405,6 +1409,25 @@ export class DesktopService {
     return this.runtimeStatus;
   }
 
+  private getProjectDirectoryForGroupId(groupId: string | null | undefined): string {
+    const group =
+      typeof groupId === "string" ? this.store.getThreadGroup(groupId) : null;
+    if (!group) {
+      return this.runtimeManager.getManagedWorkspaceDirectory();
+    }
+
+    return this.runtimeManager.ensureProjectDirectory(group.slug);
+  }
+
+  private getProjectDirectoryForThreadId(threadId: string | null | undefined): string {
+    const thread = typeof threadId === "string" ? this.store.getThread(threadId) : null;
+    if (!thread) {
+      return this.getProjectDirectoryForGroupId(this.store.getActiveGroupId());
+    }
+
+    return this.getProjectDirectoryForGroupId(thread.groupId);
+  }
+
   private loadPersistedHostMcpServers(): void {
     for (const server of this.listInstalledHostMcpServers()) {
       this.runtimeManager.registerHostMcpServer(
@@ -1431,7 +1454,7 @@ export class DesktopService {
       runtimeStatus,
       runtimeDirectory:
         runtimeStatus.runtimeDirectory ?? this.runtimeManager.getRuntimeDirectory(),
-      workspaceDirectory: this.runtimeManager.getWorkspaceDirectory(),
+      workspaceDirectory: this.getProjectDirectoryForThreadId(activeThreadId),
       threadStateDirectory: activeThreadId
         ? this.runtimeManager.getThreadStateDirectory(activeThreadId)
         : null,
@@ -2174,11 +2197,13 @@ export class DesktopService {
     const model = this.getCurrentModelPreference(provider);
     const providerSessionId = this.store.getProviderSessionId(threadId, provider.id);
     const processEnv = this.getResolvedProviderProcessEnv(provider.id);
+    const cwd = this.getProjectDirectoryForThreadId(threadId);
 
     try {
       await this.runtimeManager.streamPrompt({
         provider,
         threadId,
+        cwd,
         content,
         model,
         sessionId: providerSessionId,
@@ -2212,10 +2237,12 @@ export class DesktopService {
     this.emitThreadUpdated(threadId, "session");
     const provider = requireDesktopProvider(this.store.getThreadProvider(threadId));
     const model = this.getCurrentModelPreference(provider);
+    const cwd = this.getProjectDirectoryForThreadId(threadId);
     try {
       await this.runtimeManager.cancelPrompt({
         provider,
         threadId,
+        cwd,
         model,
       });
     } catch (error) {
@@ -2245,6 +2272,7 @@ export class DesktopService {
       provider.id,
     );
     const processEnv = this.getResolvedProviderProcessEnv(provider.id);
+    const cwd = this.getProjectDirectoryForThreadId(threadId);
 
     try {
       const assistant = this.store.appendMessage(
@@ -2284,6 +2312,7 @@ export class DesktopService {
       const result = await this.runtimeManager.streamPrompt({
         provider,
         threadId,
+        cwd,
         content,
         model,
         sessionId: providerSessionId,
