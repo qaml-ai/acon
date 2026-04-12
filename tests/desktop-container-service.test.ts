@@ -528,6 +528,69 @@ describe("DesktopService", () => {
     expect(selectedThread?.lane).toBe("ready_for_review");
   });
 
+  it("does not mark completed chats unread while the thread tab is already visible", async () => {
+    vi.spyOn(CamelAIExtensionHost.prototype, "getSnapshot").mockReturnValue({
+      views: [
+        {
+          id: "plugin:chat:chat.thread",
+          title: "Chat",
+          description: "Thread-focused chat workspace.",
+          icon: "MessagesSquare",
+          pluginId: "chat",
+          scope: "thread",
+          default: true,
+          render: {
+            kind: "host",
+            component: "chat-thread",
+          },
+        },
+      ],
+      sidebarPanels: [],
+      plugins: [],
+    });
+
+    const { runtime, pendingPrompts, streamPrompt } = createRuntimeManagerStub();
+    const service = new DesktopService(runtime);
+
+    await waitFor(() => {
+      const snapshot = service.getSnapshot();
+      expect(snapshot.activeTabId).not.toBeNull();
+      expect(
+        snapshot.tabs.some(
+          (tab) => tab.kind === "thread" && tab.threadId === snapshot.activeThreadId,
+        ),
+      ).toBe(true);
+    });
+
+    const threadId = service.getSnapshot().threads[0]?.id ?? "";
+
+    service.handleClientEvent({
+      type: "send_message",
+      threadId,
+      content: "wrap this up",
+    });
+    await waitFor(() => expect(streamPrompt).toHaveBeenCalledTimes(1));
+
+    pendingPrompts.shift()?.resolve({
+      finalText: "done reviewing",
+      model: "sonnet",
+      sessionId: "session-1",
+      stopReason: null,
+    });
+
+    await waitFor(() => {
+      const thread = service.getSnapshot().threads.find((entry) => entry.id === threadId);
+      expect(thread).toEqual(
+        expect.objectContaining({
+          status: "ready_for_review",
+          lane: "ready_for_review",
+          archivedAt: null,
+          hasUnreadUpdate: false,
+        }),
+      );
+    });
+  });
+
   it("emits permission requests for host MCP mutations and resolves approvals", async () => {
     const { runtime } = createRuntimeManagerStub();
     const service = new DesktopService(runtime);

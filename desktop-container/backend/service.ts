@@ -1016,7 +1016,7 @@ export class DesktopService {
       snapshot.threadPreviewStateById,
     );
     snapshot.tabs = this.resolveSnapshotTabs(snapshot.tabs);
-    snapshot.panes = this.resolveSnapshotPanes(snapshot.panes, snapshot.tabs);
+    snapshot.panes = this.resolveSnapshotPanes(snapshot.panes ?? [], snapshot.tabs);
     snapshot.threadRuntimeById = this.resolveThreadRuntimeStates(snapshot.threads);
     snapshot.pendingPermissionRequest =
       this.pendingPermissionRequests[0]?.request ?? null;
@@ -2361,11 +2361,12 @@ export class DesktopService {
             ? INTERRUPTED_MESSAGE_TEXT
             : undefined,
       );
+      const hasUnreadUpdate = !this.store.isThreadVisible(threadId);
       this.store.updateThread(threadId, {
         status: "ready_for_review",
         lane: "ready_for_review",
         archivedAt: null,
-        hasUnreadUpdate: true,
+        hasUnreadUpdate,
       });
 
       logDesktop("desktop-service", "send_message:completed", {
@@ -2405,11 +2406,12 @@ export class DesktopService {
             `Error: ${detail}`,
           );
         }
+        const hasUnreadUpdate = !this.store.isThreadVisible(threadId);
         this.store.updateThread(threadId, {
           status: "ready_for_review",
           lane: "ready_for_review",
           archivedAt: null,
-          hasUnreadUpdate: true,
+          hasUnreadUpdate,
         });
         this.emitSnapshot();
         this.emitThreadUpdated(threadId, "message");
