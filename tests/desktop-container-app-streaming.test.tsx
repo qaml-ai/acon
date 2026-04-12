@@ -1251,6 +1251,19 @@ describe("desktop container renderer streaming", () => {
     });
   });
 
+  it("wraps each split pane surface in a bounded scroll container", async () => {
+    const snapshot = createSplitPaneSnapshot();
+
+    await renderAppWithShell(snapshot);
+
+    const paneSurfaces = document.querySelectorAll(".desktop-workbench-pane-surface");
+
+    expect(paneSurfaces).toHaveLength(2);
+    for (const surface of paneSurfaces) {
+      expect(surface).toHaveClass("desktop-workbench-pane-surface");
+    }
+  });
+
   it("renders a plugin-owned custom preview renderer for spreadsheet files", async () => {
     const snapshot = createSnapshot();
     snapshot.threadPreviewStateById["thread-1"] = {
