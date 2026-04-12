@@ -9,6 +9,12 @@ import type {
   DesktopModelSourceOption,
   DesktopProvider,
 } from "../../desktop/shared/protocol";
+import {
+  getCustomOpenAiCompatibleProviderLabel,
+  getCustomOpenAiCompatibleProviderModel,
+  isCustomOpenAiCompatibleProviderConfigured,
+  readCustomOpenAiCompatibleProviderConfig,
+} from "./custom-openai-compatible-provider";
 
 export const DEFAULT_ACP_MODEL = "default";
 export const DEFAULT_ACP_MODEL_SOURCE = "default";
@@ -40,12 +46,17 @@ const ACP_PROVIDER_FAMILY_OPTIONS = [
     id: "opencode/default",
     label: "OpenCode Zen",
   },
+  {
+    id: getCustomOpenAiCompatibleProviderModel(),
+    label: getCustomOpenAiCompatibleProviderLabel(),
+  },
 ] as const;
 
 const ACP_PROVIDER_FAMILY_LABELS: Record<string, string> = {
   openrouter: "OpenRouter",
   opencode: "OpenCode Zen",
   "opencode-go": "OpenCode Go",
+  "openai-compatible": getCustomOpenAiCompatibleProviderLabel(),
 };
 
 const PI_AUTH_KEYS = ["openrouter", "opencode", "opencode-go"] as const;
@@ -102,6 +113,12 @@ function getRequestedProviderFamily(
   }
   if (normalized === "opencode/default" || normalized.startsWith("opencode/")) {
     return "opencode";
+  }
+  if (
+    normalized === getCustomOpenAiCompatibleProviderModel() ||
+    normalized.startsWith("openai-compatible/")
+  ) {
+    return "openai-compatible";
   }
 
   return null;
@@ -250,9 +267,20 @@ export function getPiAuthState(modelSource?: DesktopModelSource): DesktopAuthSta
         label: getFamilyLabel(requestedFamily),
       };
     }
+  } else if (requestedFamily === "openai-compatible") {
+    const config = readCustomOpenAiCompatibleProviderConfig();
+    if (config) {
+      return {
+        provider: "pi",
+        available: true,
+        source: "api-key",
+        label: config.label || getFamilyLabel(requestedFamily),
+      };
+    }
   } else if (
     existsSync(HOST_PI_AUTH_PATH) ||
     existsSync(HOST_PI_MODELS_PATH) ||
+    isCustomOpenAiCompatibleProviderConfigured() ||
     PI_RELEVANT_ENV_VARS.some((name) => hasEnvVar(name))
   ) {
     return {
@@ -297,8 +325,19 @@ export function getOpenCodeAuthState(modelSource?: DesktopModelSource): DesktopA
         label: getFamilyLabel(requestedFamily),
       };
     }
+  } else if (requestedFamily === "openai-compatible") {
+    const config = readCustomOpenAiCompatibleProviderConfig();
+    if (config) {
+      return {
+        provider: "opencode",
+        available: true,
+        source: "api-key",
+        label: config.label || getFamilyLabel(requestedFamily),
+      };
+    }
   } else if (
     existsSync(HOST_OPENCODE_AUTH_PATH) ||
+    isCustomOpenAiCompatibleProviderConfigured() ||
     OPENCODE_RELEVANT_ENV_VARS.some((name) => hasEnvVar(name))
   ) {
     return {

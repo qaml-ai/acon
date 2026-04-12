@@ -6,11 +6,13 @@ import { DesktopStore } from "./store";
 import { logDesktop } from "../../desktop/backend/log";
 import type {
   DesktopClientEvent,
+  DesktopCustomOpenAiCompatibleProviderConfig,
   DesktopPreviewItem,
   DesktopPreviewTarget,
   DesktopPermissionRequest,
   DesktopProvider,
   DesktopRuntimeStatus,
+  DesktopSaveCustomOpenAiCompatibleProviderConfigInput,
   DesktopServerEvent,
   DesktopSnapshot,
   DesktopThread,
@@ -83,8 +85,12 @@ import {
   isAcpModelInSource,
 } from "./acp-provider-shared";
 import {
-  getManagedProviderEnv,
-} from "./provider-auth";
+  clearCustomOpenAiCompatibleProviderConfig,
+  getCustomOpenAiCompatibleProcessEnv,
+  readCustomOpenAiCompatibleProviderConfig,
+  saveCustomOpenAiCompatibleProviderConfig,
+} from "./custom-openai-compatible-provider";
+import { getManagedProviderEnv } from "./provider-auth";
 
 type Listener = (event: DesktopServerEvent) => void;
 type ThreadEventListener = CamelAIThreadEventHandler;
@@ -448,6 +454,7 @@ export class DesktopService {
       status: options?.status,
       lane: options?.lane,
       archivedAt: options?.archivedAt,
+      hasUnreadUpdate: options?.hasUnreadUpdate,
     });
     this.activateDefaultThreadView(thread.id);
     this.emitSnapshot();
@@ -481,6 +488,10 @@ export class DesktopService {
   }
 
   selectThread(threadId: string): CamelAIThreadRecord {
+    const existing = this.store.getThread(threadId);
+    if (existing?.hasUnreadUpdate) {
+      this.store.setThreadUnreadUpdate(threadId, false);
+    }
     if (!this.activateDefaultThreadView(threadId)) {
       this.store.setActiveThread(threadId);
     }
@@ -536,6 +547,33 @@ export class DesktopService {
       dataDirectory: this.dataDirectory,
       workspaceDirectory: this.runtimeManager.getWorkspaceDirectory(),
     });
+  }
+
+  getCustomOpenAiCompatibleProviderConfig():
+    | DesktopCustomOpenAiCompatibleProviderConfig
+    | null {
+    return readCustomOpenAiCompatibleProviderConfig({
+      dataDirectory: this.dataDirectory,
+    });
+  }
+
+  saveCustomOpenAiCompatibleProviderConfig(
+    input: DesktopSaveCustomOpenAiCompatibleProviderConfigInput,
+  ): DesktopCustomOpenAiCompatibleProviderConfig {
+    const saved = saveCustomOpenAiCompatibleProviderConfig(input, {
+      dataDirectory: this.dataDirectory,
+      runtimeDirectory: this.runtimeManager.getRuntimeDirectory(),
+    });
+    this.emitSnapshot();
+    return saved;
+  }
+
+  clearCustomOpenAiCompatibleProviderConfig(): void {
+    clearCustomOpenAiCompatibleProviderConfig({
+      dataDirectory: this.dataDirectory,
+      runtimeDirectory: this.runtimeManager.getRuntimeDirectory(),
+    });
+    this.emitSnapshot();
   }
 
   listInstalledPlugins() {
@@ -1016,6 +1054,7 @@ export class DesktopService {
       status: thread.status,
       lane: thread.lane,
       archivedAt: thread.archivedAt,
+      hasUnreadUpdate: thread.hasUnreadUpdate,
       active: thread.id === this.store.getActiveThreadId(),
       hasMessages: this.store.getThreadMessages(thread.id).length > 0,
       sessionId: this.store.getProviderSessionId(thread.id, thread.provider),
@@ -1188,9 +1227,11 @@ export class DesktopService {
     return getAcpModelPreference(model, this.getCurrentModelSource(provider));
   }
 
-  private getResolvedProcessEnv(provider: DesktopProvider): CamelAIResolvedProcessEnvMap {
+  private getResolvedProviderProcessEnv(
+    providerId: DesktopProvider,
+  ): CamelAIResolvedProcessEnvMap {
     const resolved: CamelAIResolvedProcessEnvMap = {
-      ...this.extensionHost.getResolvedProcessEnv(provider),
+      ...this.extensionHost.getResolvedProcessEnv(providerId),
     };
 
     const managedProviderEnv = getManagedProviderEnv({
@@ -1206,6 +1247,15 @@ export class DesktopService {
         kind: "literal",
         value,
       };
+    }
+
+    if (providerId === "pi" || providerId === "opencode") {
+      Object.assign(
+        resolved,
+        getCustomOpenAiCompatibleProcessEnv(providerId, {
+          dataDirectory: this.dataDirectory,
+        }),
+      );
     }
 
     return resolved;
@@ -1271,7 +1321,7 @@ export class DesktopService {
           threadId: activeThreadId,
           model,
           sessionId,
-          processEnv: this.getResolvedProcessEnv(provider.id),
+          processEnv: this.getResolvedProviderProcessEnv(provider.id),
           onModelState: (modelState) => {
             this.updateAcpModelState(provider.id, modelState);
           },
@@ -1348,6 +1398,7 @@ export class DesktopService {
           status: event.status,
           lane: event.lane,
           archivedAt: event.archivedAt,
+          hasUnreadUpdate: event.hasUnreadUpdate,
         });
         return;
       }
@@ -1915,6 +1966,12 @@ export class DesktopService {
 
     const promptContent = promptUpdate.content;
     this.store.appendMessage(threadId, "user", promptContent, "done");
+    this.store.updateThread(threadId, {
+      status: "in_progress",
+      lane: "in_progress",
+      archivedAt: null,
+      hasUnreadUpdate: false,
+    });
     this.emitSnapshot();
     this.emitThreadUpdated(threadId, "message");
     if (activeRun) {
@@ -1943,7 +2000,7 @@ export class DesktopService {
     const provider = requireDesktopProvider(this.store.getThreadProvider(threadId));
     const model = this.getCurrentModelPreference(provider);
     const providerSessionId = this.store.getProviderSessionId(threadId, provider.id);
-    const processEnv = this.getResolvedProcessEnv(provider.id);
+    const processEnv = this.getResolvedProviderProcessEnv(provider.id);
 
     try {
       await this.runtimeManager.streamPrompt({
@@ -2014,7 +2071,7 @@ export class DesktopService {
       threadId,
       provider.id,
     );
-    const processEnv = this.getResolvedProcessEnv(provider.id);
+    const processEnv = this.getResolvedProviderProcessEnv(provider.id);
 
     try {
       const assistant = this.store.appendMessage(
@@ -2131,6 +2188,12 @@ export class DesktopService {
             ? INTERRUPTED_MESSAGE_TEXT
             : undefined,
       );
+      this.store.updateThread(threadId, {
+        status: "ready_for_review",
+        lane: "ready_for_review",
+        archivedAt: null,
+        hasUnreadUpdate: true,
+      });
 
       logDesktop("desktop-service", "send_message:completed", {
         turnId,
@@ -2169,6 +2232,12 @@ export class DesktopService {
             `Error: ${detail}`,
           );
         }
+        this.store.updateThread(threadId, {
+          status: "ready_for_review",
+          lane: "ready_for_review",
+          archivedAt: null,
+          hasUnreadUpdate: true,
+        });
         this.emitSnapshot();
         this.emitThreadUpdated(threadId, "message");
         if (!activeRun.stopRequested) {
@@ -2183,4 +2252,5 @@ export class DesktopService {
       }
     }
   }
+
 }

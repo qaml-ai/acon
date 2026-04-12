@@ -1344,6 +1344,30 @@ ipcMain.handle('desktop:resolve-preview-src', async (_event, target) => {
   return directDesktopService?.resolvePreviewTargetSource(target) ?? null;
 });
 
+ipcMain.handle('desktop:get-custom-openai-compatible-provider-config', async () => {
+  await ensureBackend();
+  if (!directDesktopService) {
+    throw new Error('Custom provider settings require the direct desktop service.');
+  }
+  return directDesktopService.getCustomOpenAiCompatibleProviderConfig();
+});
+
+ipcMain.handle('desktop:save-custom-openai-compatible-provider-config', async (_event, config) => {
+  await ensureBackend();
+  if (!directDesktopService) {
+    throw new Error('Custom provider settings require the direct desktop service.');
+  }
+  return directDesktopService.saveCustomOpenAiCompatibleProviderConfig(config);
+});
+
+ipcMain.handle('desktop:clear-custom-openai-compatible-provider-config', async () => {
+  await ensureBackend();
+  if (!directDesktopService) {
+    throw new Error('Custom provider settings require the direct desktop service.');
+  }
+  directDesktopService.clearCustomOpenAiCompatibleProviderConfig();
+});
+
 ipcMain.on('desktop:send', (_event, payload) => {
   void sendBackendEvent(payload).catch((error) => {
     for (const window of BrowserWindow.getAllWindows()) {

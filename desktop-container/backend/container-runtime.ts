@@ -286,6 +286,14 @@ interface DaemonEnvelope {
   };
 }
 
+function serializeProcessEnv(
+  processEnv: CamelAIResolvedProcessEnvMap,
+): string {
+  return JSON.stringify(
+    Object.entries(processEnv).sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
 interface BundledImageManifest {
   images?: Array<{
     archive?: unknown;
@@ -1638,7 +1646,7 @@ export class ContainerRuntimeManager implements RuntimeManager {
     await this.ensureContainerSystemStarted();
     const state = this.getSharedContainerState();
     const sessionName = `${provider.id}-${threadId}`;
-    const sessionKey = `${model}:${sessionId?.trim() || ""}`;
+    const sessionKey = `${model}:${sessionId?.trim() || ""}:${serializeProcessEnv(processEnv)}`;
     if (state.ensuredSessions.get(sessionName) === sessionKey) {
       return {
         sessionId: sessionId?.trim() || null,

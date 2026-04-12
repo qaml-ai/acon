@@ -33,6 +33,7 @@ export interface CamelAIThreadRecord {
   status: string | null;
   lane: string | null;
   archivedAt: number | null;
+  hasUnreadUpdate: boolean;
   active: boolean;
   hasMessages: boolean;
   sessionId: string | null;
@@ -47,6 +48,7 @@ export interface CamelAIThreadCreateOptions {
   status?: string | null;
   lane?: string | null;
   archivedAt?: number | null;
+  hasUnreadUpdate?: boolean;
 }
 
 export interface CamelAIThreadUpdate {
@@ -55,6 +57,7 @@ export interface CamelAIThreadUpdate {
   status?: string | null;
   lane?: string | null;
   archivedAt?: number | null;
+  hasUnreadUpdate?: boolean;
 }
 
 export type CamelAIThreadEvent =

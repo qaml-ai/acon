@@ -1213,6 +1213,9 @@ function resolveKanbanLane(
     case "finished":
       return thread.lane;
     default:
+      if (thread.hasUnreadUpdate) {
+        return "ready_for_review";
+      }
       return runtime?.hasMessages ? "ready_for_review" : "drafts";
   }
 }
@@ -1429,6 +1432,9 @@ function KanbanBoardPane({
                             </div>
                             <div className="flex flex-wrap gap-1">
                               <Badge variant="outline">{thread.provider}</Badge>
+                              {thread.hasUnreadUpdate ? (
+                                <Badge variant="secondary">New review</Badge>
+                              ) : null}
                               {runtime?.isRunning ? (
                                 <Badge variant="default">
                                   {runtime.stopRequested ? "Stopping" : "Running"}

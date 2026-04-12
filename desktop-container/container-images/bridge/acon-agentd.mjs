@@ -1729,6 +1729,9 @@ function describeAcpModelPreference(model) {
   if (model === "opencode-go/default") {
     return "OpenCode Go";
   }
+  if (model === "openai-compatible/default") {
+    return "Custom OpenAI-Compatible";
+  }
   return model;
 }
 
