@@ -1,6 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DesktopStore } from "./store";
 import { logDesktop } from "../../desktop/backend/log";
@@ -1791,16 +1791,7 @@ export class DesktopService {
     }
 
     if (target.source === "workspace") {
-      const normalizedPath = normalizeWorkspacePreviewPath(trimmedPath);
-      const workspaceRelativePath = normalizedPath.replace(/^\/+/, "");
-      const localPath = resolve(
-        this.runtimeManager.getManagedWorkspaceDirectory(),
-        workspaceRelativePath,
-      );
-      if (!existsSync(localPath) || !statSync(localPath).isFile()) {
-        return null;
-      }
-      return localPath;
+      return this.resolveWorkspacePreviewFilePath(trimmedPath);
     }
 
     const normalizedTransferPath =
@@ -1826,6 +1817,59 @@ export class DesktopService {
     }
 
     return null;
+  }
+
+  private resolveWorkspacePreviewFilePath(targetPath: string): string | null {
+    const trimmedPath = targetPath.trim();
+    if (!trimmedPath) {
+      return null;
+    }
+
+    const hostWorkspacePath = this.resolveFileWithinRoot(
+      this.runtimeManager.getWorkspaceDirectory(),
+      trimmedPath,
+    );
+    if (hostWorkspacePath) {
+      return hostWorkspacePath;
+    }
+
+    const normalizedPath = normalizeWorkspacePreviewPath(trimmedPath);
+    return (
+      this.resolveFileWithinRoot(
+        this.runtimeManager.getManagedWorkspaceDirectory(),
+        normalizedPath,
+      ) ??
+      this.resolveFileWithinRoot(
+        this.runtimeManager.getWorkspaceDirectory(),
+        normalizedPath,
+      )
+    );
+  }
+
+  private resolveFileWithinRoot(rootDirectory: string, targetPath: string): string | null {
+    const trimmedPath = targetPath.trim();
+    if (!trimmedPath) {
+      return null;
+    }
+
+    const candidatePath = isAbsolute(trimmedPath)
+      ? resolve(trimmedPath)
+      : resolve(rootDirectory, trimmedPath.replace(/^[/\\]+/, ""));
+    const relativePath = relative(rootDirectory, candidatePath);
+    const pathSeparator = process.platform === "win32" ? "\\" : "/";
+    if (
+      relativePath === ".." ||
+      relativePath.startsWith(`..${pathSeparator}`) ||
+      isAbsolute(relativePath)
+    ) {
+      return null;
+    }
+
+    if (!existsSync(candidatePath) || !statSync(candidatePath).isFile()) {
+      return null;
+    }
+
+    return candidatePath;
   }
 
   private resolvePreviewSource(target: DesktopPreviewTarget): string | null {
