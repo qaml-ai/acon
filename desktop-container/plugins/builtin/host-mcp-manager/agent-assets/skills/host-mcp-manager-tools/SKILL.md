@@ -107,7 +107,7 @@ Provide:
 - `path`: workspace-relative plugin folder path
 
 Use this after the agent creates or updates plugin files in the workspace.
-If the plugin declares `camelai.agentAssets`, the desktop backend will automatically sync those skills and MCP configs into Codex and Claude runtime state during plugin refresh.
+If the plugin declares `camelai.agentAssets`, the desktop backend will automatically sync those skills into Codex, Claude, PI, and OpenCode runtime state during plugin refresh. MCP configs sync into Codex and Claude runtime state.
 
 ### `list_plugin_agent_assets`
 
@@ -116,7 +116,7 @@ Use to discover which installed plugins declare bundled `camelai.agentAssets`.
 This reports:
 - bundled skill ids
 - bundled MCP server ids
-- install status by provider (`codex` or `claude`)
+- install status by provider (`codex`, `claude`, `pi`, or `opencode`)
 
 ## Recommended flows
 

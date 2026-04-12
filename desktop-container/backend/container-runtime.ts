@@ -76,8 +76,25 @@ export interface RuntimeManager {
     provider: DesktopProviderDefinition,
     onStatus?: (status: DesktopRuntimeStatus) => void,
   ): Promise<DesktopRuntimeStatus>;
+  ensureSession(
+    options: EnsureContainerSessionOptions,
+  ): Promise<EnsureContainerSessionResult>;
   cancelPrompt(options: CancelContainerPromptOptions): Promise<void>;
   streamPrompt(options: StreamContainerPromptOptions): Promise<StreamContainerPromptResult>;
+}
+
+export interface EnsureContainerSessionOptions {
+  provider: DesktopProviderDefinition;
+  threadId: string;
+  model: string;
+  sessionId?: string | null;
+  processEnv?: CamelAIResolvedProcessEnvMap;
+  onModelState?: (modelState: ContainerAcpModelState) => void;
+}
+
+export interface EnsureContainerSessionResult {
+  sessionId: string | null;
+  modelState: ContainerAcpModelState | null;
 }
 
 export interface CancelContainerPromptOptions {
@@ -94,8 +111,14 @@ export interface StreamContainerPromptOptions {
   sessionId?: string | null;
   processEnv?: CamelAIResolvedProcessEnvMap;
   onSessionId?: (sessionId: string) => void;
+  onModelState?: (modelState: ContainerAcpModelState) => void;
   onDelta?: (delta: string) => void;
   onRuntimeEvent?: (event: unknown) => void;
+}
+
+export interface ContainerAcpModelState {
+  availableModelIds: string[];
+  currentModelId: string | null;
 }
 
 export interface StreamContainerPromptResult {
@@ -110,6 +133,35 @@ function formatError(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+function normalizeContainerAcpModelState(
+  value: unknown,
+): ContainerAcpModelState | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const modelState = (value as { modelState?: unknown }).modelState;
+  if (!modelState || typeof modelState !== "object") {
+    return null;
+  }
+  const record = modelState as {
+    availableModelIds?: unknown;
+    currentModelId?: unknown;
+  };
+  return {
+    availableModelIds: Array.isArray(record.availableModelIds)
+      ? record.availableModelIds
+          .filter(
+            (item): item is string =>
+              typeof item === "string" && item.trim().length > 0,
+          )
+      : [],
+    currentModelId:
+      typeof record.currentModelId === "string" && record.currentModelId.trim()
+        ? record.currentModelId
+        : null,
+  };
 }
 
 function parseTimeoutMs(
@@ -1534,16 +1586,31 @@ export class ContainerRuntimeManager implements RuntimeManager {
     model: string,
     processEnv: CamelAIResolvedProcessEnvMap,
     sessionId?: string | null,
-  ): Promise<void> {
+    onModelState?: (modelState: ContainerAcpModelState) => void,
+  ): Promise<EnsureContainerSessionResult> {
     try {
-      await this.ensurePromptSessionOnce(provider, threadId, model, processEnv, sessionId);
+      return await this.ensurePromptSessionOnce(
+        provider,
+        threadId,
+        model,
+        processEnv,
+        sessionId,
+        onModelState,
+      );
     } catch (error) {
       if (!isRecoverableRuntimeError(error)) {
         throw error;
       }
 
       await this.restartProviderContainer(provider);
-      await this.ensurePromptSessionOnce(provider, threadId, model, processEnv, sessionId);
+      return await this.ensurePromptSessionOnce(
+        provider,
+        threadId,
+        model,
+        processEnv,
+        sessionId,
+        onModelState,
+      );
     }
   }
 
@@ -1574,16 +1641,20 @@ export class ContainerRuntimeManager implements RuntimeManager {
     model: string,
     processEnv: CamelAIResolvedProcessEnvMap,
     sessionId?: string | null,
-  ): Promise<void> {
+    onModelState?: (modelState: ContainerAcpModelState) => void,
+  ): Promise<EnsureContainerSessionResult> {
     await this.ensureContainerSystemStarted();
     const state = this.getSharedContainerState();
     const sessionName = `${provider.id}-${threadId}`;
     const sessionKey = `${model}:${sessionId?.trim() || ""}:${serializeProcessEnv(processEnv)}`;
     if (state.ensuredSessions.get(sessionName) === sessionKey) {
-      return;
+      return {
+        sessionId: sessionId?.trim() || null,
+        modelState: null,
+      };
     }
 
-    await this.callProviderDaemon(state, "session.ensure", {
+    const result = await this.callProviderDaemon(state, "session.ensure", {
       provider: provider.id,
       sessionName,
       model,
@@ -1596,7 +1667,21 @@ export class ContainerRuntimeManager implements RuntimeManager {
       ),
     });
 
+    const modelState = normalizeContainerAcpModelState(result);
+    if (modelState) {
+      onModelState?.(modelState);
+    }
     state.ensuredSessions.set(sessionName, sessionKey);
+    const ensuredSessionId =
+      result &&
+      typeof result === "object" &&
+      typeof (result as { sessionId?: unknown }).sessionId === "string"
+        ? (result as { sessionId: string }).sessionId.trim() || null
+        : sessionId?.trim() || null;
+    return {
+      sessionId: ensuredSessionId,
+      modelState,
+    };
   }
 
   private prepareClaudeSeed(runtimeDataDirectory: string): string | null {
@@ -1632,11 +1717,19 @@ export class ContainerRuntimeManager implements RuntimeManager {
     sessionId,
     processEnv = {},
     onSessionId,
+    onModelState,
     onDelta,
     onRuntimeEvent,
   }: StreamContainerPromptOptions): Promise<StreamContainerPromptResult> {
     await this.ensureRuntime(provider);
-    await this.ensurePromptSession(provider, threadId, model, processEnv, sessionId);
+    await this.ensurePromptSession(
+      provider,
+      threadId,
+      model,
+      processEnv,
+      sessionId,
+      onModelState,
+    );
 
     try {
       return await this.streamPromptOnce({
@@ -1655,7 +1748,14 @@ export class ContainerRuntimeManager implements RuntimeManager {
       }
 
       await this.restartProviderContainer(provider);
-      await this.ensurePromptSessionOnce(provider, threadId, model, processEnv, sessionId);
+      await this.ensurePromptSessionOnce(
+        provider,
+        threadId,
+        model,
+        processEnv,
+        sessionId,
+        onModelState,
+      );
       return this.streamPromptOnce({
         provider,
         threadId,
@@ -1667,6 +1767,25 @@ export class ContainerRuntimeManager implements RuntimeManager {
         onRuntimeEvent,
       });
     }
+  }
+
+  async ensureSession({
+    provider,
+    threadId,
+    model,
+    sessionId,
+    processEnv = {},
+    onModelState,
+  }: EnsureContainerSessionOptions): Promise<EnsureContainerSessionResult> {
+    await this.ensureRuntime(provider);
+    return this.ensurePromptSession(
+      provider,
+      threadId,
+      model,
+      processEnv,
+      sessionId,
+      onModelState,
+    );
   }
 
   private async streamPromptOnce({

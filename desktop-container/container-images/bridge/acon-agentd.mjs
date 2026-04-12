@@ -3,10 +3,12 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  readFileSync,
   readlinkSync,
   rmSync,
   symlinkSync,
@@ -23,6 +25,7 @@ const bundledNodeModulesRoot = "/opt/acon/npm-global/node_modules";
 const bundledHostRpcPackagePath = resolve(bundledNodeModulesRoot, "@acon/host-rpc");
 const DEFAULT_HTTP_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_HTTP_REQUEST_MAX_BODY_BYTES = 1024 * 1024;
+const piModelSwitchWarnings = new Set();
 
 const GLOBAL_INSTRUCTIONS = `# acon
 
@@ -225,6 +228,46 @@ const configuredProviderEnvSignature = {
   pi: "",
   opencode: "",
 };
+const PI_ENV_AUTH_PROVIDERS = [
+  {
+    provider: "anthropic",
+    envVar: "ANTHROPIC_API_KEY",
+  },
+  {
+    provider: "openai",
+    envVar: "OPENAI_API_KEY",
+  },
+  {
+    provider: "openrouter",
+    envVar: "OPENROUTER_API_KEY",
+  },
+  {
+    provider: "opencode",
+    envVar: "OPENCODE_API_KEY",
+  },
+  {
+    provider: "opencode-go",
+    envVar: "OPENCODE_API_KEY",
+  },
+];
+const OPENCODE_ENV_AUTH_PROVIDERS = [
+  {
+    provider: "anthropic",
+    envVar: "ANTHROPIC_API_KEY",
+  },
+  {
+    provider: "openai",
+    envVar: "OPENAI_API_KEY",
+  },
+  {
+    provider: "openrouter",
+    envVar: "OPENROUTER_API_KEY",
+  },
+  {
+    provider: "opencode",
+    envVar: "OPENCODE_API_KEY",
+  },
+];
 
 function writeEnvelope(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -305,6 +348,24 @@ function applyConfiguredProcessEnv(provider, processEnv) {
   configuredProviderEnv[provider] = nextEnv;
   configuredProviderEnvSignature[provider] = nextSignature;
   return changed;
+}
+
+function readJsonObject(path) {
+  if (!existsSync(path)) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeJsonObject(path, value) {
+  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  chmodSync(path, 0o600);
 }
 
 function readHttpRequestBody(request, maxBodyBytes = DEFAULT_HTTP_REQUEST_MAX_BODY_BYTES) {
@@ -552,6 +613,17 @@ function getProviderEnv(provider, model) {
   };
 }
 
+function getProviderEnvValue(provider, name) {
+  const configuredValue = configuredProviderEnv[provider]?.[name];
+  if (typeof configuredValue === "string" && configuredValue.trim()) {
+    return configuredValue.trim();
+  }
+  const processValue = process.env[name];
+  return typeof processValue === "string" && processValue.trim()
+    ? processValue.trim()
+    : null;
+}
+
 function ensureProviderHomes(provider) {
   ensureBundledGuestNodePackages();
   const home = getProviderHome(provider);
@@ -600,6 +672,30 @@ function maybeSeedFile(seedPath, targetPath) {
   }
 }
 
+function syncSeedFile(seedPath, targetPath) {
+  if (!existsSync(seedPath)) {
+    return;
+  }
+  if (!existsSync(targetPath)) {
+    copyFileSync(seedPath, targetPath);
+    return;
+  }
+
+  try {
+    const seedContents = readFileSync(seedPath);
+    const targetContents = readFileSync(targetPath);
+    if (Buffer.compare(seedContents, targetContents) !== 0) {
+      copyFileSync(seedPath, targetPath);
+    }
+  } catch (error) {
+    logStderr(
+      `Failed to sync seed file ${seedPath} -> ${targetPath}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
 function ensureAcpProviderHome(provider) {
   const home = getProviderHome(provider);
   mkdirSync(home, { recursive: true });
@@ -607,8 +703,9 @@ function ensureAcpProviderHome(provider) {
   if (provider === "pi") {
     const piAgentDir = getPiAgentDir();
     mkdirSync(piAgentDir, { recursive: true });
-    maybeSeedFile("/seed-pi/agent/auth.json", resolve(piAgentDir, "auth.json"));
-    maybeSeedFile("/seed-pi/agent/models.json", resolve(piAgentDir, "models.json"));
+    syncSeedFile("/seed-pi/agent/auth.json", resolve(piAgentDir, "auth.json"));
+    syncSeedFile("/seed-pi/agent/models.json", resolve(piAgentDir, "models.json"));
+    syncPiAuthFromEnv();
     return;
   }
 
@@ -616,8 +713,73 @@ function ensureAcpProviderHome(provider) {
   const configDir = getOpenCodeConfigDir(provider);
   mkdirSync(dataDir, { recursive: true });
   mkdirSync(configDir, { recursive: true });
-  maybeSeedFile("/seed-opencode-data/auth.json", resolve(dataDir, "auth.json"));
-  maybeSeedFile("/seed-opencode-config/opencode.json", resolve(configDir, "opencode.json"));
+  syncSeedFile("/seed-opencode-data/auth.json", resolve(dataDir, "auth.json"));
+  syncSeedFile("/seed-opencode-config/opencode.json", resolve(configDir, "opencode.json"));
+  syncOpenCodeAuthFromEnv(provider);
+}
+
+function syncPiAuthFromEnv() {
+  const authPath = resolve(getPiAgentDir(), "auth.json");
+  const auth = readJsonObject(authPath);
+  let changed = !existsSync(authPath);
+
+  for (const entry of PI_ENV_AUTH_PROVIDERS) {
+    const apiKey = getProviderEnvValue("pi", entry.envVar);
+    if (!apiKey) {
+      continue;
+    }
+
+    const nextCredential = {
+      type: "api_key",
+      key: apiKey,
+    };
+    const currentCredential = auth[entry.provider];
+    if (
+      !currentCredential ||
+      typeof currentCredential !== "object" ||
+      currentCredential.type !== nextCredential.type ||
+      currentCredential.key !== nextCredential.key
+    ) {
+      auth[entry.provider] = nextCredential;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    writeJsonObject(authPath, auth);
+  }
+}
+
+function syncOpenCodeAuthFromEnv(provider = "opencode") {
+  const authPath = resolve(getOpenCodeDataDir(provider), "auth.json");
+  const auth = readJsonObject(authPath);
+  let changed = !existsSync(authPath);
+
+  for (const entry of OPENCODE_ENV_AUTH_PROVIDERS) {
+    const apiKey = getProviderEnvValue(provider, entry.envVar);
+    if (!apiKey) {
+      continue;
+    }
+
+    const nextCredential = {
+      type: "api_key",
+      key: apiKey,
+    };
+    const currentCredential = auth[entry.provider];
+    if (
+      !currentCredential ||
+      typeof currentCredential !== "object" ||
+      currentCredential.type !== nextCredential.type ||
+      currentCredential.key !== nextCredential.key
+    ) {
+      auth[entry.provider] = nextCredential;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    writeJsonObject(authPath, auth);
+  }
 }
 
 function ensureBundledGuestNodePackages() {
@@ -1594,6 +1756,56 @@ function resolvePreferredAcpModel(modelState, preferredModelId) {
   return null;
 }
 
+function getMatchingAcpModelIds(modelState, preferredModelId) {
+  if (!modelState) {
+    return [];
+  }
+  if (!preferredModelId || preferredModelId === "default") {
+    return [...modelState.availableModelIds];
+  }
+  if (preferredModelId.endsWith("/default")) {
+    const prefix = preferredModelId.slice(0, -"/default".length);
+    return modelState.availableModelIds.filter(
+      (item) => item === prefix || item.startsWith(`${prefix}/`),
+    );
+  }
+  return modelState.availableModelIds.filter((item) => item === preferredModelId);
+}
+
+function maybeLogPiModelEnumerationDiagnostic(session, stage) {
+  if (session.provider !== "pi") {
+    return;
+  }
+
+  const requestedModel = maybeString(session.model);
+  if (!requestedModel || requestedModel === "default") {
+    return;
+  }
+
+  const matchingModelIds = getMatchingAcpModelIds(session.modelState, requestedModel);
+  if (matchingModelIds.length > 0) {
+    return;
+  }
+
+  const auth = readJsonObject(resolve(getPiAgentDir(), "auth.json"));
+  const payload = {
+    stage,
+    requestedModel,
+    currentModelId: session.modelState?.currentModelId ?? null,
+    availableModelCount: session.modelState?.availableModelIds.length ?? 0,
+    availableModelSample: session.modelState?.availableModelIds.slice(0, 5) ?? [],
+    authProviders: Object.keys(auth).sort(),
+    hasModelsJson: existsSync(resolve(getPiAgentDir(), "models.json")),
+    openRouterEnvPresent: Boolean(getProviderEnvValue("pi", "OPENROUTER_API_KEY")),
+    openCodeEnvPresent: Boolean(getProviderEnvValue("pi", "OPENCODE_API_KEY")),
+    openAiEnvPresent: Boolean(getProviderEnvValue("pi", "OPENAI_API_KEY")),
+    anthropicEnvPresent: Boolean(getProviderEnvValue("pi", "ANTHROPIC_API_KEY")),
+  };
+  logStderr(
+    `Pi ACP enumerated no matching models for ${describeAcpModelPreference(requestedModel)}: ${JSON.stringify(payload)}`,
+  );
+}
+
 function rejectAcpPrompt(promptState, error) {
   for (const waiter of promptState.waiters) {
     waiter.reject(error);
@@ -1774,12 +1986,14 @@ async function ensureAcpProcess(session) {
           clearTimeout(pending.timer);
         }
         if (message.error) {
+          const errorMessage =
+            typeof message.error.message === "string"
+              ? message.error.message
+              : JSON.stringify(message.error);
+          const errorData =
+            message.error.data === undefined ? "" : ` ${JSON.stringify(message.error.data)}`;
           pending.reject(
-            new Error(
-              typeof message.error.message === "string"
-                ? message.error.message
-                : JSON.stringify(message.error),
-            ),
+            new Error(`${errorMessage}${errorData}`),
           );
         } else {
           pending.resolve(message.result ?? null);
@@ -1880,12 +2094,12 @@ async function selectAcpModel(session) {
   }
 
   if (session.provider === "pi") {
-    await sendAcpRequest(session, "session/unstable_set_model", {
-      sessionId: session.sessionId,
-      modelId: nextModelId,
-    });
-    if (session.modelState) {
-      session.modelState.currentModelId = nextModelId;
+    const warningKey = `${session.sessionName}:${nextModelId}`;
+    if (!piModelSwitchWarnings.has(warningKey)) {
+      piModelSwitchWarnings.add(warningKey);
+      logStderr(
+        `Pi ACP does not expose runtime model switching; keeping ${session.modelState?.currentModelId ?? "the current model"} instead of ${nextModelId}.`,
+      );
     }
     return;
   }
@@ -1907,18 +2121,22 @@ async function ensureAcpSession(session) {
   if (!session.sessionId) {
     const result = await sendAcpRequest(session, "session/new", {
       cwd: workspaceRoot,
+      mcpServers: [],
     });
     session.sessionId = extractAcpSessionId(result);
     session.loadedSessionId = session.sessionId;
     session.modelState = extractAcpModelState(session.provider, result);
+    maybeLogPiModelEnumerationDiagnostic(session, "session/new");
   } else if (session.loadedSessionId !== session.sessionId) {
     try {
       const result = await sendAcpRequest(session, "session/load", {
         sessionId: session.sessionId,
         cwd: workspaceRoot,
+        mcpServers: [],
       });
       session.loadedSessionId = session.sessionId;
       session.modelState = extractAcpModelState(session.provider, result);
+      maybeLogPiModelEnumerationDiagnostic(session, "session/load");
     } catch (error) {
       logStderr(
         `${session.provider} ACP failed to load ${session.sessionId}; starting a new session instead: ${
@@ -1927,10 +2145,12 @@ async function ensureAcpSession(session) {
       );
       const result = await sendAcpRequest(session, "session/new", {
         cwd: workspaceRoot,
+        mcpServers: [],
       });
       session.sessionId = extractAcpSessionId(result);
       session.loadedSessionId = session.sessionId;
       session.modelState = extractAcpModelState(session.provider, result);
+      maybeLogPiModelEnumerationDiagnostic(session, "session/new-after-load-failure");
     }
   }
 
@@ -2121,6 +2341,7 @@ async function ensureSession(params) {
   await ensureAcpSession(acpSession);
   return {
     sessionId: acpSession.sessionId,
+    modelState: acpSession.modelState,
   };
 }
 

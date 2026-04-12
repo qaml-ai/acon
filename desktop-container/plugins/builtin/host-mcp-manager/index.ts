@@ -196,7 +196,12 @@ const installWorkspacePluginOutputSchema = z.object({
   replaced: z.boolean(),
 });
 
-const pluginAgentAssetProviderSchema = z.enum(["codex", "claude"]);
+const pluginAgentAssetProviderSchema = z.enum([
+  "codex",
+  "claude",
+  "pi",
+  "opencode",
+]);
 
 const installedPluginAgentAssetsStatusSchema = z.object({
   provider: pluginAgentAssetProviderSchema,

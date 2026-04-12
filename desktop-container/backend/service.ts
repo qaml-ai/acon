@@ -10,6 +10,7 @@ import type {
   DesktopPreviewItem,
   DesktopPreviewTarget,
   DesktopPermissionRequest,
+  DesktopProvider,
   DesktopRuntimeStatus,
   DesktopSaveCustomOpenAiCompatibleProviderConfigInput,
   DesktopServerEvent,
@@ -43,6 +44,7 @@ import type {
   CamelAIMatchedHttpProxyRequest,
   CamelAIHttpRequest,
   CamelAIHttpResponse,
+  CamelAIResolvedProcessEnvMap,
   CamelAIThreadCreateOptions,
   CamelAIThreadEvent,
   CamelAIThreadEventHandler,
@@ -77,14 +79,26 @@ import {
 } from "./plugin-agent-assets";
 import { getPersistedHostSecret, setPersistedHostSecret } from "./host-secrets";
 import {
+  DEFAULT_ACP_MODEL,
+  getAcpModelPreference,
+  getAcpProviderModels,
+  isAcpModelInSource,
+} from "./acp-provider-shared";
+import {
   clearCustomOpenAiCompatibleProviderConfig,
   getCustomOpenAiCompatibleProcessEnv,
   readCustomOpenAiCompatibleProviderConfig,
   saveCustomOpenAiCompatibleProviderConfig,
 } from "./custom-openai-compatible-provider";
+import { getManagedProviderEnv } from "./provider-auth";
 
 type Listener = (event: DesktopServerEvent) => void;
 type ThreadEventListener = CamelAIThreadEventHandler;
+
+interface AcpModelState {
+  availableModelIds: string[];
+  currentModelId: string | null;
+}
 
 interface ActiveThreadRun {
   stopRequested: boolean;
@@ -125,6 +139,12 @@ function toDesktopPluginFileUrl(path: string): string {
 
 const DEFAULT_PLUGIN_HTTP_TIMEOUT_MS = 30_000;
 const DEFAULT_PLUGIN_HTTP_MAX_BODY_BYTES = 512 * 1024;
+const HOST_FORWARDED_PROVIDER_ENV_VARS = [
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENROUTER_API_KEY",
+  "OPENCODE_API_KEY",
+] as const;
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
   "content-length",
@@ -298,6 +318,8 @@ export class DesktopService {
   private readonly listeners = new Set<Listener>();
   private readonly threadEventListeners = new Set<ThreadEventListener>();
   private readonly pendingPermissionRequests: PendingPermissionRequestRecord[] = [];
+  private readonly acpModelStateByProvider: Partial<Record<DesktopProvider, AcpModelState>> = {};
+  private readonly acpModelDiscoveryPromises = new Map<string, Promise<void>>();
   private runtimeStatus: DesktopRuntimeStatus;
   private runtimeStartupPromise: Promise<void> | null = null;
 
@@ -359,10 +381,12 @@ export class DesktopService {
     });
     const provider = this.getCurrentProvider();
     const model = this.getCurrentModel(provider);
+    const modelSource = this.getCurrentModelSource(provider);
     logDesktop("desktop-service", "init", {
       provider: provider.id,
       model,
-      authSource: provider.getAuthState(model).source,
+      modelSource,
+      authSource: provider.getAuthState(modelSource).source,
     });
     void this.extensionHost
       .initialize(this.getExtensionActivationContext())
@@ -378,6 +402,7 @@ export class DesktopService {
         this.emitSnapshot();
       });
     void this.ensureRuntimeRunning("startup");
+    this.warmActiveAcpSession(provider);
   }
 
   subscribe(listener: Listener): () => void {
@@ -438,6 +463,7 @@ export class DesktopService {
       type: "thread_created",
       thread: record,
     });
+    this.warmActiveAcpSession(requireDesktopProvider(thread.provider));
     return record;
   }
 
@@ -471,6 +497,7 @@ export class DesktopService {
     }
     this.emitSnapshot();
     void this.ensureRuntimeRunning("startup");
+    this.warmActiveAcpSession();
     const record = this.requireThreadRecord(threadId);
     this.emitThreadEvent({
       type: "thread_selected",
@@ -965,6 +992,7 @@ export class DesktopService {
   getSnapshot(): DesktopSnapshot {
     const provider = this.getCurrentProvider();
     const model = this.getCurrentModel(provider);
+    const modelSource = this.getCurrentModelSource(provider);
     const extensionSnapshot = this.extensionHost.getSnapshot(
       this.getExtensionActivationContext(),
     );
@@ -973,8 +1001,10 @@ export class DesktopService {
       provider.id,
       getProviderOptions(),
       model,
-      provider.getAvailableModels(),
-      provider.getAuthState(model),
+      this.getAvailableModels(provider),
+      modelSource,
+      provider.getAvailableModelSources(),
+      provider.getAuthState(modelSource),
       extensionSnapshot.views,
       extensionSnapshot.sidebarPanels,
       extensionSnapshot.plugins,
@@ -1188,6 +1218,139 @@ export class DesktopService {
     return provider.normalizeModel(this.store.getModel(provider.id));
   }
 
+  private getCurrentModelSource(provider = this.getCurrentProvider()): string {
+    return provider.normalizeModelSource(this.store.getModelSource(provider.id));
+  }
+
+  private getCurrentModelPreference(provider = this.getCurrentProvider()): string {
+    const model = this.getCurrentModel(provider);
+    return getAcpModelPreference(model, this.getCurrentModelSource(provider));
+  }
+
+  private getResolvedProviderProcessEnv(
+    providerId: DesktopProvider,
+  ): CamelAIResolvedProcessEnvMap {
+    const resolved: CamelAIResolvedProcessEnvMap = {
+      ...this.extensionHost.getResolvedProcessEnv(providerId),
+    };
+
+    const managedProviderEnv = getManagedProviderEnv({
+      dataDirectory: this.dataDirectory,
+    });
+
+    for (const envName of HOST_FORWARDED_PROVIDER_ENV_VARS) {
+      const value = managedProviderEnv[envName] ?? process.env[envName]?.trim();
+      if (!value) {
+        continue;
+      }
+      resolved[envName] = {
+        kind: "literal",
+        value,
+      };
+    }
+
+    if (providerId === "pi" || providerId === "opencode") {
+      Object.assign(
+        resolved,
+        getCustomOpenAiCompatibleProcessEnv(providerId, {
+          dataDirectory: this.dataDirectory,
+        }),
+      );
+    }
+
+    return resolved;
+  }
+
+  private getAvailableModels(provider = this.getCurrentProvider()) {
+    if (provider.id !== "pi" && provider.id !== "opencode") {
+      return provider.getAvailableModels();
+    }
+    const model = this.getCurrentModel(provider);
+    const modelState = this.acpModelStateByProvider[provider.id];
+    const discoveredModelIds = modelState?.availableModelIds ?? [];
+    return getAcpProviderModels(
+      provider.id,
+      this.getCurrentModelSource(provider),
+      model && model !== DEFAULT_ACP_MODEL
+        ? [...discoveredModelIds, model]
+        : discoveredModelIds,
+      modelState?.currentModelId ?? null,
+    );
+  }
+
+  private updateAcpModelState(provider: DesktopProvider, modelState: AcpModelState): void {
+    this.acpModelStateByProvider[provider] = {
+      availableModelIds: modelState.availableModelIds,
+      currentModelId: modelState.currentModelId,
+    };
+    this.emitSnapshot();
+  }
+
+  private isAcpProvider(provider: { id: DesktopProvider }): boolean {
+    return provider.id === "pi" || provider.id === "opencode";
+  }
+
+  private warmActiveAcpSession(provider = this.getCurrentProvider()): void {
+    if (!this.isAcpProvider(provider)) {
+      return;
+    }
+
+    const activeThreadId = this.store.getActiveThreadId();
+    if (!activeThreadId) {
+      return;
+    }
+
+    const activeThread = this.store.getThread(activeThreadId);
+    if (!activeThread || activeThread.provider !== provider.id) {
+      return;
+    }
+
+    const model = this.getCurrentModelPreference(provider);
+    const sessionId = this.store.getProviderSessionId(activeThreadId, provider.id);
+    const discoveryKey = `${provider.id}:${activeThreadId}:${model}:${sessionId ?? ""}`;
+    const inFlight = this.acpModelDiscoveryPromises.get(discoveryKey);
+    if (inFlight) {
+      return;
+    }
+
+    const discovery = (async () => {
+      try {
+        await this.ensureRuntimeRunning("startup", provider);
+        const result = await this.runtimeManager.ensureSession({
+          provider,
+          threadId: activeThreadId,
+          model,
+          sessionId,
+          processEnv: this.getResolvedProviderProcessEnv(provider.id),
+          onModelState: (modelState) => {
+            this.updateAcpModelState(provider.id, modelState);
+          },
+        });
+        if (result.sessionId) {
+          this.store.setProviderSessionId(activeThreadId, provider.id, result.sessionId);
+        }
+        if (result.modelState) {
+          this.updateAcpModelState(provider.id, result.modelState);
+        }
+      } catch (error) {
+        logDesktop(
+          "desktop-service",
+          "acp-model-discovery-error",
+          {
+            provider: provider.id,
+            threadId: activeThreadId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "warn",
+        );
+      } finally {
+        this.acpModelDiscoveryPromises.delete(discoveryKey);
+      }
+    })();
+
+    this.acpModelDiscoveryPromises.set(discoveryKey, discovery);
+  }
+
   private getRuntimeStatus(): DesktopRuntimeStatus {
     return this.runtimeStatus;
   }
@@ -1337,12 +1500,24 @@ export class DesktopService {
         }
         this.emitSnapshot();
         void this.ensureRuntimeRunning("startup");
+        this.warmActiveAcpSession(requireDesktopProvider(provider));
         return;
       }
       case "set_model": {
         const provider = this.getCurrentProvider();
         this.store.setModel(provider.normalizeModel(event.model), provider.id);
         this.emitSnapshot();
+        return;
+      }
+      case "set_model_source": {
+        const provider = this.getCurrentProvider();
+        const modelSource = provider.normalizeModelSource(event.modelSource);
+        this.store.setModelSource(modelSource, provider.id);
+        if (!isAcpModelInSource(this.getCurrentModel(provider), modelSource)) {
+          this.store.setModel(DEFAULT_ACP_MODEL, provider.id);
+        }
+        this.emitSnapshot();
+        this.warmActiveAcpSession(provider);
         return;
       }
       case "refresh_plugins": {
@@ -1823,7 +1998,7 @@ export class DesktopService {
     activeRun: ActiveThreadRun,
   ): Promise<void> {
     const provider = requireDesktopProvider(this.store.getThreadProvider(threadId));
-    const model = this.getCurrentModel(provider);
+    const model = this.getCurrentModelPreference(provider);
     const providerSessionId = this.store.getProviderSessionId(threadId, provider.id);
     const processEnv = this.getResolvedProviderProcessEnv(provider.id);
 
@@ -1837,6 +2012,9 @@ export class DesktopService {
         processEnv,
         onSessionId: (sessionId) => {
           this.store.setProviderSessionId(threadId, provider.id, sessionId);
+        },
+        onModelState: (modelState) => {
+          this.updateAcpModelState(provider.id, modelState);
         },
       });
     } catch (error) {
@@ -1860,7 +2038,7 @@ export class DesktopService {
     activeRun.stopRequested = true;
     this.emitThreadUpdated(threadId, "session");
     const provider = requireDesktopProvider(this.store.getThreadProvider(threadId));
-    const model = this.getCurrentModel(provider);
+    const model = this.getCurrentModelPreference(provider);
     try {
       await this.runtimeManager.cancelPrompt({
         provider,
@@ -1888,7 +2066,7 @@ export class DesktopService {
     const provider = requireDesktopProvider(
       this.store.getThreadProvider(threadId),
     );
-    const model = this.getCurrentModel(provider);
+    const model = this.getCurrentModelPreference(provider);
     const providerSessionId = this.store.getProviderSessionId(
       threadId,
       provider.id,
@@ -1939,6 +2117,9 @@ export class DesktopService {
         processEnv,
         onSessionId: (sessionId) => {
           this.store.setProviderSessionId(threadId, provider.id, sessionId);
+        },
+        onModelState: (modelState) => {
+          this.updateAcpModelState(provider.id, modelState);
         },
         onRuntimeEvent: (event) => {
           if (!assistantId) {
@@ -2072,16 +2253,4 @@ export class DesktopService {
     }
   }
 
-  private getResolvedProviderProcessEnv(
-    providerId: DesktopSnapshot["provider"],
-  ) {
-    return {
-      ...this.extensionHost.getResolvedProcessEnv(providerId),
-      ...(providerId === "pi" || providerId === "opencode"
-        ? getCustomOpenAiCompatibleProcessEnv(providerId, {
-            dataDirectory: this.dataDirectory,
-          })
-        : {}),
-    };
-  }
 }

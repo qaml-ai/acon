@@ -1,8 +1,11 @@
 import {
   DEFAULT_ACP_MODEL,
+  DEFAULT_ACP_MODEL_SOURCE,
   getAcpProviderModels,
+  getAcpProviderModelSources,
   getOpenCodeAuthState,
   normalizeAcpProviderModel,
+  normalizeAcpProviderModelSource,
 } from "./acp-provider-shared";
 import type { DesktopProviderDefinition } from "./provider-types";
 
@@ -31,8 +34,17 @@ export const opencodeProvider: DesktopProviderDefinition = {
   normalizeModel(value) {
     return normalizeAcpProviderModel(value);
   },
-  getAuthState(model) {
-    return getOpenCodeAuthState(model);
+  getDefaultModelSource() {
+    return DEFAULT_ACP_MODEL_SOURCE;
+  },
+  getAvailableModelSources() {
+    return getAcpProviderModelSources("opencode");
+  },
+  normalizeModelSource(value) {
+    return normalizeAcpProviderModelSource(value);
+  },
+  getAuthState(modelSource) {
+    return getOpenCodeAuthState(modelSource);
   },
   getImageName() {
     return DEFAULT_OPENCODE_IMAGE;
