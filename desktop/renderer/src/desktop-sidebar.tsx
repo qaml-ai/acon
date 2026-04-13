@@ -352,7 +352,7 @@ export function DesktopSidebar({
 
   return (
     <Sidebar collapsible="icon">
-      <SidebarHeader>
+      <SidebarHeader className="desktop-sidebar-header">
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
