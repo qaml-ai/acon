@@ -22,6 +22,7 @@ const prepareScriptPath = resolve(import.meta.dirname, "prepare-container-assets
 const scriptMode = getFlagValue("--mode") || "manual";
 const strictMode = process.env.DESKTOP_PREPARE_CONTAINER_ASSETS_STRICT === "1";
 const buildAppleContainer = process.env.DESKTOP_BUILD_APPLE_CONTAINER !== "0";
+const prepareContainerImages = process.env.DESKTOP_PREPARE_CONTAINER_IMAGES !== "0";
 const appleContainerRepoDir = process.env.DESKTOP_APPLE_CONTAINER_REPO_DIR?.trim()
   ? resolve(process.env.DESKTOP_APPLE_CONTAINER_REPO_DIR.trim())
   : null;
@@ -479,6 +480,12 @@ function main() {
 
   const state = readStateFile();
   state.images ||= {};
+
+  if (!prepareContainerImages) {
+    log("skipping container image preparation (DESKTOP_PREPARE_CONTAINER_IMAGES=0)");
+    writeStateFile(state);
+    return;
+  }
 
   for (const imageBuild of imageBuilds) {
     ensureImage(containerCommand, containerVersion, state, imageBuild);

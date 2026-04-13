@@ -2741,6 +2741,7 @@ export function App() {
   const reportedReadyRef = useRef(false);
   const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<WorkbenchDropTarget | null>(null);
+  const showRuntimeNotice = shouldShowRuntimeNotice(snapshot);
 
   const activeThread = useMemo(
     () => getActiveThread(snapshot, activeThreadId),
@@ -3775,8 +3776,11 @@ export function App() {
         <header className="desktop-titlebar desktop-drag">
           <div className="desktop-titlebar-inner">
             <div className="desktop-traffic-spacer" />
+            {isMac ? (
+              <div className="desktop-titlebar-title">Super Camel</div>
+            ) : null}
           </div>
-          {shouldShowRuntimeNotice(snapshot) ? (
+          {showRuntimeNotice ? (
             <div className="desktop-no-drag border-t border-border/50 px-4 py-2">
               <p
                 className={`line-clamp-2 text-xs leading-relaxed ${
